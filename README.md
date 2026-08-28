@@ -101,6 +101,28 @@ fun greet(name: String) { println("Hello, $name") }
 | json include | `<name.json>` — a RemoteCompose JSON document spliced inline  |
 | rc include   | `<name.rc>` — a prebuilt document used as a whole passthrough slide |
 
+### Panes
+
+Split a slide into side-by-side panes with `+++`. Each pane can hold any content
+blocks. A ratio in the metadata sets the pane **widths** (height is the shared
+available height):
+
+```markdown
+:: content [2:3]
+# Two panes
+
+Left text
+- a point
+
++++
+
+<diagram.png>
+```
+
+- `[2:3]`, `[1:1]`, `[2:2:4]` … — one number per pane; the count must match the
+  number of `+++`-separated sections (otherwise panes are sized equally).
+- The ratio may stand alone (`:: [1:1]`) or follow a type (`:: content [2:3]`).
+
 ## Notes
 
 - **Images** are authored as separate files under `includes/` but embedded inline

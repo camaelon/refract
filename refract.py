@@ -53,6 +53,7 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 INCLUDE_PROBE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".rc", ".json")
 
 PADDING = 80
+PANE_GAP = 48
 SLIDE_BG = "#FF0D1B2A"
 TITLE_COLOR = "#FFFFFFFF"
 BODY_COLOR = "#FFE6EEF6"
@@ -72,10 +73,22 @@ DEFAULT_TYPE = "content"
 # --------------------------------------------------------------------------- #
 # Parsing
 # --------------------------------------------------------------------------- #
+RATIO_RE = re.compile(r"\[(\d+(?::\d+)+)\]")
+
+
 def parse_meta(spec: str) -> dict:
-    """Parse a ``::`` metadata line of the form ``<type of slide> : <parameters>``."""
-    kind, _, params = spec.partition(":")
-    return {"type": kind.strip(), "params": params.strip()}
+    """Parse a ``::`` metadata line: ``<type> [: <params>] [ratio]``.
+
+    A pane ratio like ``[2:3]`` or ``[2:2:4]`` may appear anywhere on the line
+    (its inner ``:`` would otherwise confuse the type/params split, so it is
+    pulled out first)."""
+    ratio = None
+    m = RATIO_RE.search(spec)
+    if m:
+        ratio = [int(x) for x in m.group(1).split(":")]
+        spec = (spec[:m.start()] + spec[m.end():]).strip()
+    kind, _, params = spec.strip().strip(":").partition(":")
+    return {"type": kind.strip(), "params": params.strip(), "ratio": ratio}
 
 
 def parse_slide(chunk: str) -> dict | None:
@@ -132,6 +145,13 @@ def parse_slide(chunk: str) -> dict | None:
         m = TITLE_RE.match(stripped)
         if m and title is None and not blocks and not para and not bullets:
             title = m.group(1).strip()
+            i += 1
+            continue
+
+        if stripped == "+++":
+            flush_para()
+            flush_bullets()
+            blocks.append({"kind": "pane_break"})
             i += 1
             continue
 
@@ -291,7 +311,7 @@ def text_component(value: str, size: float, color: str, debug: bool, extra: list
     return comp
 
 
-def render_block(block: dict, spec: dict, debug: bool, width: int, height: int,
+def render_block(block: dict, spec: dict, debug: bool, avail_w: float, avail_h: float,
                  counter: list) -> list[dict]:
     kind = block["kind"]
     if kind == "text":
@@ -319,8 +339,8 @@ def render_block(block: dict, spec: dict, debug: bool, width: int, height: int,
         # does paint canvas bitmap draws. So emit a fixed-size canvas, compute the
         # fully-contained (aspect-preserving) rect here, and draw the bitmap into it.
         iw, ih = image_size(block["path"])
-        cw = float(width - 2 * PADDING)
-        ch = float(height - 3 * PADDING)
+        cw = float(avail_w)
+        ch = float(avail_h)
         scale = min(cw / iw, ch / ih)
         dw, dh = iw * scale, ih * scale
         left = round((cw - dw) / 2.0, 2)
@@ -360,14 +380,59 @@ def render_block(block: dict, spec: dict, debug: bool, width: int, height: int,
     return []
 
 
+def split_panes(blocks: list[dict]) -> list[list[dict]]:
+    """Split a block list on ``pane_break`` markers into one list per pane."""
+    panes: list[list[dict]] = [[]]
+    for block in blocks:
+        if block["kind"] == "pane_break":
+            panes.append([])
+        else:
+            panes[-1].append(block)
+    return panes
+
+
 def build_doc(slide: dict, blocks: list[dict], width: int, height: int, index: int, debug: bool) -> dict:
     spec = SLIDE_TYPES[slide_type(slide)]
-    children = []
     counter = [0]
+    content_w = width - 2 * PADDING
+
+    children = []
+    title_h = 0
     if slide.get("title"):
         children.append(text_component(slide["title"], spec["title_size"], TITLE_COLOR, debug))
-    for block in blocks:
-        children.extend(render_block(block, spec, debug, width, height, counter))
+        title_h = int(spec["title_size"] * 1.8)
+    avail_h = height - 2 * PADDING - title_h
+
+    panes = split_panes(blocks)
+    if len(panes) <= 1:
+        for block in (panes[0] if panes else []):
+            children.extend(render_block(block, spec, debug, content_w, avail_h, counter))
+    else:
+        n = len(panes)
+        ratio = (slide.get("meta") or {}).get("ratio")
+        if not ratio or len(ratio) != n:
+            ratio = [1] * n
+        total = sum(ratio)
+        avail = content_w - PANE_GAP * (n - 1)
+        pane_nodes = []
+        for i, pane_blocks in enumerate(panes):
+            pane_w = avail * ratio[i] / total
+            inner_w = pane_w - PANE_GAP
+            inner_h = avail_h - PANE_GAP
+            pane_children = []
+            for block in pane_blocks:
+                pane_children.extend(render_block(block, spec, debug, inner_w, inner_h, counter))
+            pane_nodes.append({
+                "type": "column",
+                "modifiers": dbg([{"width": round(pane_w, 2)}, {"padding": float(PANE_GAP / 2)}], debug),
+                "children": pane_children,
+            })
+        children.append({
+            "type": "row",
+            "modifiers": dbg(["fillMaxWidth"], debug),
+            "children": pane_nodes,
+        })
+
     return {
         "header": {
             "width": width,
