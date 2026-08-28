@@ -52,7 +52,11 @@ def resolve_include(name: str, includes_dir: str) -> dict:
             if ext in IMAGE_EXTS:
                 return {"kind": "image", "path": os.path.abspath(path)}
             if ext == ".rc":
-                return {"kind": "rc_include", "path": os.path.abspath(path), "name": name}
+                # A binary .rc can't be spliced into a JSON tree, but its source
+                # .json (if present) can — that embeds it *live* as components.
+                sib = os.path.splitext(path)[0] + ".json"
+                return {"kind": "rc_include", "path": os.path.abspath(path), "name": name,
+                        "json": os.path.abspath(sib) if os.path.isfile(sib) else None}
             if ext == ".json":
                 return {"kind": "json_include", "path": os.path.abspath(path)}
     return {"kind": "missing", "name": name}

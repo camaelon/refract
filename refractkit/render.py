@@ -26,8 +26,11 @@ DEFAULT_TYPE = "content"
 # crossfades from the previous slide to the new one on load.
 TRANSITION_EXPR = "min(floor(animTime * 6), 1)"
 
-# Graph "magic move" progress 0..1: holds at 0 briefly, then ramps over ~0.6s.
-GRAPH_PROGRESS_EXPR = "min(1.0, max(0.0, (animTime - 0.15) / 0.6))"
+# Graph "magic move" progress. Kept as two small variables (expressions have a tight
+# size limit): __gp is the linear clamp, __gt eases it (snappy ease-out-cubic: fast
+# start, decelerating into place) over ~0.5s.
+GRAPH_P_EXPR = "min(1.0, max(0.0, (animTime - 0.12) / 0.5))"
+GRAPH_EASE_EXPR = "1.0 - (1.0 - $__gp) * (1.0 - $__gp) * (1.0 - $__gp)"
 GRAPH_PROGRESS_VAR = "$__gt"
 
 
@@ -73,6 +76,17 @@ def split_panes(blocks: list[dict]) -> list[list[dict]]:
     return panes
 
 
+def _splice_json(path: str) -> list[dict]:
+    """Splice a RemoteCompose JSON document's root in as live components."""
+    with open(path) as f:
+        root = json.load(f).get("root")
+    if isinstance(root, list):
+        return root
+    if isinstance(root, dict):
+        return [root]
+    return []
+
+
 def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list) -> list[dict]:
     kind = block["kind"]
@@ -91,23 +105,20 @@ def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
         return render_code(block, theme, debug)
 
     if kind == "image":
-        return render_image(block, debug, avail_w, avail_h, counter)
+        return render_image(block, theme, debug, avail_w, avail_h, counter)
 
     if kind == "graph":
         return render_graph(block, theme, debug, avail_w, avail_h, counter)
 
     if kind == "json_include":
-        with open(block["path"]) as f:
-            sub = json.load(f)
-        root = sub.get("root")
-        if isinstance(root, list):
-            return root
-        if isinstance(root, dict):
-            return [root]
-        return []
+        return _splice_json(block["path"])
 
     if kind == "rc_include":
-        return [text(f"[rc include: {block['name']}]", spec["body_size"], theme.body_color, debug)]
+        # Embed the running document live by splicing its source JSON components.
+        if block.get("json"):
+            return _splice_json(block["json"])
+        return [text(f"[rc include: {block['name']} — no .json sibling to embed live]",
+                     spec["body_size"], theme.body_color, debug)]
 
     if kind == "missing":
         return [text(f"<{block['name']} missing>", spec["body_size"], theme.body_color, debug)]
@@ -283,7 +294,8 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     return {
         "header": header(slide, width, height, index, _profiles(theme)),
         "root": [
-            {"type": "variable", "name": "__gt", "vtype": "float", "value": GRAPH_PROGRESS_EXPR},
+            {"type": "variable", "name": "__gp", "vtype": "float", "value": GRAPH_P_EXPR},
+            {"type": "variable", "name": "__gt", "vtype": "float", "value": GRAPH_EASE_EXPR},
             root_col,
         ],
     }

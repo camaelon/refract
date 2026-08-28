@@ -48,25 +48,50 @@ def image_size(path: str) -> tuple[int, int]:
     return 1, 1
 
 
-def render_image(block: dict, debug: bool, avail_w: float, avail_h: float,
+def _rounded_rect_path(path: str, l: float, t: float, r: float, b: float,
+                       rad: float) -> list[dict]:
+    """Canvas commands building a rounded-rect path (quad corners)."""
+    return [
+        {"type": "pathcreate", "id": path, "x": l + rad, "y": t},
+        {"type": "pathappendlineto", "path": path, "x": r - rad, "y": t},
+        {"type": "pathappendquadto", "path": path, "x1": r, "y1": t, "x2": r, "y2": t + rad},
+        {"type": "pathappendlineto", "path": path, "x": r, "y": b - rad},
+        {"type": "pathappendquadto", "path": path, "x1": r, "y1": b, "x2": r - rad, "y2": b},
+        {"type": "pathappendlineto", "path": path, "x": l + rad, "y": b},
+        {"type": "pathappendquadto", "path": path, "x1": l, "y1": b, "x2": l, "y2": b - rad},
+        {"type": "pathappendlineto", "path": path, "x": l, "y": t + rad},
+        {"type": "pathappendquadto", "path": path, "x1": l, "y1": t, "x2": l + rad, "y2": t},
+        {"type": "pathappendclose", "path": path},
+    ]
+
+
+def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float,
                  counter: list) -> list[dict]:
-    """A fixed-size canvas that draws the image contained within (avail_w, avail_h)."""
+    """A fixed-size canvas that draws the image contained within (avail_w, avail_h),
+    optionally clipped to a rounded rect (theme.image_corner_radius)."""
     iw, ih = image_size(block["path"])
-    cw = float(avail_w)
-    ch = float(avail_h)
+    cw, ch = float(avail_w), float(avail_h)
     scale = min(cw / iw, ch / ih)
     dw, dh = iw * scale, ih * scale
     left = round((cw - dw) / 2.0, 2)
     top = round((ch - dh) / 2.0, 2)
+    right, bottom = round(left + dw, 2), round(top + dh, 2)
     counter[0] += 1
     var = f"__img{counter[0]}"
+
+    draw = {"type": "drawbitmap", "image": "$" + var,
+            "left": left, "top": top, "right": right, "bottom": bottom}
+    commands = [{"type": "addbitmap", "image": block["path"], "varName": var}]
+    rad = min(float(theme.image_corner_radius), dw / 2.0, dh / 2.0)
+    if rad > 0.5:
+        clip = f"__imgclip{counter[0]}"
+        commands += _rounded_rect_path(clip, left, top, right, bottom, round(rad, 2))
+        commands.append({"type": "save", "commands": [
+            {"type": "clippath", "path": clip}, draw]})
+    else:
+        commands.append(draw)
     return [{
         "type": "canvas",
         "modifiers": dbg([{"width": cw}, {"height": ch}], debug),
-        "commands": [
-            {"type": "addbitmap", "image": block["path"], "varName": var},
-            {"type": "drawbitmap", "image": "$" + var,
-             "left": left, "top": top,
-             "right": round(left + dw, 2), "bottom": round(top + dh, 2)},
-        ],
+        "commands": commands,
     }]

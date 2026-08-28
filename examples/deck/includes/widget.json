@@ -1,0 +1,16 @@
+{
+  "header": { "width": 1200, "height": 600 },
+  "root": {
+    "type": "box",
+    "horizontalAlignment": "center", "verticalAlignment": "center",
+    "modifiers": ["fillMaxSize", {"background": "#FF15324A"}],
+    "children": [
+      { "type": "canvas", "modifiers": ["fillMaxSize"], "commands": [
+        { "type": "paint", "ops": [{"color": "#FF4FC3F7"}, {"style": "fill"}, {"alpha": 0.85}] },
+        { "type": "drawcircle", "cx": "width / 2.0", "cy": "height / 2.0",
+          "radius": "110.0 + 55.0 * sin(animTime * 2.0)" }
+      ] },
+      { "type": "text", "value": "running rc demo", "fontSize": 44.0, "color": "#FFFFFFFF" }
+    ]
+  }
+}

@@ -33,10 +33,13 @@ class Theme:
     code_background: str = "#FF1E1E1E"
     code_foreground: str = "#FFD4D4D4"
     code_font_size: float = 28.0
+    code_corner_radius: float = 0.0
     syntax: dict = field(default_factory=lambda: dict(DEFAULT_SYNTAX))
     # Animated background shaders (SkSL source) by slide type, plus a "default"
     # applied to any type without its own. Empty = solid `background` colour.
     shaders: dict = field(default_factory=dict)
+    # Image corner radius in px (0 = square). Rounds embedded images.
+    image_corner_radius: float = 0.0
     # Graph (graphviz) rendering colours.
     graph_node_fill: str = "#FF1B2A3D"
     graph_node_stroke: str = "#FF4FC3F7"
@@ -85,8 +88,16 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.code_foreground = code.get("foreground", th.get("code_foreground", t.code_foreground))
     if "font_size" in code:
         t.code_font_size = float(code["font_size"])
+    if "corner_radius" in code:
+        t.code_corner_radius = float(code["corner_radius"])
     for token_type, color in (code.get("syntax", {}) or {}).items():
         t.syntax[token_type] = color
+
+    image = settings.get("image", {})
+    if "corner_radius" in image:
+        t.image_corner_radius = float(image["corner_radius"])
+    elif image.get("rounded"):
+        t.image_corner_radius = 28.0
 
     graph = settings.get("graph", {})
     t.graph_node_fill = graph.get("node_fill", t.graph_node_fill)

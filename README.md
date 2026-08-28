@@ -1,54 +1,41 @@
+<p align="center">
+  <img src="media/refract_logo2.png" alt="refract" width="420">
+</p>
+
 # refract
 
-Turn a simple markdown deck into [RemoteCompose](https://developer.android.com/jetpack/androidx/releases/compose-remote)
+Turn a small, readable **markdown** slide deck into
+[RemoteCompose](https://developer.android.com/jetpack/androidx/releases/compose-remote)
 slides you can play in the C++ desktop viewer or the TypeScript player.
 
 ```
-slides.md  ──►  refract.py  ──►  component JSON  ──►  json2rc  ──►  .rc
+slides.md ─► refract.py ─► component JSON (androidx format) ─► json2rc ─► .rc
 ```
 
-refract emits the **androidx component JSON** format and lets the **real
-`remote-core` library** do the serialization. Python never touches the wire
-format; layout is done by the RemoteCompose engine via components, not pixel math.
+refract emits the **androidx component JSON** format and lets the real `remote-core`
+library serialize it — Python never touches the wire format, and layout is done by
+the RemoteCompose engine via components, not pixel math.
+
+## Quick start
+
+```sh
+python3 refract.py examples/deck               # writes examples/deck/out/*.rc
+prebuilt/rcviewer examples/deck/out 1600 900   # play it (N/P to step, R to reload)
+```
+
+Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
+`prebuilt/` ships ready-to-run `json2rc`, `rcviewer` and `rc2image`.
 
 ## Deck layout on disk
 
 ```
 <deck>/
   slides.md          # the deck
+  settings.toml      # optional per-deck settings (colors, size, transitions, shader…)
+  shader.sksl        # optional background shader referenced from settings.toml
   includes/          # images, sub-decks, .rc / .json resources
   out/               # generated .rc files          (created)
-  out/json/          # generated .json documents     (created)
-```
-
-## Setup
-
-`prebuilt/` ships ready-to-run tools (checked in because json2rc currently
-carries local code):
-
-- `prebuilt/json2rc/bin/json2rc` — JSON → `.rc` converter
-- `prebuilt/rcviewer` — interactive C++ viewer
-- `prebuilt/rc2image` — headless `.rc` → PNG renderer
-
-To rebuild json2rc from the local androidx checkout (JDK 21):
-
-```sh
-cd json2rc && ./gradlew installDist          # -PandroidxRemote=/path to override
-```
-
-## Use
-
-```sh
-python3 refract.py examples/deck            # writes examples/deck/out/*.rc (+ out/json/*.json)
-python3 refract.py examples/deck --debug    # outline every component with a 1px red border
-```
-
-Options: `--width/--height` (default 1600×900), `--json-only`, `--json2rc PATH`.
-
-View a deck (directory = slideshow; N/P to step, R to reload):
-
-```sh
-prebuilt/rcviewer examples/deck/out 1600 900
+  out/json/          # generated .json documents     (only with --json)
 ```
 
 ## Markdown grammar
@@ -57,87 +44,165 @@ prebuilt/rcviewer examples/deck/out 1600 900
 :: title
 # refract
 Markdown to RemoteCompose
+<logo.png>
 
 ---
 
-:: include : intro          # splice includes/intro/slides.md here
-
----
-
-:: content
-# Content types
-- bullet lists
-  - with sub-bullets
-
-```kotlin
-fun greet(name: String) { println("Hello, $name") }
-```
-
-<logo.png>                  # image include
-<card.json>                 # RemoteCompose JSON spliced inline
-```
-
-- `---` separates slides (one `.rc` each).
-- `:: <type> : <parameters>` right after the separator sets the slide metadata.
-- The first `# heading` is the title; the rest is content blocks in order.
-
-### Slide types (`<type>`)
-
-| Type      | Layout                                              |
-|-----------|-----------------------------------------------------|
-| `title`   | large title centered on the slide                   |
-| `section` | title centered                                      |
-| `content` | default — title at top, content below (left-aligned)|
-| `include` | splice another deck from `includes/<param>/slides.md` (placeholder if missing) |
-
-### Content blocks
-
-| Block        | Markdown                                   |
-|--------------|--------------------------------------------|
-| text         | plain paragraphs                           |
-| bullet list  | `- item`, indent two spaces per sub-level  |
-| code         | fenced ```` ``` ```` block (monospace)     |
-| image        | `<name.png>` — embedded **inline** in the `.rc` at build time |
-| json include | `<name.json>` — a RemoteCompose JSON document spliced inline  |
-| rc include   | `<name.rc>` — a prebuilt document used as a whole passthrough slide |
-
-### Panes
-
-Split a slide into side-by-side panes with `+++`. Each pane can hold any content
-blocks. A ratio in the metadata sets the pane **widths** (height is the shared
-available height):
-
-```markdown
 :: content [2:3]
 # Two panes
-
-Left text
 - a point
+- another
 
 +++
 
-<diagram.png>
+```dot
+digraph G { rankdir=LR; A -> B -> C }
+```
 ```
 
-- `[2:3]`, `[1:1]`, `[2:2:4]` … — one number per pane; the count must match the
-  number of `+++`-separated sections (otherwise panes are sized equally).
-- The ratio may stand alone (`:: [1:1]`) or follow a type (`:: content [2:3]`).
+- `---` on its own line separates slides (one `.rc` each).
+- `:: <type> [: <params>] [ratio]` right after the separator sets slide metadata.
+- The first `# heading` is the title; everything after is content **blocks**, in order.
+
+### Slide types (`<type>`)
+
+| Type      | Layout                                                        |
+|-----------|---------------------------------------------------------------|
+| `title`   | large title centered; an image renders above it (logo size)   |
+| `section` | title centered                                                |
+| `content` | default — title at top, content below, left-aligned           |
+| `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
+
+### Content blocks
+
+| Block         | Markdown                                                       |
+|---------------|---------------------------------------------------------------|
+| text          | plain paragraphs                                              |
+| bullet list   | `- item`, indent two spaces per sub-level                     |
+| code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, json) |
+| graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … block — laid out by graphviz, drawn by refract |
+| image         | `<name.png>` — embedded **inline** in the `.rc`               |
+| json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
+| rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
+
+### Panes
+
+Split a slide with `+++`; a ratio in the metadata sets the pane **widths** (height is
+shared): `:: content [2:3]`, `:: [1:1]`, `:: [2:2:4]` — one number per pane.
+
+## Transitions & "magic move"
+
+`--transitions` (or `[transition] enabled = true`) wraps each slide in a `StateLayout`
+that **crossfades** from the previous slide on load. When two consecutive slides are
+graphs, refract instead emits a **magic move**: nodes matched by their dot identifier
+glide/resize to their new positions (snappy ease-out), edges morph along (resampled so
+their splines can interpolate), and unmatched nodes/edges fade.
+
+```sh
+python3 refract.py examples/deck --transitions
+```
+
+## settings.toml
+
+```toml
+[slide]
+width = 1600
+height = 900
+
+[theme]
+background   = "#FF141A2E"
+title_color  = "#FFFFFFFF"
+body_color   = "#FFE6EEF6"
+
+[image]
+corner_radius = 28              # round embedded images
+
+[code]
+background    = "#FF1E1E1E"
+foreground    = "#FFD4D4D4"
+font_size     = 28
+corner_radius = 18              # round the code panel
+[code.syntax]                   # any subset; rest use defaults
+keyword = "#FFC586C0"
+type    = "#FF4EC9B0"
+string  = "#FFCE9178"
+number  = "#FFB5CEA8"
+comment = "#FF6A9955"
+key     = "#FF9CDCFE"           # JSON property names
+literal = "#FF569CD6"           # true / false / null
+
+[graph]
+node_fill = "#FF1B2A3D"
+node_stroke = "#FF4FC3F7"
+node_text = "#FFE6EEF6"
+edge      = "#FF89A7C2"
+
+[shader]                        # animated background (SkSL)
+file = "shader.sksl"            # or source = """...SkSL..."""
+[shader.title]                  # optional per-slide-type override
+file = "title.sksl"
+
+[transition]
+enabled = false                 # same as --transitions
+```
+
+Precedence: **CLI flag > settings.toml > built-in default**.
+
+### Background shaders
+
+A slide background can be an animated SkSL shader (`iResolution`, `iTime` uniforms;
+`iTime` is `animTime`, so it animates). It's drawn full-slide behind transparent
+content. Different types can use different shaders via `[shader.<type>]`.
+
+## CLI
+
+```
+python3 refract.py <deck> [options]
+  --width / --height     slide size (default 1600×900 or settings.toml)
+  --transitions          StateLayout crossfades / graph magic move
+  --debug                1px red outline on every component
+  --json                 keep the intermediate JSON in out/json/ (default: discard)
+  --json-only            emit JSON only; do not run json2rc
+  --json2rc PATH         explicit json2rc launcher (default: auto-detect prebuilt)
+```
+
+## Prebuilt tools
+
+- `prebuilt/json2rc` — JSON → `.rc` converter (built from the local androidx checkout;
+  adds an `image` component that embeds a file inline)
+- `prebuilt/rcviewer` — interactive C++ viewer (also `--pdf` / `--screenshot`)
+- `prebuilt/rc2image` — headless `.rc` → PNG
+
+## Architecture
+
+Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
+
+| Module        | Responsibility                                            |
+|---------------|-----------------------------------------------------------|
+| `settings`    | load `settings.toml` (stdlib `tomllib`)                   |
+| `theme`       | `Theme` (colors, code + syntax, shaders) from settings    |
+| `markdown`    | slide markdown → `{meta, title, blocks}`                  |
+| `deck`        | load `slides.md`, expand deck includes, resolve includes  |
+| `components`  | low-level component builders (`text`, `dbg`)              |
+| `images`      | image dimensions + contained bitmap canvas (+ rounded clip) |
+| `highlight`   | syntax highlighting — a language registry                 |
+| `graph`       | graphviz layout → drawing; magic-move geometry            |
+| `render`      | blocks + theme → RemoteCompose component JSON             |
+
+**Add a language:** drop a `tokenize_x` in `highlight.py` and register it in
+`LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the
+`.sksl`.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```
 
 ## Notes
 
-- **Images** are authored as separate files under `includes/` but embedded inline
-  into each `.rc` at conversion time (`json2rc` loads the file, re-encodes to PNG,
-  and hoists the bitmap to the head of the document). The androidx JSON format has
-  no path→image support yet, so json2rc adds an `image` component for this.
-- The embedded `DATA_BITMAP` is hoisted **before** the root layout component
-  (op order `HEADER → DATA_BITMAP → LAYOUT_ROOT → …`) so players that load bitmap
-  data from the head of the stream find it.
-- **Images (temporary canvas approach):** the C++ viewer doesn't paint the
-  `LAYOUT_IMAGE` component (its `LayoutImage` is a read-only stub), but it does paint
-  canvas bitmap draws. So an image block is emitted as a fixed-size `canvas` that
-  `addbitmap`s the file and `drawbitmap`s it into a computed, aspect-preserving
-  ("fully contained") rect — a rough equivalent of the image component that renders
-  in the C++ viewer today. When `LAYOUT_IMAGE` painting lands in the viewer this can
-  revert to a plain `image` component (still supported by json2rc).
-- **Debug borders** use a solid 1px red border — the `border` modifier has no dash
-  option today.
+- Images embed **inline** (the C++ viewer only renders inline images, not URL/file refs).
+- A binary `.rc` can't be spliced into a JSON tree, so live rc-embed uses the sibling
+  `.json`.
+- Graph magic move uses expression-interpolation (matched by dot id), which fits
+  canvas-drawn graphs and needs no player changes.

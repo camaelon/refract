@@ -135,9 +135,12 @@ def render_code(block: dict, theme, debug: bool) -> list[dict]:
             spans = [text(t, size, theme.syntax_color(tt), debug, mono=True)
                      for t, tt in line]
         rows.append({"type": "row", "children": spans})
+    mods = ["fillMaxWidth"]
+    if theme.code_corner_radius > 0:
+        mods.append({"clip": float(theme.code_corner_radius)})   # rounds the panel
+    mods += [{"background": theme.code_background}, {"padding": 24.0}]
     return [{
         "type": "column",
-        "modifiers": dbg(["fillMaxWidth", {"background": theme.code_background},
-                          {"padding": 24.0}], debug),
+        "modifiers": dbg(mods, debug),
         "children": rows,
     }]

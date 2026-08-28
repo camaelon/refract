@@ -55,6 +55,8 @@ def main() -> int:
     ap.add_argument("--debug", action="store_true", help="outline each component with a 1px red border")
     ap.add_argument("--transitions", action="store_true",
                     help="emit each slide as a StateLayout that crossfades from the previous slide")
+    ap.add_argument("--json", action="store_true",
+                    help="keep the intermediate JSON documents in out/json/ (default: discard)")
     ap.add_argument("--json-only", action="store_true", help="emit JSON only; do not run json2rc")
     ap.add_argument("--json2rc", default=None, help="path to the json2rc launcher (default: auto-detect)")
     args = ap.parse_args()
@@ -125,6 +127,7 @@ def main() -> int:
     for src, dst in copies:
         shutil.copyfile(src, dst)
 
+    keep_json = args.json or args.json_only
     if args.json_only:
         return 0
 
@@ -134,12 +137,26 @@ def main() -> int:
               "or pass --json-only to stop at JSON.", file=sys.stderr)
         return 2
 
-    if not pairs:
-        return 0
-    cmd = [json2rc]
-    for json_path, rc_path in pairs:
-        cmd += [json_path, rc_path]
-    return subprocess.run(cmd).returncode
+    rc = 0
+    if pairs:
+        cmd = [json2rc]
+        for json_path, rc_path in pairs:
+            cmd += [json_path, rc_path]
+        rc = subprocess.run(cmd).returncode
+
+    # The JSON is just an intermediate for json2rc; discard it unless asked to keep.
+    if not keep_json:
+        for json_path, _ in pairs:
+            try:
+                os.remove(json_path)
+            except OSError:
+                pass
+        try:
+            os.rmdir(json_dir)
+        except OSError:
+            pass
+
+    return rc
 
 
 if __name__ == "__main__":

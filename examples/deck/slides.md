@@ -2,8 +2,6 @@
 
 <logo.png>
 
-Markdown to RemoteCompose
-
 ---
 
 :: include : intro
@@ -41,6 +39,21 @@ fun greet(name: String) {
 }
 ```
 
+```json
+{
+  "header": { "width": 1600, "height": 900 },
+  "root": {
+    "type": "box",
+    "horizontalAlignment": "center",
+    "verticalAlignment": "center",
+    "modifiers": ["fillMaxWidth", { "background": "#FF223344" }, { "padding": 40.0 }],
+    "children": [
+      { "type": "text", "value": "Spliced-in RemoteCompose JSON", "fontSize": 40.0, "color": "#FFFFD54F" }
+    ]
+  }
+}
+```
+
 ---
 
 # A graph
@@ -66,6 +79,11 @@ digraph G {
   Cache -> Store
 }
 ```
+
+---
+
+# An embedded running .rc
+<widget.rc>
 
 ---
 

@@ -15,6 +15,7 @@ code_foreground  = "#FFD4D4D4"   # fenced code text
 background = "#FF1E1E1E"        # code panel background
 foreground = "#FFD4D4D4"        # default code text
 font_size  = 28
+corner_radius = 18              # round the code panel corners (0 = square)
 
 # Syntax-highlight colours by token type (any subset; the rest use defaults).
 [code.syntax]
@@ -25,6 +26,9 @@ number     = "#FFB5CEA8"
 comment    = "#FF6A9955"
 key        = "#FF9CDCFE"        # JSON property names
 literal    = "#FF569CD6"        # true / false / null
+
+[image]
+corner_radius = 28              # round embedded image corners (0 = square)
 
 [graph]                         # graphviz node/edge colours
 node_fill   = "#FF1B2A3D"
