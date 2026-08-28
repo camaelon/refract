@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+GRAPH_ENGINES = {"dot", "neato", "fdp", "sfdp", "twopi", "circo", "graphviz"}
+
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")
 TITLE_RE = re.compile(r"^#\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)-\s+(.+)$")
@@ -79,7 +81,11 @@ def parse_slide(chunk: str) -> dict | None:
                 code_lines.append(lines[i])
                 i += 1
             i += 1  # closing fence
-            blocks.append({"kind": "code", "lang": lang, "text": "\n".join(code_lines)})
+            body = "\n".join(code_lines)
+            if lang.lower() in GRAPH_ENGINES:
+                blocks.append({"kind": "graph", "engine": lang.lower(), "dot": body})
+            else:
+                blocks.append({"kind": "code", "lang": lang, "text": body})
             continue
 
         if not stripped:

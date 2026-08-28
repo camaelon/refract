@@ -43,6 +43,32 @@ fun greet(name: String) {
 
 ---
 
+# A graph
+```dot
+digraph G {
+  rankdir=LR
+  Client -> API
+  API -> Cache
+  API -> DB
+}
+```
+
+---
+
+# A graph
+```dot
+digraph G {
+  rankdir=LR
+  Client -> API
+  API -> Cache
+  API -> DB
+  DB -> Store
+  Cache -> Store
+}
+```
+
+---
+
 # An image
 <logo.png>
 

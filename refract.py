@@ -26,7 +26,8 @@ import subprocess
 import sys
 
 from refractkit.deck import load_deck, resolve_blocks
-from refractkit.render import build_doc, build_transition_doc, slide_type
+from refractkit.render import (build_doc, build_graph_transition_doc, build_transition_doc,
+                               graph_block, slide_type)
 from refractkit.settings import load_settings
 from refractkit.theme import build_theme
 
@@ -105,7 +106,10 @@ def main() -> int:
             prev = None  # can't crossfade from a prebuilt .rc
             continue
 
-        if transitions:
+        if transitions and prev is not None and graph_block(prev[1]) and graph_block(blocks):
+            doc = build_graph_transition_doc(prev, (slide, blocks), theme, width, height, i, args.debug)
+            tag = "graph-morph"
+        elif transitions:
             doc = build_transition_doc(prev, (slide, blocks), theme, width, height, i, args.debug)
             tag = "transition"
         else:

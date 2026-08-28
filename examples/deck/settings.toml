@@ -26,6 +26,12 @@ comment    = "#FF6A9955"
 key        = "#FF9CDCFE"        # JSON property names
 literal    = "#FF569CD6"        # true / false / null
 
+[graph]                         # graphviz node/edge colours
+node_fill   = "#FF1B2A3D"
+node_stroke = "#FF4FC3F7"
+node_text   = "#FFE6EEF6"
+edge        = "#FF89A7C2"
+
 # Animated background shader (SkSL). Applies to all slides; add [shader.title] etc.
 # for per-slide-type overrides. Comment this out for a plain solid background.
 [shader]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from .components import dbg, text
+from .graph import render_graph, render_graph_morph
 from .highlight import render_code
 from .images import render_image
 from .theme import Theme
@@ -24,6 +25,18 @@ DEFAULT_TYPE = "content"
 # Transition index: 0 on the first frame, flipping to 1 at ~0.17s so the StateLayout
 # crossfades from the previous slide to the new one on load.
 TRANSITION_EXPR = "min(floor(animTime * 6), 1)"
+
+# Graph "magic move" progress 0..1: holds at 0 briefly, then ramps over ~0.6s.
+GRAPH_PROGRESS_EXPR = "min(1.0, max(0.0, (animTime - 0.15) / 0.6))"
+GRAPH_PROGRESS_VAR = "$__gt"
+
+
+def graph_block(blocks: list[dict]) -> dict | None:
+    """The first graph block in a slide's blocks, if any."""
+    for block in blocks:
+        if block["kind"] == "graph":
+            return block
+    return None
 
 
 def slide_type(slide: dict) -> str:
@@ -79,6 +92,9 @@ def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
 
     if kind == "image":
         return render_image(block, debug, avail_w, avail_h, counter)
+
+    if kind == "graph":
+        return render_graph(block, theme, debug, avail_w, avail_h, counter)
 
     if kind == "json_include":
         with open(block["path"]) as f:
@@ -161,7 +177,14 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             "children": pane_nodes,
         })
 
-    shader = theme.shader_for(slide_type(slide))
+    return frame_slide(children, spec, theme, slide_type(slide), width, height, debug)
+
+
+def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
+                width: int, height: int, debug: bool) -> dict:
+    """Wrap slide children in the root column, layering a shader background behind
+    (in a Box) when the slide type has one, else a solid background."""
+    shader = theme.shader_for(stype)
     bg_mods = [] if shader else [{"background": theme.background}]
     col = {
         "type": "column",
@@ -171,7 +194,6 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
         "children": children,
     }
     if shader:
-        # Layer the shader behind the (transparent) content column.
         return {
             "type": "box",
             "modifiers": dbg(["fillMaxSize"], debug),
@@ -235,5 +257,33 @@ def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: in
             {"type": "variable", "name": "__t", "vtype": "float", "value": TRANSITION_EXPR},
             {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
              "children": [prev_root, cur_root]},
+        ],
+    }
+
+
+def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: int,
+                               index: int, debug: bool) -> dict:
+    """A graph "magic move": one morphing graph whose matched nodes (by dot id) glide
+    and resize from the previous layout to the new one, driven by a progress variable.
+    Unmatched nodes fade; edges crossfade."""
+    slide, blocks = cur
+    spec = SLIDE_TYPES[slide_type(slide)]
+    content_w = width - 2 * PADDING
+
+    children = []
+    title_h = 0
+    if slide.get("title"):
+        children.append(text(slide["title"], spec["title_size"], theme.title_color, debug))
+        title_h = int(spec["title_size"] * 1.8)
+    avail_h = height - 2 * PADDING - title_h
+
+    children.extend(render_graph_morph(graph_block(prev[1]), graph_block(blocks),
+                                       theme, debug, content_w, avail_h, GRAPH_PROGRESS_VAR))
+    root_col = frame_slide(children, spec, theme, slide_type(slide), width, height, debug)
+    return {
+        "header": header(slide, width, height, index, _profiles(theme)),
+        "root": [
+            {"type": "variable", "name": "__gt", "vtype": "float", "value": GRAPH_PROGRESS_EXPR},
+            root_col,
         ],
     }

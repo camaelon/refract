@@ -37,6 +37,11 @@ class Theme:
     # Animated background shaders (SkSL source) by slide type, plus a "default"
     # applied to any type without its own. Empty = solid `background` colour.
     shaders: dict = field(default_factory=dict)
+    # Graph (graphviz) rendering colours.
+    graph_node_fill: str = "#FF1B2A3D"
+    graph_node_stroke: str = "#FF4FC3F7"
+    graph_node_text: str = "#FFE6EEF6"
+    graph_edge: str = "#FF89A7C2"
 
     def syntax_color(self, token_type: str) -> str:
         return self.syntax.get(token_type, self.code_foreground)
@@ -82,6 +87,12 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.code_font_size = float(code["font_size"])
     for token_type, color in (code.get("syntax", {}) or {}).items():
         t.syntax[token_type] = color
+
+    graph = settings.get("graph", {})
+    t.graph_node_fill = graph.get("node_fill", t.graph_node_fill)
+    t.graph_node_stroke = graph.get("node_stroke", t.graph_node_stroke)
+    t.graph_node_text = graph.get("node_text", t.graph_node_text)
+    t.graph_edge = graph.get("edge", t.graph_edge)
 
     shader = settings.get("shader", {})
     default_src = _shader_source(shader, deck_dir)
