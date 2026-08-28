@@ -31,6 +31,18 @@ fun greet(name: String) {
 
 ---
 
+# JSON
+```json
+{
+  "type": "text",
+  "value": "Hello",
+  "fontSize": 24,
+  "bold": true
+}
+```
+
+---
+
 # An image
 <logo.png>
 

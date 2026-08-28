@@ -11,5 +11,25 @@ body_color      = "#FFE6EEF6"   # body text / bullets
 code_background  = "#FF1E1E1E"   # fenced code block background
 code_foreground  = "#FFD4D4D4"   # fenced code text
 
+[code]
+background = "#FF1E1E1E"        # code panel background
+foreground = "#FFD4D4D4"        # default code text
+font_size  = 28
+
+# Syntax-highlight colours by token type (any subset; the rest use defaults).
+[code.syntax]
+keyword    = "#FFC586C0"        # fun, val, class, if, ...
+type       = "#FF4EC9B0"        # Capitalized type names
+string     = "#FFCE9178"
+number     = "#FFB5CEA8"
+comment    = "#FF6A9955"
+key        = "#FF9CDCFE"        # JSON property names
+literal    = "#FF569CD6"        # true / false / null
+
+# Animated background shader (SkSL). Applies to all slides; add [shader.title] etc.
+# for per-slide-type overrides. Comment this out for a plain solid background.
+[shader]
+file = "shader.sksl"
+
 [transition]
 enabled = false                 # set true to emit StateLayout crossfades (like --transitions)
