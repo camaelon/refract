@@ -1,5 +1,7 @@
 :: title
-# refract
+
+<logo.png>
+
 Markdown to RemoteCompose
 
 ---

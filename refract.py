@@ -43,6 +43,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tomllib
 
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")
 TITLE_RE = re.compile(r"^#\s+(.*)$")
@@ -54,6 +55,7 @@ INCLUDE_PROBE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".rc", ".json")
 
 PADDING = 80
 PANE_GAP = 48
+LOGO_H_FRAC = 0.32   # image height on a title/section slide, as a fraction of slide height
 SLIDE_BG = "#FF0D1B2A"
 TITLE_COLOR = "#FFFFFFFF"
 BODY_COLOR = "#FFE6EEF6"
@@ -391,23 +393,48 @@ def split_panes(blocks: list[dict]) -> list[list[dict]]:
     return panes
 
 
-def build_doc(slide: dict, blocks: list[dict], width: int, height: int, index: int, debug: bool) -> dict:
-    spec = SLIDE_TYPES[slide_type(slide)]
-    counter = [0]
-    content_w = width - 2 * PADDING
+# Index expression for slide transitions: 0 on the first rendered frame, flipping to
+# 1 at ~0.17s so the StateLayout crossfades from the previous slide to the new one.
+TRANSITION_EXPR = "min(floor(animTime * 6), 1)"
 
-    children = []
+
+def build_slide_root(slide: dict, blocks: list[dict], width: int, height: int,
+                     index: int, debug: bool, counter: list) -> dict:
+    """Build the root Column for one slide (no header wrapper)."""
+    spec = SLIDE_TYPES[slide_type(slide)]
+    content_w = width - 2 * PADDING
+    centered = slide_type(slide) in ("title", "section")
+
+    title_comp = None
     title_h = 0
     if slide.get("title"):
-        children.append(text_component(slide["title"], spec["title_size"], TITLE_COLOR, debug))
+        title_comp = text_component(slide["title"], spec["title_size"], TITLE_COLOR, debug)
         title_h = int(spec["title_size"] * 1.8)
     avail_h = height - 2 * PADDING - title_h
 
+    children = []
     panes = split_panes(blocks)
     if len(panes) <= 1:
-        for block in (panes[0] if panes else []):
-            children.extend(render_block(block, spec, debug, content_w, avail_h, counter))
+        pane_blocks = panes[0] if panes else []
+        if centered:
+            # Title/section slides: image (e.g. a logo) sits ABOVE the title, at a
+            # logo size, then the title, then the remaining content — all centered.
+            imgs = [b for b in pane_blocks if b["kind"] == "image"]
+            rest = [b for b in pane_blocks if b["kind"] != "image"]
+            for block in imgs:
+                children.extend(render_block(block, spec, debug, content_w, height * LOGO_H_FRAC, counter))
+            if title_comp:
+                children.append(title_comp)
+            for block in rest:
+                children.extend(render_block(block, spec, debug, content_w, avail_h, counter))
+        else:
+            if title_comp:
+                children.append(title_comp)
+            for block in pane_blocks:
+                children.extend(render_block(block, spec, debug, content_w, avail_h, counter))
     else:
+        if title_comp:
+            children.append(title_comp)
         n = len(panes)
         ratio = (slide.get("meta") or {}).get("ratio")
         if not ratio or len(ratio) != n:
@@ -434,18 +461,54 @@ def build_doc(slide: dict, blocks: list[dict], width: int, height: int, index: i
         })
 
     return {
-        "header": {
-            "width": width,
-            "height": height,
-            "contentDescription": slide.get("title") or f"Slide {index + 1}",
-        },
-        "root": {
-            "type": "column",
-            "horizontalAlignment": spec["h_align"],
-            "verticalAlignment": spec["v_align"],
-            "modifiers": dbg(["fillMaxSize", {"background": SLIDE_BG}, {"padding": float(PADDING)}], debug),
-            "children": children,
-        },
+        "type": "column",
+        "horizontalAlignment": spec["h_align"],
+        "verticalAlignment": spec["v_align"],
+        "modifiers": dbg(["fillMaxSize", {"background": SLIDE_BG}, {"padding": float(PADDING)}], debug),
+        "children": children,
+    }
+
+
+def blank_root(debug: bool) -> dict:
+    """An empty slide-coloured background (state 0 for the first slide's fade-in)."""
+    return {
+        "type": "column",
+        "modifiers": dbg(["fillMaxSize", {"background": SLIDE_BG}], debug),
+        "children": [],
+    }
+
+
+def _header(slide: dict, width: int, height: int, index: int) -> dict:
+    return {
+        "width": width,
+        "height": height,
+        "contentDescription": slide.get("title") or f"Slide {index + 1}",
+    }
+
+
+def build_doc(slide: dict, blocks: list[dict], width: int, height: int, index: int, debug: bool) -> dict:
+    counter = [0]
+    return {
+        "header": _header(slide, width, height, index),
+        "root": build_slide_root(slide, blocks, width, height, index, debug, counter),
+    }
+
+
+def build_transition_doc(prev: tuple | None, cur: tuple, width: int, height: int,
+                         index: int, debug: bool) -> dict:
+    """A StateLayout that crossfades from the previous slide (state 0) to the
+    current slide (state 1); the index auto-advances on load via animTime."""
+    counter = [0]
+    prev_root = (blank_root(debug) if prev is None
+                 else build_slide_root(prev[0], prev[1], width, height, index - 1, debug, counter))
+    cur_root = build_slide_root(cur[0], cur[1], width, height, index, debug, counter)
+    return {
+        "header": _header(cur[0], width, height, index),
+        "root": [
+            {"type": "variable", "name": "__t", "vtype": "float", "value": TRANSITION_EXPR},
+            {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
+             "children": [prev_root, cur_root]},
+        ],
     }
 
 
@@ -456,6 +519,30 @@ def slug(slide: dict, index: int) -> str:
     label = slide.get("title") or (slide.get("meta") or {}).get("type") or "slide"
     base = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
     return f"{index + 1:02d}_{base or 'slide'}"
+
+
+def load_settings(deck_dir: str) -> dict:
+    """Load an optional ``settings.toml`` from the deck root (stdlib tomllib)."""
+    path = os.path.join(deck_dir, "settings.toml")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"warning: could not read {path}: {e}", file=sys.stderr)
+        return {}
+
+
+def apply_settings(settings: dict) -> None:
+    """Apply theme colours from settings.toml to the module-level defaults."""
+    global SLIDE_BG, TITLE_COLOR, BODY_COLOR, CODE_BG, CODE_FG
+    theme = settings.get("theme", {})
+    SLIDE_BG = theme.get("background", SLIDE_BG)
+    TITLE_COLOR = theme.get("title_color", TITLE_COLOR)
+    BODY_COLOR = theme.get("body_color", BODY_COLOR)
+    CODE_BG = theme.get("code_background", CODE_BG)
+    CODE_FG = theme.get("code_foreground", CODE_FG)
 
 
 def find_json2rc(repo_root: str) -> str | None:
@@ -470,9 +557,11 @@ def find_json2rc(repo_root: str) -> str | None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="markdown deck -> RemoteCompose .rc slides")
     ap.add_argument("deck", nargs="?", default=".", help="deck directory containing slides.md")
-    ap.add_argument("--width", type=int, default=1600, help="slide width (default 1600)")
-    ap.add_argument("--height", type=int, default=900, help="slide height (default 900)")
+    ap.add_argument("--width", type=int, default=None, help="slide width (default 1600 or settings.toml)")
+    ap.add_argument("--height", type=int, default=None, help="slide height (default 900 or settings.toml)")
     ap.add_argument("--debug", action="store_true", help="outline each component with a 1px red border")
+    ap.add_argument("--transitions", action="store_true",
+                    help="emit each slide as a StateLayout that crossfades from the previous slide")
     ap.add_argument("--json-only", action="store_true", help="emit JSON only; do not run json2rc")
     ap.add_argument("--json2rc", default=None, help="path to the json2rc launcher (default: auto-detect)")
     args = ap.parse_args()
@@ -492,8 +581,25 @@ def main() -> int:
     os.makedirs(json_dir, exist_ok=True)
     repo_root = os.path.dirname(os.path.abspath(__file__))
 
+    # Fresh output: remove previously generated files so renamed or deleted slides
+    # don't leave stale .rc/.json behind (the player would keep showing them).
+    for d, exts in ((out_dir, (".rc",)), (json_dir, (".json",))):
+        for fname in os.listdir(d):
+            if fname.endswith(exts):
+                os.remove(os.path.join(d, fname))
+
+    # Settings precedence: CLI flag > settings.toml > built-in default.
+    settings = load_settings(deck_dir)
+    apply_settings(settings)
+    slide_cfg = settings.get("slide", {})
+    trans_cfg = settings.get("transition", {})
+    width = args.width if args.width is not None else slide_cfg.get("width", 1600)
+    height = args.height if args.height is not None else slide_cfg.get("height", 900)
+    transitions = args.transitions or bool(trans_cfg.get("enabled", False))
+
     pairs = []       # (json_path, rc_path) to convert
     copies = []      # (src_rc, dst_rc) whole-slide passthroughs
+    prev = None      # (slide, blocks) of the previous non-passthrough slide
     for i, slide in enumerate(slides):
         blocks = resolve_blocks(slide)
         name = slug(slide, i)
@@ -504,14 +610,22 @@ def main() -> int:
         if passthrough:
             copies.append((blocks[0]["path"], rc_path))
             print(f"copy {rc_path}  [rc passthrough]")
+            prev = None  # can't crossfade from a prebuilt .rc
             continue
 
-        doc = build_doc(slide, blocks, args.width, args.height, i, args.debug)
+        if transitions:
+            doc = build_transition_doc(prev, (slide, blocks),
+                                       width, height, i, args.debug)
+            tag = "transition"
+        else:
+            doc = build_doc(slide, blocks, width, height, i, args.debug)
+            tag = slide_type(slide)
         json_path = os.path.join(json_dir, name + ".json")
         with open(json_path, "w") as f:
             json.dump(doc, f, indent=2)
         pairs.append((json_path, rc_path))
-        print(f"wrote {json_path}  [{slide_type(slide)}]")
+        print(f"wrote {json_path}  [{tag}]")
+        prev = (slide, blocks)
 
     for src, dst in copies:
         shutil.copyfile(src, dst)

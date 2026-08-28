@@ -1,0 +1,15 @@
+# refract deck settings. Precedence: CLI flag > settings.toml > built-in default.
+
+[slide]
+width = 1600
+height = 900
+
+[theme]
+background      = "#FF141A2E"   # slide background
+title_color     = "#FFFFFFFF"   # slide titles
+body_color      = "#FFE6EEF6"   # body text / bullets
+code_background  = "#FF1E1E1E"   # fenced code block background
+code_foreground  = "#FFD4D4D4"   # fenced code text
+
+[transition]
+enabled = false                 # set true to emit StateLayout crossfades (like --transitions)
