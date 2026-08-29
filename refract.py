@@ -29,7 +29,8 @@ from dataclasses import replace
 
 from refractkit.deck import load_deck, resolve_blocks
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
-                               build_transition_doc, is_graph_slide, slide_type)
+                               build_same_doc, build_transition_doc, is_graph_slide,
+                               slide_type, PUSH_DURATION)
 from refractkit.settings import load_settings
 from refractkit.theme import build_theme
 
@@ -266,31 +267,50 @@ def run_once(args) -> int:
             prev = None
             continue
 
-        # Per-slide theme: speaker accent + inline key=value overrides.
+        # Per-slide theme: speaker accent + author attribution + inline overrides.
         meta = slide.get("meta") or {}
         changes = {}
         speaker = meta.get("params", "")
         if speaker in speakers:
             changes["accent"] = speakers[speaker]
+        # ``@author`` attribution: use that author's colour as this slide's accent
+        # and surface the name in the chrome.
+        author = meta.get("author")
+        if author:
+            changes["slide_author"] = author
+            if author in theme.authors:
+                changes["accent"] = theme.authors[author]
         changes.update(theme_overrides(meta.get("overrides", {}), theme))
         stheme = replace(theme, **changes) if changes else theme
 
         total = len(slides)
         # Transition style: per-slide `transition=` override > [transition] style > fade.
         style = meta.get("overrides", {}).get("transition", trans_cfg.get("style", "fade"))
-        if transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
+        # Push/slide duration (seconds): per-slide `transition_duration=` > [transition]
+        # duration > default. Larger = slower.
+        push_dur = float(meta.get("overrides", {}).get(
+            "transition_duration", trans_cfg.get("duration", PUSH_DURATION)))
+        is_same = meta.get("type", "").lower() == "same"
+        if is_same and prev is not None:
+            # `:: same` — shared-element transition from the previous slide (always on,
+            # independent of --transitions, since marking a slide `same` is the opt-in).
+            doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
+            tag = "same"
+        elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
             doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
             tag = "graph-morph"
-        elif transitions and style in ("push", "slide", "slide-left"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
+        elif transitions and prev is not None and style in ("push", "slide", "slide-left"):
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur)
             tag = "push"
-        elif transitions and style in ("slide-up", "push-up"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y")
+        elif transitions and prev is not None and style in ("slide-up", "push-up"):
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur)
             tag = "push-up"
-        elif transitions:
+        elif transitions and prev is not None:
             doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
             tag = "transition"
         else:
+            # No previous slide (e.g. the title): render statically — the first slide
+            # has nothing to transition in from; its "out" is animated by the next slide.
             doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total)
             tag = slide_type(slide)
         json_path = os.path.join(json_dir, name + ".json")

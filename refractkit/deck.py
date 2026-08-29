@@ -32,7 +32,17 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
             sub_dir = os.path.join(deck_dir, "includes", name)
             sub_md = os.path.join(sub_dir, "slides.md")
             if name and os.path.isfile(sub_md) and os.path.abspath(sub_dir) not in visited:
-                result.extend(load_deck(sub_dir, visited | {os.path.abspath(sub_dir)}))
+                sub_slides = load_deck(sub_dir, visited | {os.path.abspath(sub_dir)})
+                # An ``@author`` on the include attributes every slide it pulls in,
+                # unless that slide names its own author.
+                inc_author = meta.get("author")
+                if inc_author:
+                    for s in sub_slides:
+                        sm = s.get("meta") or {}
+                        if not sm.get("author"):
+                            sm["author"] = inc_author
+                            s["meta"] = sm
+                result.extend(sub_slides)
             else:
                 result.append({
                     "meta": {"type": "section", "params": ""},

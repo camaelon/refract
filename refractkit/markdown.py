@@ -46,13 +46,16 @@ def parse_meta(spec: str) -> dict:
         ratio = [int(x) for x in m.group(1).split(":")]
         spec = (spec[:m.start()] + spec[m.end():]).strip()
 
-    # Pull out key=value overrides from anywhere.
+    # Pull out key=value overrides and ``@author`` attributions from anywhere.
     overrides = {}
+    author = None
     kept = []
     for tok in spec.split():
         if "=" in tok:
             k, v = tok.split("=", 1)
             overrides[k.strip()] = v.strip()
+        elif tok.startswith("@") and len(tok) > 1:
+            author = tok[1:]
         else:
             kept.append(tok)
 
@@ -64,7 +67,7 @@ def parse_meta(spec: str) -> dict:
     flags = left_toks[1:]
     params = right.strip()
     return {"type": kind, "params": params, "ratio": ratio,
-            "overrides": overrides, "flags": flags}
+            "overrides": overrides, "flags": flags, "author": author}
 
 
 def parse_slide(chunk: str) -> dict | None:

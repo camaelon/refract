@@ -8,7 +8,7 @@ from .chart import render_chart
 from .components import dbg, text
 from .graph import render_graph, render_graph_morph
 from .highlight import render_code
-from .inline import has_markup, styled_line
+from .inline import has_author, has_markup, styled_line
 from .images import render_image
 from .theme import Theme
 
@@ -34,6 +34,15 @@ TRANSITION_EXPR = "min(floor(animTime * 6), 1)"
 GRAPH_P_EXPR = "min(1.0, max(0.0, (animTime - 0.12) / 0.5))"
 GRAPH_EASE_EXPR = "1.0 - (1.0 - $__gp) * (1.0 - $__gp) * (1.0 - $__gp)"
 GRAPH_PROGRESS_VAR = "$__gt"
+
+# `:: same` shared-element transition progress (eased 0→1), two small variables.
+SAME_VAR = "$__st"
+
+
+def _same_exprs(theme: Theme):
+    p = f"min(1.0, max(0.0, (animTime - {theme.same_delay}) / {theme.same_duration}))"
+    ease = "1.0 - (1.0 - $__sp) * (1.0 - $__sp) * (1.0 - $__sp)"
+    return p, ease
 
 
 def graph_block(blocks: list[dict]) -> dict | None:
@@ -128,45 +137,120 @@ def render_table(rows: list[list[str]], theme: Theme, debug: bool) -> list[dict]
     }]
 
 
-def _styled(line: str, size: float, color: str, theme: Theme, debug: bool) -> dict:
-    """A styled span-row if the line has inline markup, else a plain wrapping Text."""
-    if has_markup(line):
-        return styled_line(line, size, color, theme, debug)
-    return text(line, size, color, debug)
+def _styled(line: str, size: float, color: str, theme: Theme, debug: bool,
+            align: str = "start") -> dict:
+    """A wrapping styled Flow if the line has inline markup or an author name to tint,
+    else a plain wrapping Text. ``align`` centres the Flow on title/section slides."""
+    if has_markup(line) or has_author(line, theme.authors):
+        return styled_line(line, size, color, theme, debug, align)
+    comp = text(line, size, color, debug)
+    if align == "center":
+        comp["textAlign"] = "center"
+    return comp
+
+
+def _enter_mods(theme: Theme) -> list:
+    """Modifiers that animate an appearing (`:: same`) component in, driven by $__st."""
+    t = SAME_VAR
+    mods: list = [{"graphicsLayer": {"alpha": t}}]                 # fade in
+    style = theme.same_enter
+    if style == "slide-left":
+        mods.append({"offset": {"x": f"(-160.0) * (1.0 - {t})", "y": 0.0}})
+    elif style == "slide-right":
+        mods.append({"offset": {"x": f"(160.0) * (1.0 - {t})", "y": 0.0}})
+    elif style == "slide-up":
+        mods.append({"offset": {"x": 0.0, "y": f"(60.0) * (1.0 - {t})"}})
+    elif style == "slide-down":
+        mods.append({"offset": {"x": 0.0, "y": f"(-60.0) * (1.0 - {t})"}})
+    return mods
+
+
+def _apply_enter(comp: dict, theme: Theme) -> dict:
+    comp = dict(comp)
+    comp["modifiers"] = list(comp.get("modifiers", [])) + _enter_mods(theme)
+    return comp
+
+
+def _apply_exit(comp: dict, theme: Theme, line_h: float) -> dict:
+    """Wrap a disappearing (`:: same`) component so it fades out and collapses its
+    height to 0 — the parent column reflows its neighbours up as it shrinks."""
+    t = SAME_VAR
+    mods: list = [{"height": f"({round(line_h, 2)}) * (1.0 - {t})"},
+                  {"clip": 0.0}, {"graphicsLayer": {"alpha": f"1.0 - {t}"}}]
+    style = theme.same_exit
+    if style == "slide-left":
+        mods.append({"offset": {"x": f"(-160.0) * {t}", "y": 0.0}})
+    elif style == "slide-right":
+        mods.append({"offset": {"x": f"(160.0) * {t}", "y": 0.0}})
+    return {"type": "box", "modifiers": mods, "children": [comp]}
+
+
+def _bullet_display(cur_items: list, same_ctx: dict) -> list:
+    """Interleave disappearing bullets (state 'exit') into the current bullets (state
+    'enter'/'static') at their previous position, so removed bullets collapse in place."""
+    new = same_ctx["bullets_new"]
+    gone = same_ctx["bullets_gone_ordered"] if not same_ctx.get("_gone_done") else []
+    same_ctx["_gone_done"] = True
+    out, gi = [], 0
+    for i, it in enumerate(cur_items):
+        while gi < len(gone) and gone[gi][0] <= i:
+            out.append((gone[gi][1], "exit"))
+            gi += 1
+        out.append((it, "enter" if (it["level"], it["text"]) in new else "static"))
+    while gi < len(gone):
+        out.append((gone[gi][1], "exit"))
+        gi += 1
+    return out
 
 
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
-                 avail_w: float, avail_h: float, counter: list) -> list[dict]:
+                 avail_w: float, avail_h: float, counter: list,
+                 same_ctx: dict | None = None, align: str = "start") -> list[dict]:
     kind = block["kind"]
+
+    # `:: same`: graph that changed → morph in place; else fall through to static.
+    if kind == "graph" and same_ctx and same_ctx.get("graph_changed"):
+        return render_graph_morph(same_ctx["graph_prev"], block, theme, debug,
+                                  avail_w, avail_h, SAME_VAR)
+
     if kind == "text":
-        return [_styled(line, body_size, theme.body_color, theme, debug)
-                for line in block["text"].split("\n")]
+        out = [_styled(line, body_size, theme.body_color, theme, debug, align)
+               for line in block["text"].split("\n")]
+    elif kind == "subtitle":
+        out = [_styled(block["text"], theme.fonts["subtitle"], theme.accent, theme, debug, align)]
+    elif kind == "table":
+        out = render_table(block["rows"], theme, debug)
+    elif kind == "bullets":
+        # One line per bullet. For `:: same`, appearing bullets fade in and disappearing
+        # ones (from the previous slide) collapse out in their old position.
+        display = (_bullet_display(block["items"], same_ctx) if same_ctx
+                   else [(it, "static") for it in block["items"]])
+        out = []
+        for item, state in display:
+            comp = _styled("    " * item["level"] + "•  " + item["text"],
+                           body_size, theme.body_color, theme, debug)
+            if state == "enter":
+                comp = _apply_enter(comp, theme)
+            elif state == "exit":
+                comp = _apply_exit(comp, theme, body_size * 1.5)
+            out.append(comp)
+        return out
+    elif kind == "code":
+        out = render_code(block, theme, debug)
+    elif kind == "image":
+        out = render_image(block, theme, debug, avail_w, avail_h, counter)
+    elif kind == "graph":
+        out = render_graph(block, theme, debug, avail_w, avail_h, counter)
+    elif kind == "chart":
+        out = render_chart(block, theme, debug, avail_w, avail_h, counter)
+    else:
+        out = None
 
-    if kind == "subtitle":
-        return [_styled(block["text"], theme.fonts["subtitle"], theme.accent, theme, debug)]
-
-    if kind == "table":
-        return render_table(block["rows"], theme, debug)
-
-    if kind == "bullets":
-        # One line per bullet so each is its own line; indent sub-levels with spaces.
-        return [
-            _styled("    " * item["level"] + "•  " + item["text"],
-                    body_size, theme.body_color, theme, debug)
-            for item in block["items"]
-        ]
-
-    if kind == "code":
-        return render_code(block, theme, debug)
-
-    if kind == "image":
-        return render_image(block, theme, debug, avail_w, avail_h, counter)
-
-    if kind == "graph":
-        return render_graph(block, theme, debug, avail_w, avail_h, counter)
-
-    if kind == "chart":
-        return render_chart(block, theme, debug, avail_w, avail_h, counter)
+    if out is not None:
+        # A whole non-bullet block that only appears on the current slide animates in.
+        if same_ctx and same_ctx["key"](block) in same_ctx["blocks_new"]:
+            out = [_apply_enter(c, theme) for c in out]
+        return out
 
     if kind == "json_include":
         return _splice_json(block["path"])
@@ -185,7 +269,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
 
 
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-                     index: int, debug: bool, counter: list) -> dict:
+                     index: int, debug: bool, counter: list, same_ctx: dict | None = None) -> dict:
     """Build the root Column for one slide (no header wrapper)."""
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
@@ -213,14 +297,14 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             imgs = [b for b in pane_blocks if b["kind"] == "image"]
             rest = [b for b in pane_blocks if b["kind"] != "image"]
             for block in imgs:
-                children.extend(render_block(block, body_size, theme, debug, content_w, height * LOGO_H_FRAC, counter))
+                children.extend(render_block(block, body_size, theme, debug, content_w, height * LOGO_H_FRAC, counter, same_ctx))
             children.extend(title_group)
             for block in rest:
-                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter))
+                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx, align="center"))
         else:
             children.extend(title_group)
             for block in pane_blocks:
-                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter))
+                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx))
     else:
         children.extend(title_group)
         n = len(panes)
@@ -236,7 +320,7 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             inner_h = avail_h - PANE_GAP
             pane_children = []
             for block in pane_blocks:
-                pane_children.extend(render_block(block, body_size, theme, debug, inner_w, inner_h, counter))
+                pane_children.extend(render_block(block, body_size, theme, debug, inner_w, inner_h, counter, same_ctx))
             pane_nodes.append({
                 "type": "column",
                 "modifiers": dbg([{"width": round(pane_w, 2)}, {"padding": float(PANE_GAP / 2)}], debug),
@@ -293,17 +377,24 @@ def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
 def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: int, debug: bool):
     """A bottom overlay: footer (left), page number (right), progress bar (very bottom).
     Returns None if no chrome is enabled."""
-    if not (theme.chrome_page or theme.chrome_footer or theme.chrome_progress):
+    author = getattr(theme, "slide_author", "")
+    if not (theme.chrome_page or theme.chrome_footer or theme.chrome_progress or author):
         return None
     col = theme.chrome_color
     rows = []
 
-    if theme.chrome_footer or theme.chrome_page:
+    if theme.chrome_footer or theme.chrome_page or author:
         line = []
         if theme.chrome_footer:
             line.append({"type": "text", "value": theme.chrome_footer, "fontSize": 24.0,
                          "color": col})
         line.append({"type": "spacer", "modifiers": [{"weight": 1.0}]})
+        # The attributed author (@name), tinted in their own accent colour.
+        if author:
+            line.append({"type": "text", "value": author, "fontSize": 24.0,
+                         "color": theme.accent})
+            if theme.chrome_page and total:
+                line.append({"type": "text", "value": "   ", "fontSize": 24.0, "color": col})
         if theme.chrome_page and total:
             line.append({"type": "text", "value": f"{index + 1} / {total}", "fontSize": 24.0,
                          "color": col})
@@ -326,8 +417,11 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
 
 
 def with_chrome(content: dict, theme: Theme, index: int, total: int,
-                width: int, height: int, debug: bool) -> dict:
-    """Layer the chrome overlay on top of a slide's content node."""
+                width: int, height: int, debug: bool, stype: str = "content") -> dict:
+    """Layer the chrome overlay on top of a slide's content node. The title slide is
+    a clean cover — it never carries footer / page number / progress chrome."""
+    if stype == "title":
+        return content
     overlay = _chrome_overlay(theme, index, total, width, height, debug)
     if overlay is None:
         return content
@@ -346,6 +440,10 @@ def header(slide: dict, width: int, height: int, index: int, profiles: int | Non
     return h
 
 
+PROFILE_EXPERIMENTAL = 0x1
+PROFILE_ANDROIDX = 0x200          # 512
+
+
 def _contains_shader(node) -> bool:
     if isinstance(node, dict):
         if "shader" in node or "runtimeShader" in node:
@@ -356,10 +454,28 @@ def _contains_shader(node) -> bool:
     return False
 
 
+def _contains_type(node, type_name: str) -> bool:
+    if isinstance(node, dict):
+        if node.get("type") == type_name:
+            return True
+        return any(_contains_type(v, type_name) for v in node.values())
+    if isinstance(node, list):
+        return any(_contains_type(v, type_name) for v in node)
+    return False
+
+
 def _finalize(doc: dict) -> dict:
-    """Set profiles=512 (ANDROIDX, enables shader ops) if the doc uses a shader."""
-    if _contains_shader(doc.get("root")):
-        doc["header"]["profiles"] = 512
+    """Set the header ``profiles`` bitmask to enable the extended ops the doc uses:
+    ANDROIDX (512) for shader ops, and ANDROIDX+EXPERIMENTAL (513) for the Flow layout
+    (op 240) emitted by wrapping inline-styled text."""
+    root = doc.get("root")
+    profiles = 0
+    if _contains_shader(root):
+        profiles |= PROFILE_ANDROIDX
+    if _contains_type(root, "flow"):
+        profiles |= PROFILE_ANDROIDX | PROFILE_EXPERIMENTAL
+    if profiles:
+        doc["header"]["profiles"] = profiles
     return doc
 
 
@@ -369,7 +485,7 @@ def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height:
     root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter)
     return _finalize({
         "header": header(slide, width, height, index),
-        "root": with_chrome(root, theme, index, total, width, height, debug),
+        "root": with_chrome(root, theme, index, total, width, height, debug, slide_type(slide)),
     })
 
 
@@ -387,21 +503,25 @@ def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: in
         "header": header(cur[0], width, height, index),
         "root": [
             {"type": "variable", "name": "__t", "vtype": "float", "value": TRANSITION_EXPR},
-            with_chrome(state, theme, index, total, width, height, debug),
+            with_chrome(state, theme, index, total, width, height, debug, slide_type(cur[0])),
         ],
     })
 
 
-# Push/slide transition progress (eased 0→1 over ~0.45s), as two small variables.
-PUSH_P_EXPR = "min(1.0, max(0.0, (animTime - 0.05) / 0.45))"
+# Push/slide transition: progress eased 0→1 over `duration` seconds after a short delay.
+PUSH_DELAY = 0.05
+PUSH_DURATION = 0.45
 PUSH_EASE_EXPR = "1.0 - (1.0 - $__pp) * (1.0 - $__pp) * (1.0 - $__pp)"
 
 
 def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
-                   index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1) -> dict:
+                   index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1,
+                   duration: float = PUSH_DURATION) -> dict:
     """A push/slide transition: the previous slide slides out while the new one slides
     in from the opposite side, driven by an eased progress variable. No StateLayout —
-    both roots are offset by expressions, so it animates in the current player."""
+    both roots are offset by expressions, so it animates in the current player.
+    ``duration`` is the slide time in seconds (larger = slower)."""
+    push_p_expr = f"min(1.0, max(0.0, (animTime - {PUSH_DELAY}) / {round(duration, 3)}))"
     counter = [0]
     d = sign * (width if axis == "x" else height)
     t = "$__pt"
@@ -423,9 +543,9 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
     return _finalize({
         "header": header(cur[0], width, height, index),
         "root": [
-            {"type": "variable", "name": "__pp", "vtype": "float", "value": PUSH_P_EXPR},
+            {"type": "variable", "name": "__pp", "vtype": "float", "value": push_p_expr},
             {"type": "variable", "name": "__pt", "vtype": "float", "value": PUSH_EASE_EXPR},
-            with_chrome(stage, theme, index, total, width, height, debug),
+            with_chrome(stage, theme, index, total, width, height, debug, slide_type(cur[0])),
         ],
     })
 
@@ -457,6 +577,32 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
         "root": [
             {"type": "variable", "name": "__gp", "vtype": "float", "value": GRAPH_P_EXPR},
             {"type": "variable", "name": "__gt", "vtype": "float", "value": GRAPH_EASE_EXPR},
-            with_chrome(root_col, theme, index, total, width, height, debug),
+            with_chrome(root_col, theme, index, total, width, height, debug, stype),
+        ],
+    })
+
+
+def build_same_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: int,
+                   index: int, debug: bool, total: int = 0) -> dict:
+    """A `:: same` shared-element transition (lerp backend).
+
+    The current slide is rendered normally so matched, unchanged content stays put
+    (and text keeps proper wrapping); a matched graph morphs in place; content that
+    appears fades/slides in. Matching lives in ``samematch`` and the animation is
+    driven by the eased progress variable ``$__st`` — this whole function is the single
+    swap point for a future StateLayout+animationId backend.
+    """
+    from .samematch import diff_slides
+    slide, blocks = cur
+    same_ctx = diff_slides(prev[1], blocks)
+    counter = [0]
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter, same_ctx)
+    p_expr, ease_expr = _same_exprs(theme)
+    return _finalize({
+        "header": header(slide, width, height, index),
+        "root": [
+            {"type": "variable", "name": "__sp", "vtype": "float", "value": p_expr},
+            {"type": "variable", "name": "__st", "vtype": "float", "value": ease_expr},
+            with_chrome(root, theme, index, total, width, height, debug, slide_type(slide)),
         ],
     })

@@ -62,15 +62,22 @@ digraph G { rankdir=LR; A -> B -> C }
 ```
 
 - `---` on its own line separates slides (one `.rc` each).
-- `:: <type> [flags] [: <speaker>] [ratio] [key=value…]` right after the separator sets
-  slide metadata:
+- `:: <type> [flags] [@author] [: <speaker>] [ratio] [key=value…]` right after the
+  separator sets slide metadata:
+  - `@author` attributes the slide to an author from `[authors]` — the slide takes
+    that author's colour as its accent and shows their name in the chrome. On an
+    `include` it attributes every slide it pulls in (a slide's own `@author` wins).
   - `<speaker>` (after `:`) selects an accent colour from `[speakers]`.
   - `[ratio]` sets pane widths (see Panes); `key=value` are per-slide overrides
     (`bg`, `accent`, `shader=none`, `transition=push`…); bare-word `flags` include
     `fragment` (see Fragments).
 - The first `# heading` is the title.
 - An `*italic*` line right under the title is a **subtitle** (accent colour).
-- Inline **`**bold**`**, *`*italic*`* and `` `code` `` work inside any text/bullet.
+- Inline **`**bold**`**, *`*italic*`* and `` `code` `` work inside any text/bullet; a
+  styled line wraps to the available width (word by word) and keeps a shared text
+  **baseline** across mixed styles.
+- Author names from `[authors]` are tinted with their colour wherever they appear in
+  body text (e.g. the title-slide byline).
 - A `???` line starts **speaker notes** — the rest of the slide goes to `out/notes.md`.
 - Everything else is content **blocks**, in order.
 
@@ -116,10 +123,19 @@ previous one on load. Styles (`[transition] style` or per-slide `transition=`):
 
 - **fade** (default) — a `StateLayout` crossfade.
 - **push** / **slide** — the previous slide slides out while the new one slides in
-  (horizontal; `push-up` for vertical).
+  (horizontal). Use **`slide-up`** (`push-up`) for a vertical move — the previous
+  slide travels up and off while the new one rises from the bottom.
 - **magic move** (automatic between two consecutive graph slides) — nodes matched by
   their dot identifier glide/resize to their new positions (snappy ease-out), edges
   morph along (resampled so their splines interpolate), and unmatched elements fade.
+
+The first slide has **no in-transition** (nothing to come from) — it renders
+statically and its *out* is animated by the next slide. So `:: section transition=slide-up`
+on the slide after the title makes the title glide up as that slide rises in.
+
+Push/slide **speed** is the slide time in seconds — set `[transition] duration` globally
+or `transition_duration=` per slide (larger = slower), e.g.
+`:: section transition=slide-up transition_duration=0.9`.
 
 ```sh
 python3 refract.py examples/deck --transitions
@@ -155,11 +171,20 @@ accent          = "#FF4FC3F7"   # subtitles, table headers, emphasis
 table_bg        = "#1AFFFFFF"
 table_header_bg = "#22FFFFFF"
 
-[chrome]                        # optional slide chrome
+[chrome]                        # optional slide chrome (never shown on the title slide)
 page     = true                 # "n / total" page number
 footer   = "RemoteCompose · 2026"
 progress = true                 # bottom progress bar
 color    = "#66FFFFFF"
+
+# Per-author colours. A slide/include marked "@Nico" takes that colour as its accent
+# and shows the name in the chrome; names are also tinted wherever they appear in text.
+# Full and short forms can both be listed (matched whole-word, longest first).
+[authors]
+"Nicolas Roard" = "#FF5CC8FF"
+"Nico"          = "#FF5CC8FF"
+"John Hoford"   = "#FFF6A96B"
+"John"          = "#FFF6A96B"
 
 # Per-speaker accent (":: content : Nico" → this colour for that slide).
 [speakers]

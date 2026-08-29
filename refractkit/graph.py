@@ -122,6 +122,7 @@ def graph_geometry(block: dict, avail_w: float, avail_h: float) -> dict | None:
         if not str(obj.get("name", "")).startswith("cluster"):
             continue
         poly, fill, stroke = None, None, None
+        dash, wid = None, None
         for cmd in obj.get("_draw_", []):
             if cmd.get("op") in ("P", "p") and cmd.get("points"):
                 poly = [tx(p[0], p[1]) for p in cmd["points"]]
@@ -129,6 +130,8 @@ def graph_geometry(block: dict, avail_w: float, avail_h: float) -> dict | None:
                 fill = _norm_color(cmd.get("color"))
             elif cmd.get("op") == "c":
                 stroke = _norm_color(cmd.get("color"))
+            elif cmd.get("op") == "S":
+                dash, wid = _parse_style(cmd.get("style", ""), scale, dash, wid)
         label, lpos = None, None
         for cmd in obj.get("_ldraw_", []):
             if cmd.get("op") == "T":
@@ -139,7 +142,8 @@ def graph_geometry(block: dict, avail_w: float, avail_h: float) -> dict | None:
             xs = [p[0] for p in poly]
             ys = [p[1] for p in poly]
             clusters.append({"l": min(xs), "t": min(ys), "r": max(xs), "b": max(ys),
-                             "fill": fill, "stroke": stroke, "label": label, "lpos": lpos})
+                             "fill": fill, "stroke": stroke, "label": label, "lpos": lpos,
+                             "dash": dash, "width": wid})
 
     return {"nodes": nodes, "edges": edges, "clusters": clusters}
 
@@ -332,8 +336,12 @@ def _cluster_cmds(c: dict, theme, pid: list) -> list[dict]:
     if c.get("fill"):
         cmds.append(_paint([{"color": c["fill"]}, {"style": "fill"}]))
         cmds.append(_rr(l, t, r, b, 12.0))
+    # A dashed/dotted cluster (graphviz `style=dashed`) carries dash intervals; set the
+    # effect explicitly (null for solid) so it neither leaks onto nor is leaked from siblings.
     cmds.append(_paint([{"color": c.get("stroke") or theme.graph_edge}, {"style": "stroke"},
-                        {"strokeWidth": 2.0}, {"patheffect": None}]))
+                        {"strokeWidth": c.get("width") or 2.0},
+                        {"patheffect": {"intervals": c["dash"], "phase": 0.0}
+                                       if c.get("dash") else None}]))
     cmds.append(_rr(l, t, r, b, 12.0))
     if c.get("label") and c.get("lpos"):
         lx, ly = round(c["lpos"][0], 2), round(c["lpos"][1], 2)
@@ -405,7 +413,9 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
     # Clusters (behind everything) crossfade between the two layouts.
     for c in ga.get("clusters", []):
         cmds += [_paint([{"color": (c.get("stroke") or theme.graph_edge)}, {"style": "stroke"},
-                         {"strokeWidth": 2.0}, {"alpha": f"1.0 - {t}"}]),
+                         {"strokeWidth": c.get("width") or 2.0}, {"alpha": f"1.0 - {t}"},
+                         {"patheffect": {"intervals": c["dash"], "phase": 0.0}
+                                        if c.get("dash") else None}]),
                  _rr(round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2), 12.0)]
     for c in gb.get("clusters", []):
         cmds += _cluster_cmds(c, theme, pid)

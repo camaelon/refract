@@ -46,6 +46,17 @@ class ThemeSettings(unittest.TestCase):
         self.assertEqual(t.graph_node_fill, "#FF010203")
         self.assertEqual(t.graph_edge, "#FF040506")
 
+    def test_authors(self):
+        t = build_theme({"authors": {"Nico": "#FF5CC8FF", "John": "#FFF6A96B"}})
+        self.assertEqual(t.authors["Nico"], "#FF5CC8FF")
+        self.assertEqual(t.authors["John"], "#FFF6A96B")
+
+    def test_chrome_settings(self):
+        t = build_theme({"chrome": {"footer": "Conf", "page": True, "progress": True}})
+        self.assertEqual(t.chrome_footer, "Conf")
+        self.assertTrue(t.chrome_page)
+        self.assertTrue(t.chrome_progress)
+
 
 class ThemeShaders(unittest.TestCase):
     def test_inline_source(self):

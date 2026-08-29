@@ -105,6 +105,14 @@ class SlideRoot(unittest.TestCase):
         self.assertEqual(root["children"][0]["type"], "canvas")
         self.assertTrue(any(c.get("value") == "Hi" for c in root["children"]))
 
+    def test_centered_slide_text_is_centered(self):
+        # On title/section slides the text below the title is centre-aligned.
+        root = render.build_slide_root({"title": "T", "meta": {"type": "title"}},
+                                       [{"kind": "text", "text": "byline"}],
+                                       THEME, 1600, 900, 0, False, [0])
+        txt = next(c for c in root["children"] if c.get("value") == "byline")
+        self.assertEqual(txt["textAlign"], "center")
+
     def test_panes_widths_from_ratio(self):
         slide = {"title": None, "meta": {"type": "content", "ratio": [1, 3]}}
         blocks = [{"kind": "text", "text": "l"}, {"kind": "pane_break"},
@@ -140,6 +148,13 @@ class Docs(unittest.TestCase):
         doc = render.build_doc({"title": "T"}, [], theme, 1600, 900, 0, False)
         self.assertEqual(doc["header"]["profiles"], 512)
 
+    def test_profiles_set_with_flow(self):
+        # Inline-styled text emits a wrapping Flow (op 240), which needs the
+        # ANDROIDX|EXPERIMENTAL profile (513) to convert.
+        doc = render.build_doc({"title": "T"}, [{"kind": "text", "text": "a **b**"}],
+                               THEME, 1600, 900, 0, False)
+        self.assertEqual(doc["header"]["profiles"], 513)
+
     def test_transition_doc_statelayout(self):
         prev = ({"title": "A"}, [])
         cur = ({"title": "B"}, [])
@@ -147,6 +162,14 @@ class Docs(unittest.TestCase):
         self.assertIsInstance(doc["root"], list)
         sl = [n for n in doc["root"] if isinstance(n, dict) and n.get("type") == "stateLayout"][0]
         self.assertEqual(len(sl["children"]), 2)
+
+    def test_push_duration_configurable(self):
+        prev, cur = ({"title": "A"}, []), ({"title": "B"}, [])
+        doc = render.build_push_doc(prev, cur, THEME, 1600, 900, 1, False,
+                                    axis="y", duration=0.9)
+        pp = next(n for n in doc["root"]
+                  if isinstance(n, dict) and n.get("name") == "__pp")
+        self.assertIn("/ 0.9", pp["value"])
 
     def test_graph_transition_two_vars(self):
         prev = ({"title": "G"}, [{"kind": "graph", "engine": "dot", "dot": "digraph{A->B}"}])

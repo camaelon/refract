@@ -100,6 +100,19 @@ class LoadDeck(unittest.TestCase):
         self.assertEqual(len(slides), 1)
         self.assertIn("ghost", slides[0]["blocks"][0]["text"])
 
+    def test_include_author_propagates(self):
+        # ``:: include : sub @Nico`` attributes every included slide to Nico,
+        # unless a slide names its own author.
+        d = self._deck(":: include : sub @Nico")
+        sub = os.path.join(d, "includes", "sub")
+        os.makedirs(sub)
+        with open(os.path.join(sub, "slides.md"), "w") as f:
+            f.write("# Sub1\n---\n:: @John\n# Sub2")
+        slides = deck.load_deck(d, {os.path.abspath(d)})
+        by_title = {s.get("title"): (s.get("meta") or {}).get("author") for s in slides}
+        self.assertEqual(by_title["Sub1"], "Nico")     # inherited from the include
+        self.assertEqual(by_title["Sub2"], "John")     # own attribution wins
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,6 +83,17 @@ class Theme:
     chrome_footer: str = ""
     chrome_progress: bool = False
     chrome_color: str = "#66FFFFFF"
+    # `:: same` shared-element transition (enter/exit for appearing/disappearing content).
+    same_enter: str = "fade"        # fade | slide-left | slide-right | slide-up | slide-down
+    same_exit: str = "fade"
+    same_duration: float = 0.5
+    same_delay: float = 0.05
+    # Per-author colours: {name -> #AARRGGBB}. Author names appearing in body text
+    # (e.g. the title slide byline) are tinted with their colour.
+    authors: dict = field(default_factory=dict)
+    # The author (``@name``) this slide is attributed to — shown in the chrome and
+    # used as the slide's accent. Empty for unattributed slides.
+    slide_author: str = ""
     fonts: dict = field(default_factory=lambda: dict(DEFAULT_FONTS))
     syntax: dict = field(default_factory=lambda: dict(DEFAULT_SYNTAX))
 
@@ -94,6 +105,9 @@ class Theme:
     # Animated background shaders (SkSL source) by slide type, plus a "default"
     # applied to any type without its own. Empty = solid `background` colour.
     shaders: dict = field(default_factory=dict)
+    # Overlay shader drawn on top of the slide *only during a transition*, driven by an
+    # ``iProgress`` uniform (0→1 across the transition). Empty = none.
+    transition_shader: str = ""
     # Image corner radius in px (0 = square). Rounds embedded images.
     image_corner_radius: float = 0.0
     # Graph (graphviz) rendering colours.
@@ -177,6 +191,15 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.chrome_progress = bool(chrome.get("progress", t.chrome_progress))
     t.chrome_color = chrome.get("color", t.chrome_color)
 
+    for name, color in (settings.get("authors", {}) or {}).items():
+        t.authors[name] = color
+
+    same = settings.get("same", {})
+    t.same_enter = same.get("enter", t.same_enter)
+    t.same_exit = same.get("exit", t.same_exit)
+    t.same_duration = float(same.get("duration", t.same_duration))
+    t.same_delay = float(same.get("delay", t.same_delay))
+
     image = settings.get("image", {})
     if "corner_radius" in image:
         t.image_corner_radius = float(image["corner_radius"])
@@ -197,4 +220,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         src = _shader_source(shader.get(stype, {}), deck_dir)
         if src:
             t.shaders[stype] = src
+    trans_src = _shader_source(shader.get("transition", {}), deck_dir)
+    if trans_src:
+        t.transition_shader = trans_src
     return t

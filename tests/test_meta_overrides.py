@@ -25,6 +25,15 @@ class MetaOverrides(unittest.TestCase):
         self.assertEqual(m["params"], "Nico")
         self.assertEqual(m["ratio"], [2, 3])
 
+    def test_author_attribution(self):
+        # ``@name`` is pulled out as the slide's author, anywhere on the line.
+        self.assertEqual(parse_meta("content @John")["author"], "John")
+        self.assertEqual(parse_meta("@Nico")["author"], "Nico")
+        m = parse_meta("include : intro @Nico")
+        self.assertEqual(m["author"], "Nico")
+        self.assertEqual(m["params"], "intro")            # @name not swallowed into params
+        self.assertIsNone(parse_meta("content")["author"])
+
 
 class ThemeOverrides(unittest.TestCase):
     def test_bg_and_shader_none(self):

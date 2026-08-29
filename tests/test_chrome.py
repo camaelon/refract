@@ -67,6 +67,24 @@ class Chrome(unittest.TestCase):
         overlay = _find(doc["root"], lambda n: n.get("verticalAlignment") == "bottom")
         self.assertIsNotNone(overlay)
 
+    def test_title_slide_has_no_chrome(self):
+        # The title slide is a clean cover: no footer / page / progress overlay.
+        theme = build_theme({"chrome": {"footer": "Conf", "page": True, "progress": True}})
+        doc = render.build_doc({"title": "T", "meta": {"type": "title"}}, [],
+                               theme, 1600, 900, 0, False, total=3)
+        self.assertNotIn("Conf", _texts(doc["root"]))
+        self.assertNotIn("1 / 3", _texts(doc["root"]))
+
+    def test_author_tag_shown_in_accent(self):
+        # A slide attributed to an author shows the author name in the accent colour,
+        # even without other chrome enabled.
+        from dataclasses import replace
+        theme = replace(build_theme({}), slide_author="Nico", accent="#FF5CC8FF")
+        doc = render.build_doc({"title": "T"}, [], theme, 1600, 900, 0, False, total=3)
+        self.assertIn("Nico", _texts(doc["root"]))
+        tag = _find(doc["root"], lambda n: n.get("value") == "Nico")
+        self.assertEqual(tag["color"], "#FF5CC8FF")
+
 
 if __name__ == "__main__":
     unittest.main()
