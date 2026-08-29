@@ -70,5 +70,27 @@ class ThemeShaders(unittest.TestCase):
         self.assertEqual(t.shaders, {})
 
 
+class ThemeFonts(unittest.TestCase):
+    def test_defaults(self):
+        t = build_theme({})
+        self.assertEqual(t.title_size("content"), 72.0)
+        self.assertEqual(t.body_size("content"), 40.0)
+        self.assertEqual(t.title_size("title"), 120.0)
+
+    def test_alias_overrides(self):
+        t = build_theme({"font": {"body": 48, "heading": 80, "table": 42, "title": 130}})
+        self.assertEqual(t.body_size("content"), 48.0)
+        self.assertEqual(t.title_size("content"), 80.0)   # heading alias
+        self.assertEqual(t.title_size("title"), 130.0)    # title alias
+        self.assertEqual(t.fonts["table"], 42.0)
+
+    def test_direct_key_override(self):
+        t = build_theme({"font": {"section_body": 55}})
+        self.assertEqual(t.body_size("section"), 55.0)
+
+    def test_font_code_alias(self):
+        self.assertEqual(build_theme({"font": {"code": 30}}).code_font_size, 30.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+from .chart import render_chart
 from .components import dbg, text
 from .graph import render_graph, render_graph_morph
 from .highlight import render_code
+from .inline import has_markup, styled_line
 from .images import render_image
 from .theme import Theme
 
@@ -14,11 +16,11 @@ PADDING = 80
 PANE_GAP = 48
 LOGO_H_FRAC = 0.32   # image height on a title/section slide, as a fraction of slide height
 
-# Slide types, selected via the ``:: <type>`` metadata line.
+# Slide types (alignment only; font sizes come from the Theme, see theme.py [font]).
 SLIDE_TYPES = {
-    "title":   {"h_align": "center", "v_align": "center", "title_size": 120.0, "body_size": 44.0},
-    "section": {"h_align": "center", "v_align": "center", "title_size": 96.0,  "body_size": 36.0},
-    "content": {"h_align": "start",  "v_align": "top",    "title_size": 72.0,  "body_size": 36.0},
+    "title":   {"h_align": "center", "v_align": "center"},
+    "section": {"h_align": "center", "v_align": "center"},
+    "content": {"h_align": "start",  "v_align": "top"},
 }
 DEFAULT_TYPE = "content"
 
@@ -40,6 +42,13 @@ def graph_block(blocks: list[dict]) -> dict | None:
         if block["kind"] == "graph":
             return block
     return None
+
+
+def is_graph_slide(blocks: list[dict]) -> bool:
+    """True only if a graph is the slide's *sole* content (so it can magic-move).
+    A slide mixing a graph with bullets/panes/etc. is not a graph slide."""
+    content = [b for b in blocks if b["kind"] != "pane_break"]
+    return len(content) == 1 and content[0]["kind"] == "graph"
 
 
 def slide_type(slide: dict) -> str:
@@ -65,6 +74,11 @@ def shader_canvas(source: str, width: int, height: int) -> dict:
     }
 
 
+def vspacer(px: float) -> dict:
+    """An empty fixed-height box, used as vertical spacing in a column."""
+    return {"type": "box", "modifiers": [{"height": float(px)}], "children": []}
+
+
 def split_panes(blocks: list[dict]) -> list[list[dict]]:
     """Split a block list on ``pane_break`` markers into one list per pane."""
     panes: list[list[dict]] = [[]]
@@ -87,17 +101,58 @@ def _splice_json(path: str) -> list[dict]:
     return []
 
 
-def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
+def render_table(rows: list[list[str]], theme: Theme, debug: bool) -> list[dict]:
+    """A markdown table as a Column of Rows; first row is a header (accent, bold-ish)."""
+    if not rows:
+        return []
+    ncols = max(len(r) for r in rows)
+    out_rows = []
+    for ri, cells in enumerate(rows):
+        cells = cells + [""] * (ncols - len(cells))
+        is_header = ri == 0
+        color = theme.accent if is_header else theme.body_color
+        cell_nodes = []
+        for c in cells:
+            cell_nodes.append({
+                "type": "text", "value": c, "fontSize": theme.fonts["table"], "color": color,
+                "modifiers": dbg([{"weight": 1.0}, {"padding": [10.0, 8.0]}], debug),
+            })
+        row_mods = ["fillMaxWidth"]
+        if is_header:
+            row_mods.append({"background": theme.table_header_bg})
+        out_rows.append({"type": "row", "modifiers": dbg(row_mods, debug), "children": cell_nodes})
+    return [{
+        "type": "column",
+        "modifiers": dbg(["fillMaxWidth", {"background": theme.table_bg}, {"padding": 16.0}], debug),
+        "children": out_rows,
+    }]
+
+
+def _styled(line: str, size: float, color: str, theme: Theme, debug: bool) -> dict:
+    """A styled span-row if the line has inline markup, else a plain wrapping Text."""
+    if has_markup(line):
+        return styled_line(line, size, color, theme, debug)
+    return text(line, size, color, debug)
+
+
+def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list) -> list[dict]:
     kind = block["kind"]
     if kind == "text":
-        return [text(block["text"], spec["body_size"], theme.body_color, debug)]
+        return [_styled(line, body_size, theme.body_color, theme, debug)
+                for line in block["text"].split("\n")]
+
+    if kind == "subtitle":
+        return [_styled(block["text"], theme.fonts["subtitle"], theme.accent, theme, debug)]
+
+    if kind == "table":
+        return render_table(block["rows"], theme, debug)
 
     if kind == "bullets":
-        # One Text per bullet so each is its own line; indent sub-levels with spaces.
+        # One line per bullet so each is its own line; indent sub-levels with spaces.
         return [
-            text("    " * item["level"] + "•  " + item["text"],
-                 spec["body_size"], theme.body_color, debug)
+            _styled("    " * item["level"] + "•  " + item["text"],
+                    body_size, theme.body_color, theme, debug)
             for item in block["items"]
         ]
 
@@ -110,6 +165,9 @@ def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
     if kind == "graph":
         return render_graph(block, theme, debug, avail_w, avail_h, counter)
 
+    if kind == "chart":
+        return render_chart(block, theme, debug, avail_w, avail_h, counter)
+
     if kind == "json_include":
         return _splice_json(block["path"])
 
@@ -118,10 +176,10 @@ def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
         if block.get("json"):
             return _splice_json(block["json"])
         return [text(f"[rc include: {block['name']} — no .json sibling to embed live]",
-                     spec["body_size"], theme.body_color, debug)]
+                     body_size, theme.body_color, debug)]
 
     if kind == "missing":
-        return [text(f"<{block['name']} missing>", spec["body_size"], theme.body_color, debug)]
+        return [text(f"<{block['name']} missing>", body_size, theme.body_color, debug)]
 
     return []
 
@@ -129,15 +187,20 @@ def render_block(block: dict, spec: dict, theme: Theme, debug: bool,
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
                      index: int, debug: bool, counter: list) -> dict:
     """Build the root Column for one slide (no header wrapper)."""
-    spec = SLIDE_TYPES[slide_type(slide)]
+    stype = slide_type(slide)
+    spec = SLIDE_TYPES[stype]
+    title_size = theme.title_size(stype)
+    body_size = theme.body_size(stype)
     content_w = width - 2 * PADDING
-    centered = slide_type(slide) in ("title", "section")
+    centered = stype in ("title", "section")
 
-    title_comp = None
+    # Title, followed by a configurable vertical gap before the content.
+    title_group = []
     title_h = 0
     if slide.get("title"):
-        title_comp = text(slide["title"], spec["title_size"], theme.title_color, debug)
-        title_h = int(spec["title_size"] * 1.8)
+        title_group = [text(slide["title"], title_size, theme.title_color, debug),
+                       vspacer(theme.title_gap)]
+        title_h = int(title_size * 1.8 + theme.title_gap)
     avail_h = height - 2 * PADDING - title_h
 
     children = []
@@ -150,19 +213,16 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             imgs = [b for b in pane_blocks if b["kind"] == "image"]
             rest = [b for b in pane_blocks if b["kind"] != "image"]
             for block in imgs:
-                children.extend(render_block(block, spec, theme, debug, content_w, height * LOGO_H_FRAC, counter))
-            if title_comp:
-                children.append(title_comp)
+                children.extend(render_block(block, body_size, theme, debug, content_w, height * LOGO_H_FRAC, counter))
+            children.extend(title_group)
             for block in rest:
-                children.extend(render_block(block, spec, theme, debug, content_w, avail_h, counter))
+                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter))
         else:
-            if title_comp:
-                children.append(title_comp)
+            children.extend(title_group)
             for block in pane_blocks:
-                children.extend(render_block(block, spec, theme, debug, content_w, avail_h, counter))
+                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter))
     else:
-        if title_comp:
-            children.append(title_comp)
+        children.extend(title_group)
         n = len(panes)
         ratio = (slide.get("meta") or {}).get("ratio")
         if not ratio or len(ratio) != n:
@@ -176,7 +236,7 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             inner_h = avail_h - PANE_GAP
             pane_children = []
             for block in pane_blocks:
-                pane_children.extend(render_block(block, spec, theme, debug, inner_w, inner_h, counter))
+                pane_children.extend(render_block(block, body_size, theme, debug, inner_w, inner_h, counter))
             pane_nodes.append({
                 "type": "column",
                 "modifiers": dbg([{"width": round(pane_w, 2)}, {"padding": float(PANE_GAP / 2)}], debug),
@@ -230,6 +290,51 @@ def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
     }
 
 
+def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: int, debug: bool):
+    """A bottom overlay: footer (left), page number (right), progress bar (very bottom).
+    Returns None if no chrome is enabled."""
+    if not (theme.chrome_page or theme.chrome_footer or theme.chrome_progress):
+        return None
+    col = theme.chrome_color
+    rows = []
+
+    if theme.chrome_footer or theme.chrome_page:
+        line = []
+        if theme.chrome_footer:
+            line.append({"type": "text", "value": theme.chrome_footer, "fontSize": 24.0,
+                         "color": col})
+        line.append({"type": "spacer", "modifiers": [{"weight": 1.0}]})
+        if theme.chrome_page and total:
+            line.append({"type": "text", "value": f"{index + 1} / {total}", "fontSize": 24.0,
+                         "color": col})
+        rows.append({"type": "row",
+                     "modifiers": dbg(["fillMaxWidth", {"padding": [float(PADDING), 20.0]}], debug),
+                     "children": line})
+
+    if theme.chrome_progress and total:
+        frac = round((index + 1) / total, 4)
+        filled = round(width * frac, 2)
+        rows.append({"type": "box", "modifiers": ["fillMaxWidth", {"height": 6.0},
+                     {"background": theme.table_bg}], "children": [
+                        {"type": "box", "modifiers": [{"width": filled}, {"height": 6.0},
+                         {"background": col}], "children": []}]})
+
+    # Anchor the chrome column to the bottom of the slide.
+    return {"type": "box", "horizontalAlignment": "start", "verticalAlignment": "bottom",
+            "modifiers": dbg(["fillMaxSize"], debug), "children": [
+                {"type": "column", "modifiers": ["fillMaxWidth"], "children": rows}]}
+
+
+def with_chrome(content: dict, theme: Theme, index: int, total: int,
+                width: int, height: int, debug: bool) -> dict:
+    """Layer the chrome overlay on top of a slide's content node."""
+    overlay = _chrome_overlay(theme, index, total, width, height, debug)
+    if overlay is None:
+        return content
+    return {"type": "box", "modifiers": dbg(["fillMaxSize"], debug),
+            "children": [content, overlay]}
+
+
 def header(slide: dict, width: int, height: int, index: int, profiles: int | None = None) -> dict:
     h = {
         "width": width,
@@ -241,61 +346,117 @@ def header(slide: dict, width: int, height: int, index: int, profiles: int | Non
     return h
 
 
-def _profiles(theme: Theme) -> int | None:
-    return 512 if theme.shaders else None
+def _contains_shader(node) -> bool:
+    if isinstance(node, dict):
+        if "shader" in node or "runtimeShader" in node:
+            return True
+        return any(_contains_shader(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_contains_shader(v) for v in node)
+    return False
+
+
+def _finalize(doc: dict) -> dict:
+    """Set profiles=512 (ANDROIDX, enables shader ops) if the doc uses a shader."""
+    if _contains_shader(doc.get("root")):
+        doc["header"]["profiles"] = 512
+    return doc
 
 
 def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-              index: int, debug: bool) -> dict:
+              index: int, debug: bool, total: int = 0) -> dict:
     counter = [0]
-    return {
-        "header": header(slide, width, height, index, _profiles(theme)),
-        "root": build_slide_root(slide, blocks, theme, width, height, index, debug, counter),
-    }
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter)
+    return _finalize({
+        "header": header(slide, width, height, index),
+        "root": with_chrome(root, theme, index, total, width, height, debug),
+    })
 
 
 def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
-                         index: int, debug: bool) -> dict:
+                         index: int, debug: bool, total: int = 0) -> dict:
     """A StateLayout that crossfades from the previous slide (state 0) to the current
     slide (state 1); the index auto-advances on load via animTime."""
     counter = [0]
     prev_root = (blank_root(theme, width, height, debug) if prev is None
                  else build_slide_root(prev[0], prev[1], theme, width, height, index - 1, debug, counter))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
-    return {
-        "header": header(cur[0], width, height, index, _profiles(theme)),
+    state = {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
+             "children": [prev_root, cur_root]}
+    return _finalize({
+        "header": header(cur[0], width, height, index),
         "root": [
             {"type": "variable", "name": "__t", "vtype": "float", "value": TRANSITION_EXPR},
-            {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
-             "children": [prev_root, cur_root]},
+            with_chrome(state, theme, index, total, width, height, debug),
         ],
-    }
+    })
+
+
+# Push/slide transition progress (eased 0→1 over ~0.45s), as two small variables.
+PUSH_P_EXPR = "min(1.0, max(0.0, (animTime - 0.05) / 0.45))"
+PUSH_EASE_EXPR = "1.0 - (1.0 - $__pp) * (1.0 - $__pp) * (1.0 - $__pp)"
+
+
+def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
+                   index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1) -> dict:
+    """A push/slide transition: the previous slide slides out while the new one slides
+    in from the opposite side, driven by an eased progress variable. No StateLayout —
+    both roots are offset by expressions, so it animates in the current player."""
+    counter = [0]
+    d = sign * (width if axis == "x" else height)
+    t = "$__pt"
+    prev_off = {axis: f"(0.0) + (({-d}) - (0.0)) * {t}"}          # 0 → -d
+    cur_off = {axis: f"({d}) + ((0.0) - ({d})) * {t}"}            # +d → 0
+
+    def wrap(root, off):
+        return {"type": "box", "modifiers": dbg(["fillMaxSize", {"offset": off}], debug),
+                "children": [root]}
+
+    children = []
+    if prev is not None:
+        prev_root = build_slide_root(prev[0], prev[1], theme, width, height, index - 1, debug, counter)
+        children.append(wrap(prev_root, prev_off))
+    cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
+    children.append(wrap(cur_root, cur_off))
+
+    stage = {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": children}
+    return _finalize({
+        "header": header(cur[0], width, height, index),
+        "root": [
+            {"type": "variable", "name": "__pp", "vtype": "float", "value": PUSH_P_EXPR},
+            {"type": "variable", "name": "__pt", "vtype": "float", "value": PUSH_EASE_EXPR},
+            with_chrome(stage, theme, index, total, width, height, debug),
+        ],
+    })
 
 
 def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: int,
-                               index: int, debug: bool) -> dict:
+                               index: int, debug: bool, total: int = 0) -> dict:
     """A graph "magic move": one morphing graph whose matched nodes (by dot id) glide
     and resize from the previous layout to the new one, driven by a progress variable.
     Unmatched nodes fade; edges crossfade."""
     slide, blocks = cur
-    spec = SLIDE_TYPES[slide_type(slide)]
+    stype = slide_type(slide)
+    spec = SLIDE_TYPES[stype]
     content_w = width - 2 * PADDING
 
     children = []
     title_h = 0
     if slide.get("title"):
-        children.append(text(slide["title"], spec["title_size"], theme.title_color, debug))
-        title_h = int(spec["title_size"] * 1.8)
+        title_size = theme.title_size(stype)
+        children.append(text(slide["title"], title_size, theme.title_color, debug))
+        children.append(vspacer(theme.title_gap))
+        title_h = int(title_size * 1.8 + theme.title_gap)
     avail_h = height - 2 * PADDING - title_h
 
     children.extend(render_graph_morph(graph_block(prev[1]), graph_block(blocks),
                                        theme, debug, content_w, avail_h, GRAPH_PROGRESS_VAR))
     root_col = frame_slide(children, spec, theme, slide_type(slide), width, height, debug)
-    return {
-        "header": header(slide, width, height, index, _profiles(theme)),
+    return _finalize({
+        "header": header(slide, width, height, index),
         "root": [
             {"type": "variable", "name": "__gp", "vtype": "float", "value": GRAPH_P_EXPR},
             {"type": "variable", "name": "__gt", "vtype": "float", "value": GRAPH_EASE_EXPR},
-            root_col,
+            with_chrome(root_col, theme, index, total, width, height, debug),
         ],
-    }
+    })

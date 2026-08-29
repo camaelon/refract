@@ -7,7 +7,12 @@ import os
 from .markdown import parse_markdown
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-INCLUDE_PROBE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".rc", ".json")
+VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".webm")
+# Source files rendered as highlighted code, mapped to a highlighter language.
+CODE_EXTS = {".kt": "kotlin", ".kts": "kotlin", ".java": "java", ".py": "python",
+             ".ts": "typescript", ".js": "javascript", ".json": "json"}
+INCLUDE_PROBE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".rc", ".json",
+                 ".mp4", ".mov", ".m4v", ".kt", ".java", ".py", ".ts")
 
 
 def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
@@ -51,6 +56,8 @@ def resolve_include(name: str, includes_dir: str) -> dict:
             ext = os.path.splitext(path)[1].lower()
             if ext in IMAGE_EXTS:
                 return {"kind": "image", "path": os.path.abspath(path)}
+            if ext in VIDEO_EXTS:
+                return {"kind": "video", "path": os.path.abspath(path), "name": name}
             if ext == ".rc":
                 # A binary .rc can't be spliced into a JSON tree, but its source
                 # .json (if present) can — that embeds it *live* as components.
@@ -59,6 +66,9 @@ def resolve_include(name: str, includes_dir: str) -> dict:
                         "json": os.path.abspath(sib) if os.path.isfile(sib) else None}
             if ext == ".json":
                 return {"kind": "json_include", "path": os.path.abspath(path)}
+            if ext in CODE_EXTS:
+                with open(path, errors="replace") as f:
+                    return {"kind": "code", "lang": CODE_EXTS[ext], "text": f.read().rstrip("\n")}
     return {"kind": "missing", "name": name}
 
 

@@ -41,7 +41,7 @@ class Helpers(unittest.TestCase):
 
 class RenderBlock(unittest.TestCase):
     def rb(self, block):
-        return render.render_block(block, SPEC, THEME, False, 800, 400, [0])
+        return render.render_block(block, 40.0, THEME, False, 800, 400, [0])
 
     def test_text(self):
         out = self.rb({"kind": "text", "text": "hello"})
@@ -82,7 +82,16 @@ class SlideRoot(unittest.TestCase):
     def test_title_first_for_content(self):
         root = self.build({"title": "T"}, [{"kind": "text", "text": "b"}])
         self.assertEqual(root["children"][0]["value"], "T")
-        self.assertEqual(root["children"][1]["value"], "b")
+        # a title gap spacer sits between the title and the content
+        self.assertEqual(root["children"][1]["type"], "box")
+        self.assertEqual(root["children"][2]["value"], "b")
+
+    def test_title_gap_configurable(self):
+        from refractkit.theme import build_theme
+        theme = build_theme({"slide": {"title_gap": 99}})
+        root = render.build_slide_root({"title": "T"}, [], theme, 1600, 900, 0, False, [0])
+        gap = next(m["height"] for m in root["children"][1]["modifiers"] if "height" in m)
+        self.assertEqual(gap, 99.0)
 
     def test_image_above_title_for_centered(self):
         d = tempfile.mkdtemp()

@@ -24,17 +24,73 @@ DEFAULT_SYNTAX = {
     "default":    "#FFD4D4D4",
 }
 
+# Default font sizes (px). Keyed <slide-type>_title / <slide-type>_body plus roles.
+# Configurable via settings.toml [font]; the aliases below cover the common cases.
+DEFAULT_FONTS = {
+    "title_title":   120.0, "title_body":   48.0,
+    "section_title":  96.0, "section_body": 40.0,
+    "content_title":  72.0, "content_body": 40.0,
+    "subtitle":       46.0,
+    "table":          38.0,
+}
+# Friendly settings names -> internal font keys.
+FONT_ALIASES = {
+    "title": "title_title", "section": "section_title", "heading": "content_title",
+    "body": "content_body", "content": "content_body", "subtitle": "subtitle",
+    "table": "table", "code": "code",
+}
+
+
+# Built-in theme presets (selected via [theme] preset = "name"). Each is a set of
+# Theme field overrides applied before the user's own [theme]/[code]/… settings.
+PRESETS = {
+    "dark": {},   # the built-in defaults
+    "light": {
+        "background": "#FFF7F8FA", "title_color": "#FF10141C", "body_color": "#FF2A2F3A",
+        "accent": "#FF0B6BCB", "table_bg": "#14000000", "table_header_bg": "#22000000",
+        "code_background": "#FFEDEFF2", "code_foreground": "#FF2A2F3A",
+    },
+    "midnight": {
+        "background": "#FF090C18", "title_color": "#FFEAF0FF", "body_color": "#FFB9C4DD",
+        "accent": "#FF7C93FF",
+    },
+    "warm": {
+        "background": "#FF1B1410", "title_color": "#FFFDF6EE", "body_color": "#FFE8D9C6",
+        "accent": "#FFE8955A", "code_background": "#FF241B14",
+    },
+    "mono": {
+        "background": "#FF121212", "title_color": "#FFFFFFFF", "body_color": "#FFCCCCCC",
+        "accent": "#FF9E9E9E", "table_bg": "#14FFFFFF", "table_header_bg": "#22FFFFFF",
+    },
+}
+
 
 @dataclass
 class Theme:
     background: str = "#FF0D1B2A"
     title_color: str = "#FFFFFFFF"
     body_color: str = "#FFE6EEF6"
+    accent: str = "#FF4FC3F7"           # subtitles, table headers, emphasis
+    table_bg: str = "#1AFFFFFF"
+    table_header_bg: str = "#22FFFFFF"
     code_background: str = "#FF1E1E1E"
     code_foreground: str = "#FFD4D4D4"
     code_font_size: float = 28.0
     code_corner_radius: float = 0.0
+    title_gap: float = 44.0             # vertical gap between the title and content
+    # Slide chrome (page number / footer / progress bar).
+    chrome_page: bool = False
+    chrome_footer: str = ""
+    chrome_progress: bool = False
+    chrome_color: str = "#66FFFFFF"
+    fonts: dict = field(default_factory=lambda: dict(DEFAULT_FONTS))
     syntax: dict = field(default_factory=lambda: dict(DEFAULT_SYNTAX))
+
+    def title_size(self, slide_type: str) -> float:
+        return self.fonts.get(f"{slide_type}_title", self.fonts["content_title"])
+
+    def body_size(self, slide_type: str) -> float:
+        return self.fonts.get(f"{slide_type}_body", self.fonts["content_body"])
     # Animated background shaders (SkSL source) by slide type, plus a "default"
     # applied to any type without its own. Empty = solid `background` colour.
     shaders: dict = field(default_factory=dict)
@@ -79,9 +135,17 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     """
     t = Theme()
     th = settings.get("theme", {})
+    # Apply a named preset first (its fields become the new defaults), then user overrides.
+    preset = PRESETS.get(str(th.get("preset", "")).lower())
+    if preset:
+        for k, v in preset.items():
+            setattr(t, k, v)
     t.background = th.get("background", t.background)
     t.title_color = th.get("title_color", t.title_color)
     t.body_color = th.get("body_color", t.body_color)
+    t.accent = th.get("accent", t.accent)
+    t.table_bg = th.get("table_bg", t.table_bg)
+    t.table_header_bg = th.get("table_header_bg", t.table_header_bg)
 
     code = settings.get("code", {})
     t.code_background = code.get("background", th.get("code_background", t.code_background))
@@ -92,6 +156,26 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.code_corner_radius = float(code["corner_radius"])
     for token_type, color in (code.get("syntax", {}) or {}).items():
         t.syntax[token_type] = color
+
+    # [font]: friendly aliases (body/content, title, section, heading, subtitle,
+    # table, code) plus any direct internal key (e.g. content_body, title_title).
+    font = settings.get("font", {})
+    for key, val in font.items():
+        target = FONT_ALIASES.get(key, key)
+        if target == "code":
+            t.code_font_size = float(val)
+        elif target in t.fonts:
+            t.fonts[target] = float(val)
+
+    layout = {**settings.get("slide", {}), **settings.get("layout", {})}
+    if "title_gap" in layout:
+        t.title_gap = float(layout["title_gap"])
+
+    chrome = settings.get("chrome", {})
+    t.chrome_page = bool(chrome.get("page", t.chrome_page))
+    t.chrome_footer = str(chrome.get("footer", t.chrome_footer))
+    t.chrome_progress = bool(chrome.get("progress", t.chrome_progress))
+    t.chrome_color = chrome.get("color", t.chrome_color)
 
     image = settings.get("image", {})
     if "corner_radius" in image:

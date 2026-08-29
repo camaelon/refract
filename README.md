@@ -41,16 +41,17 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 ## Markdown grammar
 
 ```markdown
-:: title
+:: title : Nico
 # refract
-Markdown to RemoteCompose
+*Markdown to RemoteCompose*
 <logo.png>
 
 ---
 
-:: content [2:3]
+:: content [2:3] : Nico
 # Two panes
 - a point
+  - a sub-point
 - another
 
 +++
@@ -61,29 +62,47 @@ digraph G { rankdir=LR; A -> B -> C }
 ```
 
 - `---` on its own line separates slides (one `.rc` each).
-- `:: <type> [: <params>] [ratio]` right after the separator sets slide metadata.
-- The first `# heading` is the title; everything after is content **blocks**, in order.
+- `:: <type> [flags] [: <speaker>] [ratio] [key=value…]` right after the separator sets
+  slide metadata:
+  - `<speaker>` (after `:`) selects an accent colour from `[speakers]`.
+  - `[ratio]` sets pane widths (see Panes); `key=value` are per-slide overrides
+    (`bg`, `accent`, `shader=none`, `transition=push`…); bare-word `flags` include
+    `fragment` (see Fragments).
+- The first `# heading` is the title.
+- An `*italic*` line right under the title is a **subtitle** (accent colour).
+- Inline **`**bold**`**, *`*italic*`* and `` `code` `` work inside any text/bullet.
+- A `???` line starts **speaker notes** — the rest of the slide goes to `out/notes.md`.
+- Everything else is content **blocks**, in order.
 
 ### Slide types (`<type>`)
 
 | Type      | Layout                                                        |
 |-----------|---------------------------------------------------------------|
 | `title`   | large title centered; an image renders above it (logo size)   |
-| `section` | title centered                                                |
+| `section` | title centered (auto-numbered when an `agenda` slide exists)   |
 | `content` | default — title at top, content below, left-aligned           |
 | `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
+| `agenda`  | replaced by an auto-generated table of contents of the `section` slides |
 
 ### Content blocks
 
 | Block         | Markdown                                                       |
 |---------------|---------------------------------------------------------------|
 | text          | plain paragraphs                                              |
+| subtitle      | `*italic*` line directly under the title                     |
 | bullet list   | `- item`, indent two spaces per sub-level                     |
-| code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, json) |
-| graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … block — laid out by graphviz, drawn by refract |
-| image         | `<name.png>` — embedded **inline** in the `.rc`               |
+| table         | markdown pipe table `\| a \| b \|` (first row = header)      |
+| code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, java, json) |
+| graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … — laid out by graphviz, drawn by refract (clusters, dashed/dotted/coloured edges, per-node colours) |
+| chart         | fenced ```` ```chart-bar ```` / `chart-line` / `chart-pie` with `label: value` lines |
+| image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc` |
+| code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
+| video         | `<name.mp4>` (`.mov/.m4v`) — copied into `out/` as a slide the viewer plays |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
+
+Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
+finds `logo.png`). Speaker accent comes from `[speakers]` (below).
 
 ### Panes
 
@@ -92,27 +111,69 @@ shared): `:: content [2:3]`, `:: [1:1]`, `:: [2:2:4]` — one number per pane.
 
 ## Transitions & "magic move"
 
-`--transitions` (or `[transition] enabled = true`) wraps each slide in a `StateLayout`
-that **crossfades** from the previous slide on load. When two consecutive slides are
-graphs, refract instead emits a **magic move**: nodes matched by their dot identifier
-glide/resize to their new positions (snappy ease-out), edges morph along (resampled so
-their splines can interpolate), and unmatched nodes/edges fade.
+`--transitions` (or `[transition] enabled = true`) animates each slide in from the
+previous one on load. Styles (`[transition] style` or per-slide `transition=`):
+
+- **fade** (default) — a `StateLayout` crossfade.
+- **push** / **slide** — the previous slide slides out while the new one slides in
+  (horizontal; `push-up` for vertical).
+- **magic move** (automatic between two consecutive graph slides) — nodes matched by
+  their dot identifier glide/resize to their new positions (snappy ease-out), edges
+  morph along (resampled so their splines interpolate), and unmatched elements fade.
 
 ```sh
 python3 refract.py examples/deck --transitions
+```
+
+### Fragments (progressive reveal)
+
+Add the `fragment` flag to a slide to reveal its top-level bullets one at a time —
+refract expands it into one slide per cumulative bullet:
+
+```markdown
+:: content fragment
+# Build it up
+- first
+- second
+- third
 ```
 
 ## settings.toml
 
 ```toml
 [slide]
-width = 1600
-height = 900
+width     = 1600
+height    = 900
+title_gap = 44                  # vertical gap between title and content
 
 [theme]
-background   = "#FF141A2E"
-title_color  = "#FFFFFFFF"
-body_color   = "#FFE6EEF6"
+preset          = "dark"        # dark | light | midnight | warm | mono (applied first)
+background      = "#FF141A2E"
+title_color     = "#FFFFFFFF"
+body_color      = "#FFE6EEF6"
+accent          = "#FF4FC3F7"   # subtitles, table headers, emphasis
+table_bg        = "#1AFFFFFF"
+table_header_bg = "#22FFFFFF"
+
+[chrome]                        # optional slide chrome
+page     = true                 # "n / total" page number
+footer   = "RemoteCompose · 2026"
+progress = true                 # bottom progress bar
+color    = "#66FFFFFF"
+
+# Per-speaker accent (":: content : Nico" → this colour for that slide).
+[speakers]
+Nico = "#FF4FC3F7"
+John = "#FF81C995"
+Yuri = "#FFFFB74D"
+
+# Font sizes (px). Aliases: title (title-slide) / section / heading (content title) /
+# body (content) / subtitle / table / code. Direct keys also work (content_body…).
+[font]
+heading  = 76
+body     = 44
+subtitle = 48
+table    = 40
 
 [image]
 corner_radius = 28              # round embedded images
@@ -132,10 +193,10 @@ key     = "#FF9CDCFE"           # JSON property names
 literal = "#FF569CD6"           # true / false / null
 
 [graph]
-node_fill = "#FF1B2A3D"
+node_fill   = "#FF1B2A3D"
 node_stroke = "#FF4FC3F7"
-node_text = "#FFE6EEF6"
-edge      = "#FF89A7C2"
+node_text   = "#FFE6EEF6"
+edge        = "#FF89A7C2"
 
 [shader]                        # animated background (SkSL)
 file = "shader.sksl"            # or source = """...SkSL..."""
@@ -144,9 +205,12 @@ file = "title.sksl"
 
 [transition]
 enabled = false                 # same as --transitions
+style   = "fade"                # fade | push | slide | push-up
 ```
 
-Precedence: **CLI flag > settings.toml > built-in default**.
+Precedence: **CLI flag > settings.toml > built-in default**. Any theme colour /
+shader / accent can also be overridden per slide via `key=value` metadata
+(e.g. `:: content bg=#FF101820 accent=#FFE8955A shader=none`).
 
 ### Background shaders
 
@@ -159,12 +223,17 @@ content. Different types can use different shaders via `[shader.<type>]`.
 ```
 python3 refract.py <deck> [options]
   --width / --height     slide size (default 1600×900 or settings.toml)
-  --transitions          StateLayout crossfades / graph magic move
+  --transitions          crossfade / push / graph magic move between slides
   --debug                1px red outline on every component
+  --watch                regenerate on slides.md / settings / includes changes
+  --pdf [PATH]           export the deck to a PDF (default <deck>/out/deck.pdf)
+  --images [DIR]         export each slide to a PNG (default <deck>/out/images/)
   --json                 keep the intermediate JSON in out/json/ (default: discard)
   --json-only            emit JSON only; do not run json2rc
   --json2rc PATH         explicit json2rc launcher (default: auto-detect prebuilt)
 ```
+
+Speaker notes (`???` blocks) are written to `<deck>/out/notes.md`.
 
 ## Prebuilt tools
 
@@ -180,13 +249,15 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | Module        | Responsibility                                            |
 |---------------|-----------------------------------------------------------|
 | `settings`    | load `settings.toml` (stdlib `tomllib`)                   |
-| `theme`       | `Theme` (colors, code + syntax, shaders) from settings    |
-| `markdown`    | slide markdown → `{meta, title, blocks}`                  |
+| `theme`       | `Theme` (colors, fonts, code+syntax, chrome, shaders, presets) from settings |
+| `markdown`    | slide markdown → `{meta, title, blocks, notes}`          |
 | `deck`        | load `slides.md`, expand deck includes, resolve includes  |
 | `components`  | low-level component builders (`text`, `dbg`)              |
+| `inline`      | inline `**bold**` / `*italic*` / `` `code` `` → styled spans |
 | `images`      | image dimensions + contained bitmap canvas (+ rounded clip) |
 | `highlight`   | syntax highlighting — a language registry                 |
-| `graph`       | graphviz layout → drawing; magic-move geometry            |
+| `graph`       | graphviz layout → drawing (clusters/styles); magic-move geometry |
+| `chart`       | bar / line / pie charts on a canvas                       |
 | `render`      | blocks + theme → RemoteCompose component JSON             |
 
 **Add a language:** drop a `tokenize_x` in `highlight.py` and register it in

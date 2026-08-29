@@ -71,5 +71,34 @@ class WithGraphviz(unittest.TestCase):
         self.assertEqual(out[0]["type"], "canvas")
 
 
+class Styling(unittest.TestCase):
+    def test_norm_color(self):
+        self.assertEqual(graph._norm_color("#ff5555"), "#FFFF5555")
+        self.assertIsNone(graph._norm_color("#000000"))   # default black -> theme
+        self.assertIsNone(graph._norm_color(None))
+
+    def test_parse_style(self):
+        dash, wid = graph._parse_style("dashed", 1.0, None, None)
+        self.assertTrue(dash and len(dash) == 2)
+        dash, wid = graph._parse_style("setlinewidth(3)", 1.0, None, None)
+        self.assertEqual(wid, 3.0)
+
+
+@unittest.skipUnless(HAS_DOT, "graphviz `dot` not installed")
+class ClustersAndStyles(unittest.TestCase):
+    DOT = ('digraph G { rankdir=LR; subgraph cluster_0 { label="Grp"; A; B } '
+           'A -> B [style=dashed]; A -> C [color="#ff5555"]; }')
+
+    def test_cluster_extracted(self):
+        geo = graph.graph_geometry({"dot": self.DOT, "engine": "dot"}, 800, 600)
+        self.assertEqual(len(geo["clusters"]), 1)
+        self.assertEqual(geo["clusters"][0]["label"], "Grp")
+
+    def test_edge_dash_and_color(self):
+        geo = graph.graph_geometry({"dot": self.DOT, "engine": "dot"}, 800, 600)
+        self.assertTrue(geo["edges"][("A", "B")]["dash"])
+        self.assertEqual(geo["edges"][("A", "C")]["color"], "#FFFF5555")
+
+
 if __name__ == "__main__":
     unittest.main()

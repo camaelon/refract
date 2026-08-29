@@ -110,6 +110,7 @@ def tokenize_json(code: str) -> list[list[tuple[str, str]]]:
 LANGUAGES = {
     "kotlin": tokenize_kotlin,
     "kt": tokenize_kotlin,
+    "java": tokenize_kotlin,   # close enough token-wise for slides
     "json": tokenize_json,
 }
 

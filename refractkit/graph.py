@@ -87,9 +87,11 @@ def graph_geometry(block: dict, avail_w: float, avail_h: float) -> dict | None:
         label = obj.get("label")
         if label in (None, "\\N"):
             label = obj["name"]
+        fill, stroke = _node_colors(obj)
         nodes[obj["name"]] = {"cx": cx, "cy": cy, "nw": nw, "nh": nh,
                               "l": cx - nw / 2, "t": cy - nh / 2,
-                              "r": cx + nw / 2, "b": cy + nh / 2, "label": label}
+                              "r": cx + nw / 2, "b": cy + nh / 2, "label": label,
+                              "fill": fill, "stroke": stroke}
 
     edges = {}
     for edge in graph.get("edges", []):
@@ -98,16 +100,88 @@ def graph_geometry(block: dict, avail_w: float, avail_h: float) -> dict | None:
         if tail is None or head is None:
             continue
         spline = None
+        color = None
+        dash, wid = None, None
         for cmd in edge.get("_draw_", []):
-            if cmd.get("op") == "b" and cmd.get("points"):
+            op = cmd.get("op")
+            if op == "b" and cmd.get("points"):
                 spline = _sample_spline([tx(p[0], p[1]) for p in cmd["points"]], _SPLINE_SEGS)
+            elif op == "S":
+                dash, wid = _parse_style(cmd.get("style", ""), scale, dash, wid)
+            elif op == "c":
+                color = _norm_color(cmd.get("color"))
         arrow = None
         for cmd in edge.get("_hdraw_", []):
             if cmd.get("op") in ("P", "p") and cmd.get("points"):
                 arrow = [tx(p[0], p[1]) for p in cmd["points"]]
-        edges[(tail, head)] = {"spline": spline, "arrow": arrow}
+        edges[(tail, head)] = {"spline": spline, "arrow": arrow,
+                               "color": color, "dash": dash, "width": wid}
 
-    return {"nodes": nodes, "edges": edges}
+    clusters = []
+    for obj in graph.get("objects", []):
+        if not str(obj.get("name", "")).startswith("cluster"):
+            continue
+        poly, fill, stroke = None, None, None
+        for cmd in obj.get("_draw_", []):
+            if cmd.get("op") in ("P", "p") and cmd.get("points"):
+                poly = [tx(p[0], p[1]) for p in cmd["points"]]
+            elif cmd.get("op") == "C":
+                fill = _norm_color(cmd.get("color"))
+            elif cmd.get("op") == "c":
+                stroke = _norm_color(cmd.get("color"))
+        label, lpos = None, None
+        for cmd in obj.get("_ldraw_", []):
+            if cmd.get("op") == "T":
+                label = cmd.get("text")
+                if cmd.get("pt"):
+                    lpos = tx(cmd["pt"][0], cmd["pt"][1])
+        if poly:
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            clusters.append({"l": min(xs), "t": min(ys), "r": max(xs), "b": max(ys),
+                             "fill": fill, "stroke": stroke, "label": label, "lpos": lpos})
+
+    return {"nodes": nodes, "edges": edges, "clusters": clusters}
+
+
+def _norm_color(c: str | None) -> str | None:
+    """Normalize a graphviz colour (#rrggbb) to #AARRGGBB, or None for the default black."""
+    if not c or not c.startswith("#"):
+        return None
+    hexv = c[1:]
+    if len(hexv) == 6:
+        if hexv.lower() == "000000":
+            return None  # graphviz implicit default — let the theme decide
+        return "#FF" + hexv.upper()
+    if len(hexv) == 8:
+        return "#" + hexv.upper()
+    return None
+
+
+def _parse_style(style: str, scale: float, dash, wid):
+    """Interpret a graphviz edge 'S' style op → (dash intervals, stroke width)."""
+    s = style.lower()
+    if s == "dashed":
+        dash = [round(9 * scale, 2), round(6 * scale, 2)]
+    elif s == "dotted":
+        dash = [round(2 * scale, 2), round(5 * scale, 2)]
+    elif s.startswith("setlinewidth("):
+        try:
+            wid = round(float(s[len("setlinewidth("):-1]) * scale, 2)
+        except ValueError:
+            pass
+    return dash, wid
+
+
+def _node_colors(obj: dict):
+    """Node fill (C op) and stroke (c op) colours from the dot source, if any."""
+    fill = stroke = None
+    for cmd in obj.get("_draw_", []):
+        if cmd.get("op") == "C":
+            fill = _norm_color(cmd.get("color"))
+        elif cmd.get("op") == "c":
+            stroke = _norm_color(cmd.get("color"))
+    return fill, stroke
 
 
 # ── Geometry helpers ─────────────────────────────────────────────────────────
@@ -194,12 +268,13 @@ def _fill_polygon(points: list, pid: list) -> list[dict]:
     return out
 
 
-def _node_cmds(l, t, r, b, cx, cy, rad, label, fs, theme, alpha) -> list[dict]:
+def _node_cmds(l, t, r, b, cx, cy, rad, label, fs, theme, alpha,
+               fill=None, stroke=None) -> list[dict]:
     return [
-        _paint(_with_alpha([{"color": theme.graph_node_fill}, {"style": "fill"}], alpha)),
+        _paint(_with_alpha([{"color": fill or theme.graph_node_fill}, {"style": "fill"}], alpha)),
         _rr(l, t, r, b, rad),
-        _paint(_with_alpha([{"color": theme.graph_node_stroke}, {"style": "stroke"},
-                            {"strokeWidth": _NODE_STROKE_W}], alpha)),
+        _paint(_with_alpha([{"color": stroke or theme.graph_node_stroke}, {"style": "stroke"},
+                            {"strokeWidth": _NODE_STROKE_W}, {"patheffect": None}], alpha)),
         _rr(l, t, r, b, rad),
         _paint(_with_alpha([{"color": theme.graph_node_text}, {"style": "fill"},
                             {"textSize": fs}], alpha)),
@@ -211,20 +286,61 @@ def _static_node(n: dict, theme, alpha) -> list[dict]:
     rad = round(min(n["nw"], n["nh"]) * 0.28, 2)
     return _node_cmds(round(n["l"], 2), round(n["t"], 2), round(n["r"], 2), round(n["b"], 2),
                       round(n["cx"], 2), round(n["cy"], 2), rad, n["label"],
-                      _fit_font(n["label"], n["nw"], n["nh"]), theme, alpha)
+                      _fit_font(n["label"], n["nw"], n["nh"]), theme, alpha,
+                      fill=n.get("fill"), stroke=n.get("stroke"))
+
+
+def _edge_stroke_ops(e: dict, theme, alpha) -> list:
+    """Paint ops for an edge stroke: colour, width, and dash effect (explicitly set —
+    null for solid — so a previous edge's dash doesn't leak onto this one or the nodes)."""
+    ops = [{"color": e.get("color") or theme.graph_edge}, {"style": "stroke"},
+           {"strokeWidth": e.get("width") or _EDGE_W},
+           {"patheffect": {"intervals": e["dash"], "phase": 0.0} if e.get("dash") else None}]
+    return _with_alpha(ops, alpha)
+
+
+def _stroke_polyline(poly: list, pid: list) -> list[dict]:
+    """Stroke a polyline as a single open path, so a dash effect runs continuously
+    along the whole edge (drawing separate line segments resets the dash each time)."""
+    pts = [(round(x, 2), round(y, 2)) for x, y in poly]
+    pid[0] += 1
+    path = f"__ge{pid[0]}"
+    out = [{"type": "pathcreate", "id": path, "x": pts[0][0], "y": pts[0][1]}]
+    for x, y in pts[1:]:
+        out.append({"type": "pathappendlineto", "path": path, "x": x, "y": y})
+    out.append({"type": "drawpath", "path": path})
+    return out
 
 
 def _static_edge(e: dict, theme, alpha, pid: list) -> list[dict]:
     cmds = []
     if e.get("spline"):
-        cmds.append(_paint(_with_alpha([{"color": theme.graph_edge}, {"style": "stroke"},
-                                        {"strokeWidth": _EDGE_W}], alpha)))
-        poly = [(round(x, 2), round(y, 2)) for x, y in e["spline"]]
-        for p, q in zip(poly, poly[1:]):
-            cmds.append(_line(p, q))
+        cmds.append(_paint(_edge_stroke_ops(e, theme, alpha)))
+        cmds.extend(_stroke_polyline(e["spline"], pid))
     if e.get("arrow"):
-        cmds.append(_paint(_with_alpha([{"color": theme.graph_edge}, {"style": "fill"}], alpha)))
+        # Arrowheads are solid (no dash), in the edge colour.
+        cmds.append(_paint(_with_alpha([{"color": e.get("color") or theme.graph_edge},
+                                        {"style": "fill"}], alpha)))
         cmds.extend(_fill_polygon([(round(x, 2), round(y, 2)) for x, y in e["arrow"]], pid))
+    return cmds
+
+
+def _cluster_cmds(c: dict, theme, pid: list) -> list[dict]:
+    """A subgraph cluster: filled/stroked rounded box with an optional label."""
+    l, t, r, b = round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2)
+    cmds = []
+    if c.get("fill"):
+        cmds.append(_paint([{"color": c["fill"]}, {"style": "fill"}]))
+        cmds.append(_rr(l, t, r, b, 12.0))
+    cmds.append(_paint([{"color": c.get("stroke") or theme.graph_edge}, {"style": "stroke"},
+                        {"strokeWidth": 2.0}, {"patheffect": None}]))
+    cmds.append(_rr(l, t, r, b, 12.0))
+    if c.get("label") and c.get("lpos"):
+        lx, ly = round(c["lpos"][0], 2), round(c["lpos"][1], 2)
+        cmds.append(_paint([{"color": c.get("stroke") or theme.graph_node_text},
+                            {"style": "fill"}, {"textSize": 24.0}]))
+        cmds.append({"type": "drawtextanchored", "text": c["label"], "x": lx, "y": ly,
+                     "panX": 0.0, "panY": 0.0})
     return cmds
 
 
@@ -265,6 +381,8 @@ def render_graph(block: dict, theme, debug: bool, avail_w: float, avail_h: float
         return [text("[graphviz failed — is `dot` installed?]", 32.0, theme.body_color, debug)]
     cmds: list[dict] = []
     pid = [0]
+    for c in geo.get("clusters", []):              # clusters behind everything
+        cmds += _cluster_cmds(c, theme, pid)
     for e in geo["edges"].values():                # edges under nodes
         cmds += _static_edge(e, theme, None, pid)
     for n in geo["nodes"].values():
@@ -283,6 +401,14 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
 
     cmds: list[dict] = []
     pid = [0]
+
+    # Clusters (behind everything) crossfade between the two layouts.
+    for c in ga.get("clusters", []):
+        cmds += [_paint([{"color": (c.get("stroke") or theme.graph_edge)}, {"style": "stroke"},
+                         {"strokeWidth": 2.0}, {"alpha": f"1.0 - {t}"}]),
+                 _rr(round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2), 12.0)]
+    for c in gb.get("clusters", []):
+        cmds += _cluster_cmds(c, theme, pid)
 
     # Edges (under nodes).
     ea, eb = ga["edges"], gb["edges"]
