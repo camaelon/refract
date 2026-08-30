@@ -72,6 +72,19 @@ class RenderBlock(unittest.TestCase):
         self.assertTrue(out[0]["value"].startswith("•"))
         self.assertTrue(out[1]["value"].startswith("    "))  # sub-indent
 
+    def test_embedded_video_custom_component(self):
+        out = self.rb({"kind": "video", "path": "clips/demo.mp4", "src": "demo.mp4"})
+        self.assertEqual(out[0]["type"], "custom")
+        self.assertEqual(out[0]["config"], "video:demo.mp4")
+        # sized 16:9 within the available box
+        self.assertTrue(any(isinstance(m, dict) and "height" in m
+                            for m in out[0]["modifiers"]))
+
+    def test_embedded_video_src_falls_back_to_basename(self):
+        # Without an explicit copied `src`, the config uses the path's file name.
+        out = self.rb({"kind": "video", "path": "clips/demo.mp4"})
+        self.assertEqual(out[0]["config"], "video:demo.mp4")
+
     def test_weblink_card(self):
         out = self.rb({"kind": "weblink", "url": "https://demo.dev", "label": "Live"})
         texts = []
@@ -186,6 +199,13 @@ class Docs(unittest.TestCase):
         # Inline-styled text emits a wrapping Flow (op 240), which needs the
         # ANDROIDX|EXPERIMENTAL profile (513) to convert.
         doc = render.build_doc({"title": "T"}, [{"kind": "text", "text": "a **b**"}],
+                               THEME, 1600, 900, 0, False)
+        self.assertEqual(doc["header"]["profiles"], 513)
+
+    def test_profiles_set_with_custom_video(self):
+        # An embedded video is a Custom component (op 93) → ANDROIDX|EXPERIMENTAL (513).
+        doc = render.build_doc({"title": "T"},
+                               [{"kind": "video", "path": "d.mp4", "src": "d.mp4"}],
                                THEME, 1600, 900, 0, False)
         self.assertEqual(doc["header"]["profiles"], 513)
 

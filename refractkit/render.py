@@ -251,6 +251,21 @@ def render_weblink(block: dict, body_size: float, theme: Theme, debug: bool) -> 
              "children": [inner]}]
 
 
+def render_video(block: dict, theme: Theme, debug: bool,
+                 avail_w: float, avail_h: float) -> list[dict]:
+    """An embedded video as a native custom component (op 93). The viewer's video host
+    plays it, aspect-fit, inside the box; here we just size the box (16:9, fit to the
+    available area) and hand the file name in the config string."""
+    w = float(avail_w)
+    h = min(float(avail_h), w * 9.0 / 16.0)
+    mods: list = ["fillMaxWidth", {"height": round(h, 2)}]
+    if theme.image_corner_radius > 0:
+        mods.append({"clip": float(theme.image_corner_radius)})
+    src = block.get("src") or block["path"].rsplit("/", 1)[-1]
+    return [{"type": "custom", "config": f"video:{src}",
+             "modifiers": dbg(mods, debug), "children": []}]
+
+
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list,
                  same_ctx: dict | None = None, align: str = "start") -> list[dict]:
@@ -293,6 +308,8 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         out = render_chart(block, theme, debug, avail_w, avail_h, counter)
     elif kind == "weblink":
         out = render_weblink(block, body_size, theme, debug)
+    elif kind == "video":
+        out = render_video(block, theme, debug, avail_w, avail_h)
     else:
         out = None
 
@@ -517,12 +534,12 @@ def _contains_type(node, type_name: str) -> bool:
 def _finalize(doc: dict) -> dict:
     """Set the header ``profiles`` bitmask to enable the extended ops the doc uses:
     ANDROIDX (512) for shader ops, and ANDROIDX+EXPERIMENTAL (513) for the Flow layout
-    (op 240) emitted by wrapping inline-styled text."""
+    (op 240, wrapping inline-styled text) and Custom components (op 93, embedded video)."""
     root = doc.get("root")
     profiles = 0
     if _contains_shader(root):
         profiles |= PROFILE_ANDROIDX
-    if _contains_type(root, "flow"):
+    if _contains_type(root, "flow") or _contains_type(root, "custom"):
         profiles |= PROFILE_ANDROIDX | PROFILE_EXPERIMENTAL
     if profiles:
         doc["header"]["profiles"] = profiles

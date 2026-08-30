@@ -257,14 +257,22 @@ def run_once(args) -> int:
             with open(os.path.join(out_dir, name + ".url"), "w") as f:
                 f.write(weblink["url"] + "\n")
 
-        # Video slide: copy the video into out/ (the C++ viewer plays it in the slideshow).
-        video = next((b for b in blocks if b["kind"] == "video"), None)
-        if video:
-            dst = os.path.join(out_dir, name + os.path.splitext(video["path"])[1].lower())
-            copies.append((video["path"], dst))
+        # A lone video (no title, nothing else) is a whole-slide passthrough the viewer
+        # plays directly. Otherwise videos are embedded in the page (custom component).
+        videos = [b for b in blocks if b["kind"] == "video"]
+        if videos and not slide.get("title") and len(blocks) == 1:
+            v = videos[0]
+            dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
+            copies.append((v["path"], dst))
             print(f"copy {dst}  [video]")
             prev = None
             continue
+        # Embedded videos: copy each next to the slides; the custom component references
+        # it by file name (the viewer resolves it relative to the slide directory).
+        for v in videos:
+            base = os.path.basename(v["path"])
+            copies.append((v["path"], os.path.join(out_dir, base)))
+            v["src"] = base
 
         # Lone prebuilt .rc (no title / other content): whole-slide passthrough.
         if (not slide.get("title") and len(blocks) == 1

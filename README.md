@@ -104,7 +104,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | chart         | fenced ```` ```chart-bar ```` / `chart-line` / `chart-pie` with `label: value` lines |
 | image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc` |
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
-| video         | `<name.mp4>` (`.mov/.m4v`) — copied into `out/` as a slide the viewer plays |
+| video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
 | web link      | `<https://url>` (optional `\| label`) — a card; in the viewer press **W** to open the URL in a real, interactive in-window browser |
@@ -260,6 +260,29 @@ file = "shader.sksl"            # background, all slides
 file = "transition.sksl"        # overlay, during transitions only (gets iProgress)
 ```
 
+### Embedded video & custom components
+
+The C++ player supports RemoteCompose **custom components** (`LAYOUT_CUSTOM`, op 93): a
+leaf that the core lays out like any component, then delegates drawing to a host
+(`CustomComponentHost`) keyed by a `config` string. This keeps the core
+platform-agnostic while an app supplies renderers for things Skia alone can't do.
+
+The viewer ships a **video** host (AVFoundation), so a `<name.mp4>` inside a page plays
+**in place**, aspect-fit, looping:
+
+```markdown
+# Live demo
+Watch it run:
+
+<demo.mp4>
+```
+
+The video is copied next to the slides and referenced by file name (`config:
+"video:demo.mp4"`). A lone video with no title fills the whole slide instead. Custom
+components need the ANDROIDX+EXPERIMENTAL profile, which refract sets automatically.
+(macOS only for now; other platforms draw nothing. PDF/screenshot export doesn't run
+the video host, so embedded video is blank in exports.)
+
 ## CLI
 
 ```
@@ -322,3 +345,6 @@ python3 -m unittest discover -s tests
   `.json`.
 - Graph magic move uses expression-interpolation (matched by dot id), which fits
   canvas-drawn graphs and needs no player changes.
+- **Custom components** (`LAYOUT_CUSTOM`, op 93) delegate drawing to a host keyed by a
+  `config` string; the viewer's video host plays embedded `<name.mp4>` in place — see
+  *Embedded video & custom components* above.
