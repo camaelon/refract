@@ -67,6 +67,24 @@ class ParseSlide(unittest.TestCase):
         self.assertEqual(s["meta"]["type"], "section")
         self.assertEqual(s["title"], "Head")
 
+    def test_weblink(self):
+        s = md.parse_slide("# Demo\n<https://demo.dev | Live>")
+        b = s["blocks"][0]
+        self.assertEqual(b["kind"], "weblink")
+        self.assertEqual(b["url"], "https://demo.dev")
+        self.assertEqual(b["label"], "Live")
+
+    def test_weblink_without_label(self):
+        s = md.parse_slide("<http://x.io>")
+        b = s["blocks"][0]
+        self.assertEqual(b["kind"], "weblink")
+        self.assertEqual(b["url"], "http://x.io")
+        self.assertEqual(b["label"], "")
+
+    def test_non_url_angle_is_include(self):
+        s = md.parse_slide("<pic.png>")
+        self.assertEqual(s["blocks"][0]["kind"], "include")
+
     def test_empty_slide_is_none(self):
         self.assertIsNone(md.parse_slide("   \n\n"))
 

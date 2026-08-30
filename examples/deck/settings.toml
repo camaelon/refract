@@ -41,5 +41,10 @@ edge        = "#FF89A7C2"
 [shader]
 file = "shader.sksl"
 
+# Overlay shader shown only during a transition (gets an `iProgress` 0→1 uniform):
+# light dots that rise from the bottom and fade out quickly.
+[shader.transition]
+file = "transition.sksl"
+
 [transition]
 enabled = false                 # set true to emit StateLayout crossfades (like --transitions)

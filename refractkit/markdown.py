@@ -183,7 +183,15 @@ def parse_slide(chunk: str) -> dict | None:
         if mi:
             flush_para()
             flush_bullets()
-            blocks.append({"kind": "include", "name": mi.group(1).strip()})
+            inner = mi.group(1).strip()
+            # A URL becomes an interactive web link the viewer can open (press W);
+            # optional label after "|": <https://demo.dev | Live demo>.
+            if re.match(r"https?://", inner, re.I):
+                url, _, label = inner.partition("|")
+                blocks.append({"kind": "weblink", "url": url.strip(),
+                               "label": label.strip()})
+            else:
+                blocks.append({"kind": "include", "name": inner})
             i += 1
             continue
 

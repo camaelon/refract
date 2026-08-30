@@ -107,6 +107,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | video         | `<name.mp4>` (`.mov/.m4v`) — copied into `out/` as a slide the viewer plays |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
+| web link      | `<https://url>` (optional `\| label`) — a card; in the viewer press **W** to open the URL in a real, interactive in-window browser |
 
 Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
 finds `logo.png`). Speaker accent comes from `[speakers]` (below).
@@ -243,6 +244,22 @@ A slide background can be an animated SkSL shader (`iResolution`, `iTime` unifor
 `iTime` is `animTime`, so it animates). It's drawn full-slide behind transparent
 content. Different types can use different shaders via `[shader.<type>]`.
 
+A **transition overlay** shader (`[shader.transition]`) is drawn on top of the slide
+*only while a transition plays*. In addition to `iResolution`/`iTime` it receives an
+`iProgress` uniform (the transition's 0→1 progress), so the effect can envelope itself
+to nothing at the start and end. Return a **premultiplied** `half4` (it composites over
+the slide). The bundled example (`examples/deck/transition.sksl`) drifts light dots up
+from the bottom that fade out quickly. It is **opt-in per slide** — add
+`transition_fx=on` to the metadata of the slide whose transition should show it
+(e.g. `:: section transition=slide-up transition_fx=on`).
+
+```toml
+[shader]
+file = "shader.sksl"            # background, all slides
+[shader.transition]
+file = "transition.sksl"        # overlay, during transitions only (gets iProgress)
+```
+
 ## CLI
 
 ```
@@ -264,8 +281,11 @@ Speaker notes (`???` blocks) are written to `<deck>/out/notes.md`.
 
 - `prebuilt/json2rc` — JSON → `.rc` converter (built from the local androidx checkout;
   adds an `image` component that embeds a file inline)
-- `prebuilt/rcviewer` — interactive C++ viewer (also `--pdf` / `--screenshot`)
-- `prebuilt/rc2image` — headless `.rc` → PNG
+- `prebuilt/rcviewer` — interactive C++ viewer (also `--pdf` / `--screenshot`).
+  Keys: **←/→** step, **Space** pause, **R** reload, **D** debug, **S** screenshot,
+  **W** open this slide's web link (Esc/✕ closes it), **Q/Esc** quit. Slides are laid
+  out at their design size and scaled to fit the window, so they fill fullscreen.
+- `prebuilt/rc2image` — headless `.rc` → PNG (`--anim <sec>` pins the animation time)
 
 ## Architecture
 

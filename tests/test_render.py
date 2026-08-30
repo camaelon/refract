@@ -17,6 +17,23 @@ def _json_doc(root):
     return p
 
 
+def _find_uniform(doc, name):
+    """Return the value bound to a shader uniform `name` anywhere in the doc."""
+    found = []
+    def walk(n):
+        if isinstance(n, dict):
+            u = n.get("uniforms")
+            if isinstance(u, dict) and name in u:
+                found.append(u[name])
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(doc)
+    return found[0] if found else None
+
+
 class SlideType(unittest.TestCase):
     def test_types(self):
         self.assertEqual(render.slide_type({"meta": {"type": "title"}}), "title")
@@ -54,6 +71,23 @@ class RenderBlock(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertTrue(out[0]["value"].startswith("•"))
         self.assertTrue(out[1]["value"].startswith("    "))  # sub-indent
+
+    def test_weblink_card(self):
+        out = self.rb({"kind": "weblink", "url": "https://demo.dev", "label": "Live"})
+        texts = []
+        def walk(n):
+            if isinstance(n, dict):
+                if n.get("type") == "text":
+                    texts.append(n["value"])
+                for v in n.values():
+                    walk(v)
+            elif isinstance(n, list):
+                for v in n:
+                    walk(v)
+        walk(out)
+        self.assertIn("Live", texts)
+        self.assertIn("https://demo.dev", texts)
+        self.assertTrue(any("Press W" in t for t in texts))
 
     def test_json_include_splices(self):
         p = _json_doc({"type": "text", "value": "X"})
@@ -162,6 +196,17 @@ class Docs(unittest.TestCase):
         self.assertIsInstance(doc["root"], list)
         sl = [n for n in doc["root"] if isinstance(n, dict) and n.get("type") == "stateLayout"][0]
         self.assertEqual(len(sl["children"]), 2)
+
+    def test_transition_overlay_only_in_transition_docs(self):
+        theme = build_theme({"shader": {"transition": {"source": "half4 main(){return half4(0);}"}}})
+        # A static slide has no transition overlay…
+        static = render.build_doc({"title": "T"}, [], theme, 1600, 900, 0, False)
+        self.assertNotIn("iProgress", json.dumps(static))
+        # …but a push transition does, bound to its progress variable.
+        push = render.build_push_doc(({"title": "A"}, []), ({"title": "B"}, []),
+                                     theme, 1600, 900, 1, False, axis="y")
+        ov = _find_uniform(push, "iProgress")
+        self.assertEqual(ov, "$__pp")
 
     def test_push_duration_configurable(self):
         prev, cur = ({"title": "A"}, []), ({"title": "B"}, [])

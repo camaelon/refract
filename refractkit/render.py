@@ -83,6 +83,34 @@ def shader_canvas(source: str, width: int, height: int) -> dict:
     }
 
 
+def transition_overlay_canvas(source: str, width: int, height: int, progress_var: str) -> dict:
+    """A full-slide canvas running an overlay shader during a transition. Besides
+    ``iResolution``/``iTime`` it gets ``iProgress`` — the transition's 0→1 progress
+    variable — so the effect lives only while the transition plays."""
+    w, h = float(width), float(height)
+    return {
+        "type": "canvas",
+        "modifiers": ["fillMaxSize"],
+        "commands": [
+            {"type": "paint", "shader": {
+                "agsl": source,
+                "uniforms": {"iResolution": [w, h], "iTime": "animTime",
+                             "iProgress": progress_var}}},
+            {"type": "drawrect", "left": 0.0, "top": 0.0, "right": w, "bottom": h},
+        ],
+    }
+
+
+def with_transition_shader(content: dict, theme: Theme, width: int, height: int,
+                           progress_var: str, debug: bool) -> dict:
+    """Layer the transition overlay shader on top of a slide's content (below chrome)."""
+    if not theme.transition_shader:
+        return content
+    return {"type": "box", "modifiers": dbg(["fillMaxSize"], debug),
+            "children": [content, transition_overlay_canvas(
+                theme.transition_shader, width, height, progress_var)]}
+
+
 def vspacer(px: float) -> dict:
     """An empty fixed-height box, used as vertical spacing in a column."""
     return {"type": "box", "modifiers": [{"height": float(px)}], "children": []}
@@ -203,6 +231,26 @@ def _bullet_display(cur_items: list, same_ctx: dict) -> list:
     return out
 
 
+def render_weblink(block: dict, body_size: float, theme: Theme, debug: bool) -> list[dict]:
+    """A card for an interactive web link — the viewer opens the URL (press W) as a
+    real, clickable overlay. Shows the label, the URL, and that hint."""
+    label = block.get("label") or block["url"]
+    inner = {"type": "column", "modifiers": dbg([{"padding": 30.0}], debug), "children": [
+        {"type": "text", "value": label, "fontSize": round(body_size, 2),
+         "color": theme.accent, "fontWeight": 700.0},
+        vspacer(8.0),
+        {"type": "text", "value": block["url"], "fontSize": round(body_size * 0.62, 2),
+         "color": theme.body_color, "fontFamily": "monospace"},
+        vspacer(16.0),
+        {"type": "text", "value": "▶  Press W to open in the browser",
+         "fontSize": round(body_size * 0.55, 2), "color": theme.accent},
+    ]}
+    return [{"type": "box",
+             "modifiers": dbg(["fillMaxWidth", {"background": theme.table_bg},
+                               {"clip": 18.0}], debug),
+             "children": [inner]}]
+
+
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list,
                  same_ctx: dict | None = None, align: str = "start") -> list[dict]:
@@ -243,6 +291,8 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         out = render_graph(block, theme, debug, avail_w, avail_h, counter)
     elif kind == "chart":
         out = render_chart(block, theme, debug, avail_w, avail_h, counter)
+    elif kind == "weblink":
+        out = render_weblink(block, body_size, theme, debug)
     else:
         out = None
 
@@ -540,6 +590,7 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
     children.append(wrap(cur_root, cur_off))
 
     stage = {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": children}
+    stage = with_transition_shader(stage, theme, width, height, "$__pp", debug)
     return _finalize({
         "header": header(cur[0], width, height, index),
         "root": [
@@ -572,6 +623,7 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     children.extend(render_graph_morph(graph_block(prev[1]), graph_block(blocks),
                                        theme, debug, content_w, avail_h, GRAPH_PROGRESS_VAR))
     root_col = frame_slide(children, spec, theme, slide_type(slide), width, height, debug)
+    root_col = with_transition_shader(root_col, theme, width, height, "$__gp", debug)
     return _finalize({
         "header": header(slide, width, height, index),
         "root": [
@@ -597,6 +649,7 @@ def build_same_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: in
     same_ctx = diff_slides(prev[1], blocks)
     counter = [0]
     root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter, same_ctx)
+    root = with_transition_shader(root, theme, width, height, "$__sp", debug)
     p_expr, ease_expr = _same_exprs(theme)
     return _finalize({
         "header": header(slide, width, height, index),

@@ -64,6 +64,10 @@ class ThemeShaders(unittest.TestCase):
         self.assertIn("default", t.shaders)
         self.assertEqual(t.shader_for("content"), t.shaders["default"])
 
+    def test_transition_overlay_shader(self):
+        t = build_theme({"shader": {"transition": {"source": "half4 main(){return half4(0);}"}}})
+        self.assertIn("half4 main", t.transition_shader)
+
     def test_per_type_override_and_fallback(self):
         t = build_theme({"shader": {"source": "A", "title": {"source": "B"}}})
         self.assertEqual(t.shader_for("title"), "B")

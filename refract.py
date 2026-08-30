@@ -223,7 +223,7 @@ def run_once(args) -> int:
 
     # Fresh output: remove previously generated files so renamed or deleted slides
     # don't leave stale .rc/.json behind (the player would keep showing them).
-    for d, exts in ((out_dir, (".rc",)), (json_dir, (".json",))):
+    for d, exts in ((out_dir, (".rc", ".url")), (json_dir, (".json",))):
         for fname in os.listdir(d):
             if fname.endswith(exts):
                 os.remove(os.path.join(d, fname))
@@ -249,6 +249,13 @@ def run_once(args) -> int:
         rc_path = os.path.join(out_dir, name + ".rc")
         if slide.get("notes"):
             notes.append((i + 1, slide.get("title") or f"Slide {i + 1}", slide["notes"]))
+
+        # Web link: write a ".url" sidecar next to the slide's .rc. The viewer reads it
+        # and opens an interactive web overlay for that URL when the presenter presses W.
+        weblink = next((b for b in blocks if b["kind"] == "weblink"), None)
+        if weblink:
+            with open(os.path.join(out_dir, name + ".url"), "w") as f:
+                f.write(weblink["url"] + "\n")
 
         # Video slide: copy the video into out/ (the C++ viewer plays it in the slideshow).
         video = next((b for b in blocks if b["kind"] == "video"), None)
@@ -280,6 +287,11 @@ def run_once(args) -> int:
             changes["slide_author"] = author
             if author in theme.authors:
                 changes["accent"] = theme.authors[author]
+        # Transition overlay FX (the [shader.transition] shader) is opt-in per slide:
+        # only drawn on a slide's transition when it requests `transition_fx=on`.
+        fx = meta.get("overrides", {}).get("transition_fx", "").lower()
+        if fx not in ("on", "true", "1", "yes"):
+            changes["transition_shader"] = ""
         changes.update(theme_overrides(meta.get("overrides", {}), theme))
         stheme = replace(theme, **changes) if changes else theme
 
