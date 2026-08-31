@@ -112,6 +112,9 @@ class Theme:
     # Overlay shader drawn on top of the slide *only during a transition*, driven by an
     # ``iProgress`` uniform (0→1 across the transition). Empty = none.
     transition_shader: str = ""
+    # Shader drawn behind the *title element* of a content slide (on top of the slide
+    # background), so the heading gets its own animated backdrop. Empty = none.
+    title_shader: str = ""
     # Image corner radius in px (0 = square). Rounds embedded images.
     image_corner_radius: float = 0.0
     # Graph (graphviz) rendering colours.
@@ -119,6 +122,9 @@ class Theme:
     graph_node_stroke: str = "#FF4FC3F7"
     graph_node_text: str = "#FFE6EEF6"
     graph_edge: str = "#FF89A7C2"
+    graph_glow: bool = True          # neon light-bleed around node borders
+    graph_glow_radius: float = 9.0   # gaussian blur radius of the glow
+    graph_glow_strength: float = 1.0  # scales the glow blur radius
 
     def syntax_color(self, token_type: str) -> str:
         return self.syntax.get(token_type, self.code_foreground)
@@ -216,6 +222,9 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.graph_node_stroke = graph.get("node_stroke", t.graph_node_stroke)
     t.graph_node_text = graph.get("node_text", t.graph_node_text)
     t.graph_edge = graph.get("edge", t.graph_edge)
+    t.graph_glow = bool(graph.get("glow", t.graph_glow))
+    t.graph_glow_radius = float(graph.get("glow_radius", t.graph_glow_radius))
+    t.graph_glow_strength = float(graph.get("glow_strength", t.graph_glow_strength))
 
     shader = settings.get("shader", {})
     default_src = _shader_source(shader, deck_dir)
@@ -228,4 +237,11 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     trans_src = _shader_source(shader.get("transition", {}), deck_dir)
     if trans_src:
         t.transition_shader = trans_src
+
+    # Title-element backdrop: [title] shader = "file.sksl" (or a [title.shader] table).
+    title_cfg = settings.get("title", {})
+    ts = title_cfg.get("shader")
+    title_src = _shader_source({"file": ts} if isinstance(ts, str) else (ts or {}), deck_dir)
+    if title_src:
+        t.title_shader = title_src
     return t

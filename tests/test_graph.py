@@ -48,18 +48,33 @@ class WithGraphviz(unittest.TestCase):
         self.assertIn(("A", "B"), geo["edges"])
         self.assertIn(("B", "C"), geo["edges"])
 
+    @staticmethod
+    def _crisp(out):
+        # render_graph wraps the graph in a box [blurred-glow canvas, crisp canvas];
+        # the crisp canvas (with the real draw commands) is the last child.
+        node = out[0]
+        return node if node["type"] == "canvas" else node["children"][-1]
+
     def test_render_graph_structure(self):
         out = graph.render_graph({"dot": DOT, "engine": "dot"}, self.theme, False, 800, 600, [0])
-        self.assertEqual(out[0]["type"], "canvas")
-        types = {c["type"] for c in out[0]["commands"]}
+        canvas = self._crisp(out)
+        self.assertEqual(canvas["type"], "canvas")
+        types = {c["type"] for c in canvas["commands"]}
         self.assertIn("drawroundrect", types)
         self.assertIn("drawtextanchored", types)
+
+    def test_glow_layer_has_blur(self):
+        out = graph.render_graph({"dot": DOT, "engine": "dot"}, self.theme, False, 800, 600, [0])
+        # a graphicsLayer blur modifier is present on the glow canvas
+        import json
+        self.assertIn("graphicsLayer", json.dumps(out))
+        self.assertIn("blur", json.dumps(out))
 
     def test_morph_lerps_matched_nodes(self):
         a = {"dot": "digraph{ rankdir=LR; A->B }", "engine": "dot"}
         b = {"dot": "digraph{ rankdir=LR; A->B; B->C }", "engine": "dot"}
         out = graph.render_graph_morph(a, b, self.theme, False, 800, 600, "$t")
-        cmds = out[0]["commands"]
+        cmds = self._crisp(out)["commands"]
         # A moves between layouts -> at least one rounded rect uses an expr coordinate
         has_expr = any(c["type"] == "drawroundrect" and isinstance(c.get("left"), str)
                        for c in cmds)
@@ -68,7 +83,7 @@ class WithGraphviz(unittest.TestCase):
     def test_morph_fallback_when_no_prev(self):
         out = graph.render_graph_morph(None, {"dot": DOT, "engine": "dot"},
                                        self.theme, False, 800, 600, "$t")
-        self.assertEqual(out[0]["type"], "canvas")
+        self.assertEqual(self._crisp(out)["type"], "canvas")
 
 
 class Styling(unittest.TestCase):

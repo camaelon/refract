@@ -212,6 +212,24 @@ class SlideRoot(unittest.TestCase):
         pads = _all_paddings(doc["root"])
         self.assertIn(32.0, pads)
 
+    def test_title_shader_backdrop_unless_type_has_full_shader(self):
+        from dataclasses import replace
+        theme = replace(THEME, title_shader="half4 main(){return half4(0);}")
+        # a slide whose type has no full-slide shader (content) → title wrapped in a box
+        # with a shader canvas behind it
+        root = render.build_slide_root({"title": "T", "meta": {"type": "content"}},
+                                       [], theme, 1600, 900, 0, False, [0])
+        head = root["children"][0]
+        self.assertEqual(head["type"], "box")
+        self.assertTrue(any(c.get("type") == "canvas" for c in head["children"]))
+        # but a type with its own full-slide shader (here section) keeps a plain title.
+        # (frame_slide wraps a shader slide in a box [canvas, column].)
+        theme2 = replace(theme, shaders={"section": "half4 main(){return half4(0);}"})
+        root2 = render.build_slide_root({"title": "T", "meta": {"type": "section"}},
+                                        [], theme2, 1600, 900, 0, False, [0])
+        col2 = root2["children"][-1] if root2["type"] == "box" else root2
+        self.assertEqual(col2["children"][0].get("value"), "T")   # plain text, not a box
+
     def test_centered_slide_text_is_centered(self):
         # On title/section slides the text below the title is centre-aligned.
         root = render.build_slide_root({"title": "T", "meta": {"type": "title"}},

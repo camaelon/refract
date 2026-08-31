@@ -26,6 +26,11 @@ _EDGE_W = 2.5
 _SPLINE_SEGS = 10          # line segments per cubic bezier when sampling
 _MORPH_SAMPLES = 28        # points a matched edge is resampled to before lerping
 _PT_PER_INCH = 72.0
+# Magic-move: new arrows cascade in only after the boxes have settled (the morph finishes
+# ~animTime 0.62). Each new arrow starts a little after the previous, in animTime seconds.
+_ARROW_REVEAL_START = 0.66
+_ARROW_REVEAL_STAGGER = 0.13
+_ARROW_REVEAL_DUR = 0.22
 
 
 # ── Graphviz ─────────────────────────────────────────────────────────────────
@@ -165,10 +170,12 @@ def _norm_color(c: str | None) -> str | None:
 def _parse_style(style: str, scale: float, dash, wid):
     """Interpret a graphviz edge 'S' style op → (dash intervals, stroke width)."""
     s = style.lower()
+    # Fixed small px dashes (not scaled by the layout ratio, which can be large and would
+    # blow the dashes up into long segments).
     if s == "dashed":
-        dash = [round(9 * scale, 2), round(6 * scale, 2)]
+        dash = [5.0, 4.0]
     elif s == "dotted":
-        dash = [round(2 * scale, 2), round(5 * scale, 2)]
+        dash = [1.5, 3.5]
     elif s.startswith("setlinewidth("):
         try:
             wid = round(float(s[len("setlinewidth("):-1]) * scale, 2)
@@ -272,18 +279,39 @@ def _fill_polygon(points: list, pid: list) -> list[dict]:
     return out
 
 
+_GLOW_STROKE_W = 5.0     # width of the bright stroke drawn into the blurred glow layer
+
+
 def _node_cmds(l, t, r, b, cx, cy, rad, label, fs, theme, alpha,
                fill=None, stroke=None) -> list[dict]:
+    stroke_col = stroke or theme.graph_node_stroke
     return [
         _paint(_with_alpha([{"color": fill or theme.graph_node_fill}, {"style": "fill"}], alpha)),
         _rr(l, t, r, b, rad),
-        _paint(_with_alpha([{"color": stroke or theme.graph_node_stroke}, {"style": "stroke"},
+        _paint(_with_alpha([{"color": stroke_col}, {"style": "stroke"},
                             {"strokeWidth": _NODE_STROKE_W}, {"patheffect": None}], alpha)),
         _rr(l, t, r, b, rad),
         _paint(_with_alpha([{"color": theme.graph_node_text}, {"style": "fill"},
                             {"textSize": fs}], alpha)),
         {"type": "drawtextanchored", "text": label, "x": cx, "y": cy, "panX": 0.0, "panY": 0.0},
     ]
+
+
+def _glow_stroke(l, t, r, b, rad, stroke_col, alpha) -> list[dict]:
+    """A single bright border stroke drawn into the blurred glow layer."""
+    return [
+        _paint(_with_alpha([{"color": stroke_col}, {"style": "stroke"},
+                            {"strokeWidth": _GLOW_STROKE_W}, {"patheffect": None}], alpha)),
+        _rr(l, t, r, b, rad),
+    ]
+
+
+def _node_glow_cmds(n: dict, theme, alpha) -> list[dict]:
+    """Just the node's border stroke, bright — drawn into a blurred layer to make the
+    neon light-bleed (a real gaussian blur via a graphicsLayer, not stacked strokes)."""
+    rad = round(min(n["nw"], n["nh"]) * 0.28, 2)
+    return _glow_stroke(round(n["l"], 2), round(n["t"], 2), round(n["r"], 2),
+                        round(n["b"], 2), rad, n.get("stroke") or theme.graph_node_stroke, alpha)
 
 
 def _static_node(n: dict, theme, alpha) -> list[dict]:
@@ -316,12 +344,14 @@ def _stroke_polyline(poly: list, pid: list) -> list[dict]:
     return out
 
 
-def _static_edge(e: dict, theme, alpha, pid: list) -> list[dict]:
+def _static_edge(e: dict, theme, alpha, pid: list, part: str = "both") -> list[dict]:
+    """Draw an edge. ``part`` selects the spline, the arrowhead, or both — so callers can
+    layer arrowheads on top of everything else."""
     cmds = []
-    if e.get("spline"):
+    if part in ("both", "spline") and e.get("spline"):
         cmds.append(_paint(_edge_stroke_ops(e, theme, alpha)))
         cmds.extend(_stroke_polyline(e["spline"], pid))
-    if e.get("arrow"):
+    if part in ("both", "arrow") and e.get("arrow"):
         # Arrowheads are solid (no dash), in the edge colour.
         cmds.append(_paint(_with_alpha([{"color": e.get("color") or theme.graph_edge},
                                         {"style": "fill"}], alpha)))
@@ -329,33 +359,35 @@ def _static_edge(e: dict, theme, alpha, pid: list) -> list[dict]:
     return cmds
 
 
-def _cluster_cmds(c: dict, theme, pid: list) -> list[dict]:
-    """A subgraph cluster: filled/stroked rounded box with an optional label."""
+def _cluster_cmds(c: dict, theme, pid: list, alpha=None) -> list[dict]:
+    """A subgraph cluster: filled/stroked rounded box with an optional label. ``alpha``
+    (literal or expression) fades the whole cluster."""
     l, t, r, b = round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2)
     cmds = []
     if c.get("fill"):
-        cmds.append(_paint([{"color": c["fill"]}, {"style": "fill"}]))
+        cmds.append(_paint(_with_alpha([{"color": c["fill"]}, {"style": "fill"}], alpha)))
         cmds.append(_rr(l, t, r, b, 12.0))
     # A dashed/dotted cluster (graphviz `style=dashed`) carries dash intervals; set the
     # effect explicitly (null for solid) so it neither leaks onto nor is leaked from siblings.
-    cmds.append(_paint([{"color": c.get("stroke") or theme.graph_edge}, {"style": "stroke"},
-                        {"strokeWidth": c.get("width") or 2.0},
+    cmds.append(_paint(_with_alpha([{"color": c.get("stroke") or theme.graph_edge},
+                        {"style": "stroke"}, {"strokeWidth": c.get("width") or 2.0},
                         {"patheffect": {"intervals": c["dash"], "phase": 0.0}
-                                       if c.get("dash") else None}]))
+                                       if c.get("dash") else None}], alpha)))
     cmds.append(_rr(l, t, r, b, 12.0))
     if c.get("label") and c.get("lpos"):
         lx, ly = round(c["lpos"][0], 2), round(c["lpos"][1], 2)
-        cmds.append(_paint([{"color": c.get("stroke") or theme.graph_node_text},
-                            {"style": "fill"}, {"textSize": 24.0}]))
+        cmds.append(_paint(_with_alpha([{"color": c.get("stroke") or theme.graph_node_text},
+                            {"style": "fill"}, {"textSize": 24.0}], alpha)))
         cmds.append({"type": "drawtextanchored", "text": c["label"], "x": lx, "y": ly,
                      "panX": 0.0, "panY": 0.0})
     return cmds
 
 
-def _morph_edge(ea: dict, eb: dict, theme, t: str, pid: list) -> list[dict]:
-    """A matched edge: lerp its (resampled) spline and arrowhead by ``t``."""
+def _morph_edge(ea: dict, eb: dict, theme, t: str, pid: list, part: str = "both") -> list[dict]:
+    """A matched edge: lerp its (resampled) spline and arrowhead by ``t``. ``part`` selects
+    the spline, the arrowhead, or both."""
     cmds = []
-    if ea.get("spline") and eb.get("spline"):
+    if part in ("both", "spline") and ea.get("spline") and eb.get("spline"):
         sa = _resample(ea["spline"], _MORPH_SAMPLES)
         sb = _resample(eb["spline"], _MORPH_SAMPLES)
         pts = [(_lerp(sa[i][0], sb[i][0], t), _lerp(sa[i][1], sb[i][1], t))
@@ -364,7 +396,7 @@ def _morph_edge(ea: dict, eb: dict, theme, t: str, pid: list) -> list[dict]:
                             {"strokeWidth": _EDGE_W}]))
         for p, q in zip(pts, pts[1:]):
             cmds.append(_line(p, q))
-    if ea.get("arrow") and eb.get("arrow"):
+    if part in ("both", "arrow") and ea.get("arrow") and eb.get("arrow"):
         n = min(len(ea["arrow"]), len(eb["arrow"]))
         aa, ab = _resample(ea["arrow"], n), _resample(eb["arrow"], n)
         pts = [(_lerp(aa[i][0], ab[i][0], t), _lerp(aa[i][1], ab[i][1], t)) for i in range(n)]
@@ -373,12 +405,31 @@ def _morph_edge(ea: dict, eb: dict, theme, t: str, pid: list) -> list[dict]:
     return cmds
 
 
-def _canvas(cmds: list, avail_w: float, avail_h: float, debug: bool) -> list[dict]:
-    return [{
+def _canvas(cmds: list, avail_w: float, avail_h: float, debug: bool,
+            extra_mods: list | None = None) -> dict:
+    return {
         "type": "canvas",
-        "modifiers": dbg([{"width": float(avail_w)}, {"height": float(avail_h)}], debug),
+        "modifiers": dbg([{"width": float(avail_w)}, {"height": float(avail_h)},
+                          *(extra_mods or [])], debug),
         "commands": cmds,
-    }]
+    }
+
+
+def _with_glow(main_cmds: list, glow_cmds: list, theme, avail_w, avail_h,
+               debug: bool) -> list[dict]:
+    """Overlay the crisp graph on a blurred copy of the node borders. The glow layer is a
+    canvas with a ``graphicsLayer`` blur render effect (real gaussian blur), so the bright
+    strokes bleed into a soft neon halo behind the sharp graph."""
+    crisp = _canvas(main_cmds, avail_w, avail_h, debug)
+    if not (getattr(theme, "graph_glow", True) and glow_cmds):
+        return [crisp]
+    radius = round(getattr(theme, "graph_glow_radius", 9.0)
+                   * getattr(theme, "graph_glow_strength", 1.0), 2)
+    glow = _canvas(glow_cmds, avail_w, avail_h, debug,
+                   extra_mods=[{"graphicsLayer": {"blur": radius}}])
+    return [{"type": "box",
+             "modifiers": dbg([{"width": float(avail_w)}, {"height": float(avail_h)}], debug),
+             "children": [glow, crisp]}]
 
 
 # ── Public rendering ─────────────────────────────────────────────────────────
@@ -388,14 +439,19 @@ def render_graph(block: dict, theme, debug: bool, avail_w: float, avail_h: float
     if not geo:
         return [text("[graphviz failed — is `dot` installed?]", 32.0, theme.body_color, debug)]
     cmds: list[dict] = []
+    glow: list[dict] = []
+    arrows: list[dict] = []
     pid = [0]
     for c in geo.get("clusters", []):              # clusters behind everything
         cmds += _cluster_cmds(c, theme, pid)
-    for e in geo["edges"].values():                # edges under nodes
-        cmds += _static_edge(e, theme, None, pid)
+    for e in geo["edges"].values():                # edge lines under nodes…
+        cmds += _static_edge(e, theme, None, pid, "spline")
+        arrows += _static_edge(e, theme, None, pid, "arrow")
     for n in geo["nodes"].values():
         cmds += _static_node(n, theme, None)
-    return _canvas(cmds, avail_w, avail_h, debug)
+        glow += _node_glow_cmds(n, theme, None)
+    cmds += arrows                                 # …arrowheads on top of everything
+    return _with_glow(cmds, glow, theme, avail_w, avail_h, debug)
 
 
 def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
@@ -408,40 +464,61 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
         return render_graph(cur_block or prev_block, theme, debug, avail_w, avail_h, [0])
 
     cmds: list[dict] = []
+    arrows: list[dict] = []
     pid = [0]
 
-    # Clusters (behind everything) crossfade between the two layouts.
+    # Clusters, behind everything. Match by label: a cluster present in both layouts stays
+    # put; one only in the old layout fades out; a *new* one fades in only after the nodes
+    # have finished moving (its alpha ramps up over the tail of the morph).
+    ga_labels = {c.get("label") for c in ga.get("clusters", [])}
+    gb_labels = {c.get("label") for c in gb.get("clusters", [])}
+    new_cluster_alpha = f"min(1.0, max(0.0, ({t} - 0.55) / 0.45))"
     for c in ga.get("clusters", []):
-        cmds += [_paint([{"color": (c.get("stroke") or theme.graph_edge)}, {"style": "stroke"},
-                         {"strokeWidth": c.get("width") or 2.0}, {"alpha": f"1.0 - {t}"},
-                         {"patheffect": {"intervals": c["dash"], "phase": 0.0}
-                                        if c.get("dash") else None}]),
-                 _rr(round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2), 12.0)]
+        if c.get("label") not in gb_labels:                    # gone → fade out
+            cmds += _cluster_cmds(c, theme, pid, alpha=f"1.0 - {t}")
     for c in gb.get("clusters", []):
-        cmds += _cluster_cmds(c, theme, pid)
+        if c.get("label") in ga_labels:                        # persists → static
+            cmds += _cluster_cmds(c, theme, pid)
+        else:                                                  # new → delayed fade-in
+            cmds += _cluster_cmds(c, theme, pid, alpha=new_cluster_alpha)
 
-    # Edges (under nodes).
+    # Edge lines (under nodes); arrowheads collected for last. Disappearing edges fade out
+    # and matched edges morph over the whole move; *new* edges (arrows) instead cascade in
+    # one after another only once the boxes have finished animating.
     ea, eb = ga["edges"], gb["edges"]
     for key in ea.keys() - eb.keys():
-        cmds += _static_edge(ea[key], theme, f"1.0 - {t}", pid)
-    for key in eb.keys() - ea.keys():
-        cmds += _static_edge(eb[key], theme, t, pid)
+        cmds += _static_edge(ea[key], theme, f"1.0 - {t}", pid, "spline")
+        arrows += _static_edge(ea[key], theme, f"1.0 - {t}", pid, "arrow")
+    for i, key in enumerate(sorted(eb.keys() - ea.keys())):
+        # animTime-based so it can extend past the (already-finished) morph; staggered.
+        start = round(_ARROW_REVEAL_START + i * _ARROW_REVEAL_STAGGER, 3)
+        reveal = f"min(1.0, max(0.0, (animTime - {start}) / {_ARROW_REVEAL_DUR}))"
+        cmds += _static_edge(eb[key], theme, reveal, pid, "spline")
+        arrows += _static_edge(eb[key], theme, reveal, pid, "arrow")
     for key in ea.keys() & eb.keys():
-        cmds += _morph_edge(ea[key], eb[key], theme, t, pid)
+        cmds += _morph_edge(ea[key], eb[key], theme, t, pid, "spline")
+        arrows += _morph_edge(ea[key], eb[key], theme, t, pid, "arrow")
 
     # Nodes.
     na, nb = ga["nodes"], gb["nodes"]
+    glow: list[dict] = []
     for name in na.keys() - nb.keys():
         cmds += _static_node(na[name], theme, f"1.0 - {t}")
+        glow += _node_glow_cmds(na[name], theme, f"1.0 - {t}")
     for name in nb.keys() - na.keys():
         cmds += _static_node(nb[name], theme, t)
+        glow += _node_glow_cmds(nb[name], theme, t)
     for name in na.keys() & nb.keys():
         a2, b2 = na[name], nb[name]
         rad = _lerp(min(a2["nw"], a2["nh"]) * 0.28, min(b2["nw"], b2["nh"]) * 0.28, t)
+        ll, tt = _lerp(a2["l"], b2["l"], t), _lerp(a2["t"], b2["t"], t)
+        rr, bb = _lerp(a2["r"], b2["r"], t), _lerp(a2["b"], b2["b"], t)
         cmds += _node_cmds(
-            _lerp(a2["l"], b2["l"], t), _lerp(a2["t"], b2["t"], t),
-            _lerp(a2["r"], b2["r"], t), _lerp(a2["b"], b2["b"], t),
+            ll, tt, rr, bb,
             _lerp(a2["cx"], b2["cx"], t), _lerp(a2["cy"], b2["cy"], t),
             rad, b2["label"], _fit_font(b2["label"], b2["nw"], b2["nh"]), theme, None)
+        glow += _glow_stroke(ll, tt, rr, bb, rad,
+                             b2.get("stroke") or theme.graph_node_stroke, None)
 
-    return _canvas(cmds, avail_w, avail_h, debug)
+    cmds += arrows                                 # arrowheads on top of everything
+    return _with_glow(cmds, glow, theme, avail_w, avail_h, debug)

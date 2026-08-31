@@ -11,6 +11,7 @@ package refract.json2rc;
 
 import androidx.compose.remote.core.RcPlatformServices;
 import androidx.compose.remote.creation.RemoteComposeWriter;
+import androidx.compose.remote.creation.json.GraphicsLayerBlurSupport;
 import androidx.compose.remote.creation.json.ImageComponentSupport;
 import androidx.compose.remote.creation.json.RemoteComposeJsonParser;
 
@@ -73,6 +74,7 @@ public final class Main {
         RemoteComposeWriter writer = new RemoteComposeWriter(platform, apiLevel, tags);
         RemoteComposeJsonParser parser = new RemoteComposeJsonParser(writer);
         ImageComponentSupport.register(parser);
+        GraphicsLayerBlurSupport.register(parser);
 
         // Make image files available to the parser:
         //  - "image" components (src) are hoisted before root so DATA_BITMAP precedes

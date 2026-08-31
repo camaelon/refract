@@ -101,7 +101,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | bullet list   | `- item`, indent two spaces per sub-level                     |
 | table         | markdown pipe table `\| a \| b \|` (first row = header)      |
 | code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, java, json) |
-| graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … — laid out by graphviz, drawn by refract (clusters, dashed/dotted/coloured edges, per-node colours) |
+| graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … — laid out by graphviz, drawn by refract (clusters, dashed/dotted/coloured edges, per-node colours, neon node glow) |
 | chart         | fenced ```` ```chart-bar ```` / `chart-line` / `chart-pie` with `label: value` lines |
 | image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc` |
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
@@ -243,7 +243,33 @@ shader / accent can also be overridden per slide via `key=value` metadata
 
 A slide background can be an animated SkSL shader (`iResolution`, `iTime` uniforms;
 `iTime` is `animTime`, so it animates). It's drawn full-slide behind transparent
-content. Different types can use different shaders via `[shader.<type>]`.
+content. Different types can use different shaders via `[shader.<type>]`
+(`title` / `section` / `content`), e.g. give title/section slides their own backdrop:
+
+```toml
+[shader.title]
+file = "dotgrid.sksl"           # e.g. a dot grid lit by a slowly-drifting glow
+[shader.section]
+file = "dotgrid.sksl"
+```
+
+`examples/deck/dotgrid.sksl` is such a backdrop — a grid of dots with a soft light that
+orbits over time, brightening different dots as it moves.
+
+A shader can also sit behind just the **title element** of a content slide (on top of the
+slide's own background), giving the heading its own animated band:
+
+```toml
+[title]
+shader = "title-dots.sksl"
+```
+
+The band is larger than the heading, so make the shader **transparent** (premultiplied
+`half4`) and fade it toward the edges — it then composites over the slide background and
+attenuates around the title instead of looking clipped. `examples/deck/title-dots.sksl`
+does this (the transparent, edge-fading sibling of the full-slide `dotgrid.sksl`). This
+applies to content/`max` slides; title & section slides use their full-slide
+`[shader.<type>]` instead.
 
 A **transition overlay** shader (`[shader.transition]`) is drawn on top of the slide
 *only while a transition plays*. In addition to `iResolution`/`iTime` it receives an
@@ -357,3 +383,9 @@ python3 -m unittest discover -s tests
 - **Custom components** (`LAYOUT_CUSTOM`, op 93) delegate drawing to a host keyed by a
   `config` string; the viewer's video host plays embedded `<name.mp4>` in place — see
   *Embedded video & custom components* above.
+- **Graph node glow** is a real gaussian blur: the bright node borders are drawn into a
+  layer with a `graphicsLayer` **blur render effect** (the Skia equivalent of Android
+  `RenderEffect.createBlurEffect`), behind the crisp graph. Tunable/disable-able via
+  `[graph] glow`, `glow_radius`, `glow_strength`. Implementing this added blur support to
+  the C++ player (`saveLayerWithBlur`) and exposed a `blur` key on the `graphicsLayer`
+  JSON modifier — both reusable beyond graphs.

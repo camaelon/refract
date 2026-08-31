@@ -126,6 +126,46 @@ def with_transition_shader(content: dict, theme: Theme, width: int, height: int,
                 theme.transition_shader, width, height, progress_var)]}
 
 
+def _title_shader_box(title: str, title_size: float, band_h: float, content_w: float,
+                      theme: Theme, debug: bool, h_align: str = "start") -> dict:
+    """The title text over its own animated shader backdrop (drawn on top of the slide
+    background). The band is deliberately taller/wider than the heading so the (edge-fading,
+    transparent) shader attenuates around the title rather than looking clipped; the text is
+    ``h_align``-aligned (centred on centred slides) and vertically centred within it."""
+    txt = {"type": "text", "value": title, "fontSize": round(title_size, 2),
+           "color": theme.title_color}
+    if h_align == "center":
+        txt["textAlign"] = "center"
+    if debug:
+        txt["modifiers"] = dbg([], debug)
+    return {
+        "type": "box",
+        "horizontalAlignment": h_align, "verticalAlignment": "center",
+        "modifiers": dbg(["fillMaxWidth", {"height": round(band_h, 2)}], debug),
+        "children": [shader_canvas(theme.title_shader, content_w, band_h), txt],
+    }
+
+
+def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
+                 theme: Theme, centered: bool, debug: bool) -> tuple:
+    """Build the [title, gap-spacer] nodes and reserved title height for a slide. Applies
+    the title-element shader (an animated backdrop behind the heading) unless the slide
+    *type* already has a full-slide shader of its own (e.g. section). Shared by the normal
+    layout and the graph magic-move builder."""
+    if not slide.get("title"):
+        return [], 0
+    gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
+    if theme.title_shader and stype not in theme.shaders:
+        band_h = round(title_size * 2.1, 2)
+        node = _title_shader_box(slide["title"], title_size, band_h, content_w, theme,
+                                 debug, "center" if centered else "start")
+        title_h = int(band_h + gap)
+    else:
+        node = text(slide["title"], title_size, theme.title_color, debug)
+        title_h = int(title_size * 1.8 + gap)
+    return [node, vspacer(gap)], title_h
+
+
 def vspacer(px: float) -> dict:
     """An empty fixed-height box, used as vertical spacing in a column."""
     return {"type": "box", "modifiers": [{"height": float(px)}], "children": []}
@@ -355,13 +395,8 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
 
     # Title, followed by a configurable vertical gap before the content. ``max`` slides
     # use a tighter gap so the maximised content keeps more room.
-    title_group = []
-    title_h = 0
-    if slide.get("title"):
-        gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
-        title_group = [text(slide["title"], title_size, theme.title_color, debug),
-                       vspacer(gap)]
-        title_h = int(title_size * 1.8 + gap)
+    title_group, title_h = _title_group(slide, stype, title_size, content_w,
+                                        theme, centered, debug)
     # Keep content clear of the bottom chrome. It only matters when the slide's margin is
     # smaller than the chrome band (e.g. a `max` slide) — a native overlay like a webview
     # would otherwise cover it. Normal slides' larger margins already clear it.
@@ -658,12 +693,9 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     content_w = width - 2 * PADDING
 
     children = []
-    title_h = 0
-    if slide.get("title"):
-        title_size = theme.title_size(stype)
-        children.append(text(slide["title"], title_size, theme.title_color, debug))
-        children.append(vspacer(theme.title_gap))
-        title_h = int(title_size * 1.8 + theme.title_gap)
+    title_group, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
+                                        theme, stype in ("title", "section"), debug)
+    children.extend(title_group)
     avail_h = height - 2 * PADDING - title_h
 
     children.extend(render_graph_morph(graph_block(prev[1]), graph_block(blocks),
