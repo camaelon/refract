@@ -107,7 +107,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
-| web link      | `<https://url>` (optional `\| label`) — a card; in the viewer press **W** to open the URL in a real, interactive in-window browser |
+| web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box |
 
 Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
 finds `logo.png`). Speaker accent comes from `[speakers]` (below).
@@ -267,21 +267,28 @@ leaf that the core lays out like any component, then delegates drawing to a host
 (`CustomComponentHost`) keyed by a `config` string. This keeps the core
 platform-agnostic while an app supplies renderers for things Skia alone can't do.
 
-The viewer ships a **video** host (AVFoundation), so a `<name.mp4>` inside a page plays
-**in place**, aspect-fit, looping:
+The viewer ships two hosts, both keyed off the `config` string:
+
+- **video** (`config: "video:<file>"`, AVFoundation) — `<name.mp4>` plays in place,
+  aspect-fit, looping. The file is copied next to the slides and referenced by name.
+  A lone video with no title fills the whole slide instead.
+- **web** (`config: "web:<url>"`, WKWebView) — `<https://url>` embeds a live, clickable
+  browser positioned over the component's box; it follows layout and transitions and
+  supports file-open dialogs.
 
 ```markdown
 # Live demo
 Watch it run:
 
 <demo.mp4>
+
+# The Spec
+<https://example.dev/spec | Reference>
 ```
 
-The video is copied next to the slides and referenced by file name (`config:
-"video:demo.mp4"`). A lone video with no title fills the whole slide instead. Custom
-components need the ANDROIDX+EXPERIMENTAL profile, which refract sets automatically.
-(macOS only for now; other platforms draw nothing. PDF/screenshot export doesn't run
-the video host, so embedded video is blank in exports.)
+Custom components need the ANDROIDX+EXPERIMENTAL profile, which refract sets
+automatically. (macOS only for now — other platforms draw nothing; and PDF/screenshot
+export doesn't run the hosts, so embedded video/web are blank in exports.)
 
 ## CLI
 
@@ -306,8 +313,9 @@ Speaker notes (`???` blocks) are written to `<deck>/out/notes.md`.
   adds an `image` component that embeds a file inline)
 - `prebuilt/rcviewer` — interactive C++ viewer (also `--pdf` / `--screenshot`).
   Keys: **←/→** step, **Space** pause, **R** reload, **D** debug, **S** screenshot,
-  **W** open this slide's web link (Esc/✕ closes it), **Q/Esc** quit. Slides are laid
-  out at their design size and scaled to fit the window, so they fill fullscreen.
+  **Q/Esc** quit. Embedded web pages are live in the slide; click to interact, **Esc**
+  returns keyboard focus to the deck. Slides are laid out at their design size and
+  scaled to fit the window, so they fill fullscreen.
 - `prebuilt/rc2image` — headless `.rc` → PNG (`--anim <sec>` pins the animation time)
 
 ## Architecture

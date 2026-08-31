@@ -85,22 +85,11 @@ class RenderBlock(unittest.TestCase):
         out = self.rb({"kind": "video", "path": "clips/demo.mp4"})
         self.assertEqual(out[0]["config"], "video:demo.mp4")
 
-    def test_weblink_card(self):
+    def test_weblink_custom_component(self):
+        # A web link is a native custom component the viewer embeds as a live WKWebView.
         out = self.rb({"kind": "weblink", "url": "https://demo.dev", "label": "Live"})
-        texts = []
-        def walk(n):
-            if isinstance(n, dict):
-                if n.get("type") == "text":
-                    texts.append(n["value"])
-                for v in n.values():
-                    walk(v)
-            elif isinstance(n, list):
-                for v in n:
-                    walk(v)
-        walk(out)
-        self.assertIn("Live", texts)
-        self.assertIn("https://demo.dev", texts)
-        self.assertTrue(any("Press W" in t for t in texts))
+        self.assertEqual(out[0]["type"], "custom")
+        self.assertEqual(out[0]["config"], "web:https://demo.dev")
 
     def test_json_include_splices(self):
         p = _json_doc({"type": "text", "value": "X"})

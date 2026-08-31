@@ -184,8 +184,8 @@ def parse_slide(chunk: str) -> dict | None:
             flush_para()
             flush_bullets()
             inner = mi.group(1).strip()
-            # A URL becomes an interactive web link the viewer can open (press W);
-            # optional label after "|": <https://demo.dev | Live demo>.
+            # A URL becomes an interactive web page embedded in the slide (a custom
+            # component); optional label after "|": <https://demo.dev | Live demo>.
             if re.match(r"https?://", inner, re.I):
                 url, _, label = inner.partition("|")
                 blocks.append({"kind": "weblink", "url": url.strip(),

@@ -231,24 +231,16 @@ def _bullet_display(cur_items: list, same_ctx: dict) -> list:
     return out
 
 
-def render_weblink(block: dict, body_size: float, theme: Theme, debug: bool) -> list[dict]:
-    """A card for an interactive web link — the viewer opens the URL (press W) as a
-    real, clickable overlay. Shows the label, the URL, and that hint."""
-    label = block.get("label") or block["url"]
-    inner = {"type": "column", "modifiers": dbg([{"padding": 30.0}], debug), "children": [
-        {"type": "text", "value": label, "fontSize": round(body_size, 2),
-         "color": theme.accent, "fontWeight": 700.0},
-        vspacer(8.0),
-        {"type": "text", "value": block["url"], "fontSize": round(body_size * 0.62, 2),
-         "color": theme.body_color, "fontFamily": "monospace"},
-        vspacer(16.0),
-        {"type": "text", "value": "▶  Press W to open in the browser",
-         "fontSize": round(body_size * 0.55, 2), "color": theme.accent},
-    ]}
-    return [{"type": "box",
-             "modifiers": dbg(["fillMaxWidth", {"background": theme.table_bg},
-                               {"clip": 18.0}], debug),
-             "children": [inner]}]
+def render_weblink(block: dict, theme: Theme, debug: bool,
+                   avail_w: float, avail_h: float) -> list[dict]:
+    """An interactive web page as a native custom component (op 93). The viewer's web
+    host positions a real, clickable WKWebView over this box — so the page is embedded
+    in the slide (and follows transitions) rather than a separate window."""
+    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
+    if theme.image_corner_radius > 0:
+        mods.append({"clip": float(theme.image_corner_radius)})
+    return [{"type": "custom", "config": f"web:{block['url']}",
+             "modifiers": dbg(mods, debug), "children": []}]
 
 
 def render_video(block: dict, theme: Theme, debug: bool,
@@ -307,7 +299,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     elif kind == "chart":
         out = render_chart(block, theme, debug, avail_w, avail_h, counter)
     elif kind == "weblink":
-        out = render_weblink(block, body_size, theme, debug)
+        out = render_weblink(block, theme, debug, avail_w, avail_h)
     elif kind == "video":
         out = render_video(block, theme, debug, avail_w, avail_h)
     else:
