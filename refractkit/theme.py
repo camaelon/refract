@@ -30,6 +30,7 @@ DEFAULT_FONTS = {
     "title_title":   120.0, "title_body":   48.0,
     "section_title":  96.0, "section_body": 40.0,
     "content_title":  72.0, "content_body": 40.0,
+    "max_title":      44.0, "max_body":     40.0,   # near-fullscreen: small title
     "subtitle":       46.0,
     "table":          38.0,
 }
@@ -37,7 +38,7 @@ DEFAULT_FONTS = {
 FONT_ALIASES = {
     "title": "title_title", "section": "section_title", "heading": "content_title",
     "body": "content_body", "content": "content_body", "subtitle": "subtitle",
-    "table": "table", "code": "code",
+    "table": "table", "code": "code", "max": "max_title",
 }
 
 
@@ -78,11 +79,14 @@ class Theme:
     code_font_size: float = 28.0
     code_corner_radius: float = 0.0
     title_gap: float = 44.0             # vertical gap between the title and content
-    # Slide chrome (page number / footer / progress bar).
+    # Slide chrome (page number / footer / progress bar). Rendered in the theme's own
+    # colours (body / accent) and made translucent via chrome_alpha, so it reads as a
+    # soft glassy overlay rather than a flat grey.
     chrome_page: bool = False
     chrome_footer: str = ""
     chrome_progress: bool = False
-    chrome_color: str = "#66FFFFFF"
+    chrome_color: str = "#66FFFFFF"     # deprecated (kept for back-compat); use chrome_alpha
+    chrome_alpha: float = 0.55          # translucency of the whole chrome overlay
     # `:: same` shared-element transition (enter/exit for appearing/disappearing content).
     same_enter: str = "fade"        # fade | slide-left | slide-right | slide-up | slide-down
     same_exit: str = "fade"
@@ -190,6 +194,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.chrome_footer = str(chrome.get("footer", t.chrome_footer))
     t.chrome_progress = bool(chrome.get("progress", t.chrome_progress))
     t.chrome_color = chrome.get("color", t.chrome_color)
+    t.chrome_alpha = float(chrome.get("alpha", t.chrome_alpha))
 
     for name, color in (settings.get("authors", {}) or {}).items():
         t.authors[name] = color

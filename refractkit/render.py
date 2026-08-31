@@ -15,12 +15,27 @@ from .theme import Theme
 PADDING = 80
 PANE_GAP = 48
 LOGO_H_FRAC = 0.32   # image height on a title/section slide, as a fraction of slide height
+CHROME_BAND = 80.0   # approx height of the bottom chrome (footer row + progress bar)
 
-# Slide types (alignment only; font sizes come from the Theme, see theme.py [font]).
+
+def _chrome_reserve(theme: "Theme", stype: str, pad: float) -> float:
+    """Vertical space to keep free at the bottom for the chrome, so content (especially a
+    native webview/video overlay) doesn't sit under it. Zero unless the chrome is shown
+    and the slide's margin is smaller than the chrome band. The title slide has no chrome."""
+    if stype == "title":
+        return 0.0
+    shown = (theme.chrome_page or theme.chrome_footer or theme.chrome_progress
+             or bool(getattr(theme, "slide_author", "")))
+    return max(0.0, CHROME_BAND - pad) if shown else 0.0
+
+# Slide types (alignment + margin; font sizes come from the Theme, see theme.py [font]).
+# ``max`` is near-fullscreen: a small margin so the content is maximised, a smaller
+# title, and the chrome still shown.
 SLIDE_TYPES = {
-    "title":   {"h_align": "center", "v_align": "center"},
-    "section": {"h_align": "center", "v_align": "center"},
-    "content": {"h_align": "start",  "v_align": "top"},
+    "title":   {"h_align": "center", "v_align": "center", "padding": PADDING},
+    "section": {"h_align": "center", "v_align": "center", "padding": PADDING},
+    "content": {"h_align": "start",  "v_align": "top",    "padding": PADDING},
+    "max":     {"h_align": "start",  "v_align": "top",    "padding": 32.0},
 }
 DEFAULT_TYPE = "content"
 
@@ -332,19 +347,25 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     """Build the root Column for one slide (no header wrapper)."""
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
+    pad = spec.get("padding", PADDING)
     title_size = theme.title_size(stype)
     body_size = theme.body_size(stype)
-    content_w = width - 2 * PADDING
+    content_w = width - 2 * pad
     centered = stype in ("title", "section")
 
-    # Title, followed by a configurable vertical gap before the content.
+    # Title, followed by a configurable vertical gap before the content. ``max`` slides
+    # use a tighter gap so the maximised content keeps more room.
     title_group = []
     title_h = 0
     if slide.get("title"):
+        gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
         title_group = [text(slide["title"], title_size, theme.title_color, debug),
-                       vspacer(theme.title_gap)]
-        title_h = int(title_size * 1.8 + theme.title_gap)
-    avail_h = height - 2 * PADDING - title_h
+                       vspacer(gap)]
+        title_h = int(title_size * 1.8 + gap)
+    # Keep content clear of the bottom chrome. It only matters when the slide's margin is
+    # smaller than the chrome band (e.g. a `max` slide) — a native overlay like a webview
+    # would otherwise cover it. Normal slides' larger margins already clear it.
+    avail_h = height - 2 * pad - title_h - _chrome_reserve(theme, stype, pad)
 
     children = []
     panes = split_panes(blocks)
@@ -400,11 +421,12 @@ def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
     (in a Box) when the slide type has one, else a solid background."""
     shader = theme.shader_for(stype)
     bg_mods = [] if shader else [{"background": theme.background}]
+    pad = spec.get("padding", PADDING)
     col = {
         "type": "column",
         "horizontalAlignment": spec["h_align"],
         "verticalAlignment": spec["v_align"],
-        "modifiers": dbg(["fillMaxSize", *bg_mods, {"padding": float(PADDING)}], debug),
+        "modifiers": dbg(["fillMaxSize", *bg_mods, {"padding": float(pad)}], debug),
         "children": children,
     }
     if shader:
@@ -439,24 +461,26 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
     author = getattr(theme, "slide_author", "")
     if not (theme.chrome_page or theme.chrome_footer or theme.chrome_progress or author):
         return None
-    col = theme.chrome_color
+    # Full-opacity theme colours; the whole overlay is made translucent by chrome_alpha
+    # (a graphicsLayer), so chrome reads as a soft glassy tint rather than a flat grey.
+    text_col = theme.body_color
     rows = []
 
     if theme.chrome_footer or theme.chrome_page or author:
         line = []
         if theme.chrome_footer:
             line.append({"type": "text", "value": theme.chrome_footer, "fontSize": 24.0,
-                         "color": col})
+                         "color": text_col})
         line.append({"type": "spacer", "modifiers": [{"weight": 1.0}]})
         # The attributed author (@name), tinted in their own accent colour.
         if author:
             line.append({"type": "text", "value": author, "fontSize": 24.0,
                          "color": theme.accent})
             if theme.chrome_page and total:
-                line.append({"type": "text", "value": "   ", "fontSize": 24.0, "color": col})
+                line.append({"type": "text", "value": "   ", "fontSize": 24.0, "color": text_col})
         if theme.chrome_page and total:
             line.append({"type": "text", "value": f"{index + 1} / {total}", "fontSize": 24.0,
-                         "color": col})
+                         "color": text_col})
         rows.append({"type": "row",
                      "modifiers": dbg(["fillMaxWidth", {"padding": [float(PADDING), 20.0]}], debug),
                      "children": line})
@@ -464,15 +488,20 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
     if theme.chrome_progress and total:
         frac = round((index + 1) / total, 4)
         filled = round(width * frac, 2)
+        # Accent-tinted fill over a faint track — translucent (via the overlay layer),
+        # not a grey block.
         rows.append({"type": "box", "modifiers": ["fillMaxWidth", {"height": 6.0},
                      {"background": theme.table_bg}], "children": [
                         {"type": "box", "modifiers": [{"width": filled}, {"height": 6.0},
-                         {"background": col}], "children": []}]})
+                         {"background": theme.accent}], "children": []}]})
 
-    # Anchor the chrome column to the bottom of the slide.
+    # Anchor the chrome column to the bottom of the slide, translucent as a whole.
     return {"type": "box", "horizontalAlignment": "start", "verticalAlignment": "bottom",
             "modifiers": dbg(["fillMaxSize"], debug), "children": [
-                {"type": "column", "modifiers": ["fillMaxWidth"], "children": rows}]}
+                {"type": "column",
+                 "modifiers": ["fillMaxWidth",
+                               {"graphicsLayer": {"alpha": round(theme.chrome_alpha, 3)}}],
+                 "children": rows}]}
 
 
 def with_chrome(content: dict, theme: Theme, index: int, total: int,
@@ -486,6 +515,14 @@ def with_chrome(content: dict, theme: Theme, index: int, total: int,
         return content
     return {"type": "box", "modifiers": dbg(["fillMaxSize"], debug),
             "children": [content, overlay]}
+
+
+def _no_web(blocks: list[dict]) -> list[dict]:
+    """Drop web-link blocks. The outgoing (previous) slide in a transition is rendered
+    without its embedded browser: a native WKWebView can't slide with the Skia content
+    anyway, and baking it in leaves a lingering off-screen view and extra weight. The
+    incoming slide keeps its webview — it's the destination."""
+    return [b for b in blocks if b.get("kind") != "weblink"]
 
 
 def header(slide: dict, width: int, height: int, index: int, profiles: int | None = None) -> dict:
@@ -554,7 +591,7 @@ def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: in
     slide (state 1); the index auto-advances on load via animTime."""
     counter = [0]
     prev_root = (blank_root(theme, width, height, debug) if prev is None
-                 else build_slide_root(prev[0], prev[1], theme, width, height, index - 1, debug, counter))
+                 else build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
     state = {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
              "children": [prev_root, cur_root]}
@@ -593,7 +630,7 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
 
     children = []
     if prev is not None:
-        prev_root = build_slide_root(prev[0], prev[1], theme, width, height, index - 1, debug, counter)
+        prev_root = build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter)
         children.append(wrap(prev_root, prev_off))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
     children.append(wrap(cur_root, cur_off))

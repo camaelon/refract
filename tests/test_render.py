@@ -17,6 +17,52 @@ def _json_doc(root):
     return p
 
 
+def _texts_all(node):
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "text":
+                out.append(n.get("value"))
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
+def _all_paddings(node):
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            for m in n.get("modifiers", []):
+                if isinstance(m, dict) and "padding" in m and isinstance(m["padding"], (int, float)):
+                    out.append(float(m["padding"]))
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
+def _web_configs(node):
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "custom" and str(n.get("config", "")).startswith("web:"):
+                out.append(n["config"])
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
 def _find_uniform(doc, name):
     """Return the value bound to a shader uniform `name` anywhere in the doc."""
     found = []
@@ -141,6 +187,31 @@ class SlideRoot(unittest.TestCase):
         self.assertEqual(root["children"][0]["type"], "canvas")
         self.assertTrue(any(c.get("value") == "Hi" for c in root["children"]))
 
+    def test_max_reserves_chrome_but_content_does_not(self):
+        from refractkit.theme import build_theme
+        theme = build_theme({"chrome": {"progress": True}})
+        # max's small margin is smaller than the chrome band → it reserves space…
+        self.assertGreater(render._chrome_reserve(theme, "max", 32.0), 0.0)
+        # …but a content slide's large margin already clears the chrome → no reserve.
+        self.assertEqual(render._chrome_reserve(theme, "content", 80.0), 0.0)
+        # …and with no chrome enabled, nothing is reserved.
+        self.assertEqual(render._chrome_reserve(build_theme({}), "max", 32.0), 0.0)
+
+    def test_max_type_small_margin_and_title(self):
+        # `max` uses a small margin and a smaller title, and still shows chrome.
+        from refractkit.theme import build_theme
+        theme = build_theme({"chrome": {"page": True}})
+        self.assertLess(render.SLIDE_TYPES["max"]["padding"],
+                        render.SLIDE_TYPES["content"]["padding"])
+        self.assertLess(theme.title_size("max"), theme.title_size("content"))
+        doc = render.build_doc({"title": "T", "meta": {"type": "max"}},
+                               [{"kind": "text", "text": "x"}], theme, 1600, 900, 0,
+                               False, total=3)
+        # chrome present (unlike title), and the outer padding is the small max margin
+        self.assertIn("1 / 3", _texts_all(doc["root"]))
+        pads = _all_paddings(doc["root"])
+        self.assertIn(32.0, pads)
+
     def test_centered_slide_text_is_centered(self):
         # On title/section slides the text below the title is centre-aligned.
         root = render.build_slide_root({"title": "T", "meta": {"type": "title"}},
@@ -224,6 +295,15 @@ class Docs(unittest.TestCase):
         pp = next(n for n in doc["root"]
                   if isinstance(n, dict) and n.get("name") == "__pp")
         self.assertIn("/ 0.9", pp["value"])
+
+    def test_push_drops_previous_webview(self):
+        # The outgoing slide's webview is stripped from the transition; the incoming
+        # slide keeps its own.
+        prev = ({"title": "A"}, [{"kind": "weblink", "url": "https://a.dev"}])
+        cur = ({"title": "B"}, [{"kind": "weblink", "url": "https://b.dev"}])
+        doc = render.build_push_doc(prev, cur, THEME, 1600, 900, 1, False)
+        webs = _web_configs(doc)
+        self.assertEqual(webs, ["web:https://b.dev"])   # only the incoming page
 
     def test_graph_transition_two_vars(self):
         prev = ({"title": "G"}, [{"kind": "graph", "engine": "dot", "dot": "digraph{A->B}"}])

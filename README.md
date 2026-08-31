@@ -88,6 +88,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | `title`   | large title centered; an image renders above it (logo size)   |
 | `section` | title centered (auto-numbered when an `agenda` slide exists)   |
 | `content` | default — title at top, content below, left-aligned           |
+| `max`     | near-fullscreen — small margin so the content is maximised, a smaller title (if any), chrome still shown; great for a full-bleed graph, image, video or web page |
 | `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
 | `agenda`  | replaced by an auto-generated table of contents of the `section` slides |
 
