@@ -192,6 +192,36 @@ class RenderBlock(unittest.TestCase):
         self.assertEqual(top_ops, ["drawcircle"])
         self.assertEqual(sub_ops, ["drawline"])
 
+    def test_stagger_reveal_wraps_content(self):
+        from dataclasses import replace
+        theme = replace(THEME, content_reveal="stagger", reveal_stagger=0.15, reveal_duration=0.3)
+        root = render.build_slide_root(
+            {"title": "T", "meta": {"type": "content"}},
+            [{"kind": "bullets", "items": [{"level": 0, "text": "a"}, {"level": 0, "text": "b"}]}],
+            theme, 1600, 900, 0, False, [0])
+        s = json.dumps(root)
+        self.assertIn("animTime", s)                              # entrance driven by animTime
+        # two bullets → two distinct start offsets (0.0 and 0.15)
+        self.assertIn("animTime - 0.0)", s)
+        self.assertIn("animTime - 0.15)", s)
+
+    def test_immediate_reveal_has_no_animation(self):
+        root = render.build_slide_root(
+            {"title": "T", "meta": {"type": "content"}},
+            [{"kind": "bullets", "items": [{"level": 0, "text": "a"}]}],
+            THEME, 1600, 900, 0, False, [0])          # THEME default = immediate
+        self.assertNotIn("animTime", json.dumps(root))
+
+    def test_outgoing_slide_not_staggered(self):
+        # animate=False (the outgoing slide of a transition) suppresses the reveal.
+        from dataclasses import replace
+        theme = replace(THEME, content_reveal="stagger")
+        root = render.build_slide_root(
+            {"title": "T", "meta": {"type": "content"}},
+            [{"kind": "bullets", "items": [{"level": 0, "text": "a"}]}],
+            theme, 1600, 900, 0, False, [0], animate=False)
+        self.assertNotIn("animTime", json.dumps(root))
+
     def test_embedded_video_custom_component(self):
         out = self.rb({"kind": "video", "path": "clips/demo.mp4", "src": "demo.mp4"})
         self.assertEqual(out[0]["type"], "custom")

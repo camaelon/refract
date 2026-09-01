@@ -115,6 +115,13 @@ class Theme:
     # Deck-wide section spans for the progress bar, filled in by the deck builder:
     # [{"start": <0-based slide index>, "color": "#AARRGGBB"}], in order.
     chrome_sections: list = field(default_factory=list)
+    # Content reveal: how bullets/content blocks appear when a slide loads.
+    content_reveal: str = "immediate"   # immediate (appear at once) | stagger (cascade in)
+    reveal_delay: float = 0.0           # seconds before the first item animates
+    reveal_stagger: float = 0.12        # seconds between successive items
+    reveal_duration: float = 0.32       # per-item animation duration
+    reveal_rise: float = 26.0           # px each item slides up as it fades in
+    reveal_steps: bool = False          # also split content across multiple .rc files
     # `:: same` shared-element transition (enter/exit for appearing/disappearing content).
     same_enter: str = "fade"        # fade | slide-left | slide-right | slide-up | slide-down
     same_exit: str = "fade"
@@ -264,6 +271,14 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.same_exit = same.get("exit", t.same_exit)
     t.same_duration = float(same.get("duration", t.same_duration))
     t.same_delay = float(same.get("delay", t.same_delay))
+
+    reveal = settings.get("reveal", {})
+    t.content_reveal = str(reveal.get("mode", t.content_reveal)).lower()
+    t.reveal_delay = float(reveal.get("delay", t.reveal_delay))
+    t.reveal_stagger = float(reveal.get("stagger", t.reveal_stagger))
+    t.reveal_duration = float(reveal.get("duration", t.reveal_duration))
+    t.reveal_rise = float(reveal.get("rise", t.reveal_rise))
+    t.reveal_steps = bool(reveal.get("steps", t.reveal_steps))
 
     image = settings.get("image", {})
     if "corner_radius" in image:

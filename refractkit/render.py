@@ -306,6 +306,29 @@ def _bullet_row(item: dict, size: float, theme: Theme, debug: bool, counter: lis
             "modifiers": dbg(["fillMaxWidth"], debug), "children": kids}
 
 
+def _reveal_wrap(node: dict, theme: Theme, i: int) -> dict:
+    """Give a content node a staggered fade-and-rise entrance driven by the built-in
+    ``animTime``: item ``i`` starts at ``delay + i*stagger`` and eases in over ``duration``.
+    Alpha is a linear fade; the upward slide uses a snappy ease-out (kept within the 32-token
+    expression budget — the clamp appears at most twice)."""
+    s = round(theme.reveal_delay + i * theme.reveal_stagger, 3)
+    d = round(max(0.01, theme.reveal_duration), 3)
+    p = f"min(1.0, max(0.0, (animTime - {s}) / {d}))"      # 0→1 clamp for this item
+    node = dict(node)
+    mods = list(node.get("modifiers", []))
+    mods.append({"graphicsLayer": {"alpha": p}})
+    if theme.reveal_rise:
+        rise = round(theme.reveal_rise, 2)
+        mods.append({"offset": {"x": 0.0, "y": f"({rise}) * (1.0 - {p}) * (1.0 - {p})"}})
+    node["modifiers"] = mods
+    return node
+
+
+def _stagger(nodes: list, theme: Theme, start: int = 0) -> list:
+    """Apply a staggered entrance to each node (skipping any that are None/empty)."""
+    return [_reveal_wrap(n, theme, start + i) for i, n in enumerate(nodes)]
+
+
 def _enter_mods(theme: Theme) -> list:
     """Modifiers that animate an appearing (`:: same`) component in, driven by $__st."""
     t = SAME_VAR
@@ -459,9 +482,15 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
 
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
                      index: int, debug: bool, counter: list, same_ctx: dict | None = None,
-                     bg: str = "default") -> dict:
+                     bg: str = "default", animate: bool | None = None) -> dict:
     """Build the root Column for one slide (no header wrapper). ``bg="none"`` omits the
-    per-slide background (see ``frame_slide``)."""
+    per-slide background (see ``frame_slide``). ``animate`` forces the staggered content
+    reveal on/off; None → the theme default. It is off for the *outgoing* slide of a
+    transition (that content already appeared) and when a `:: same` diff is animating."""
+    # Stagger content in when the theme asks for it (or the caller forces it), except on the
+    # outgoing transition slide or when `:: same` is already animating the diff.
+    do_stagger = (theme.content_reveal == "stagger" if animate is None else animate) \
+        and same_ctx is None
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
     pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
@@ -491,12 +520,16 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             for block in imgs:
                 children.extend(render_block(block, body_size, theme, debug, content_w, height * LOGO_H_FRAC, counter, same_ctx))
             children.extend(title_group)
+            content: list = []
             for block in rest:
-                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx, align="center"))
+                content.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx, align="center"))
+            children.extend(_stagger(content, theme) if do_stagger else content)
         else:
             children.extend(title_group)
+            content = []
             for block in pane_blocks:
-                children.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx))
+                content.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx))
+            children.extend(_stagger(content, theme) if do_stagger else content)
     else:
         children.extend(title_group)
         n = len(panes)
@@ -775,7 +808,7 @@ def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: in
     slide (state 1); the index auto-advances on load via animTime."""
     counter = [0]
     prev_root = (blank_root(theme, width, height, debug) if prev is None
-                 else build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter))
+                 else build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter, animate=False))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
     state = {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
              "children": [prev_root, cur_root]}
@@ -834,7 +867,7 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
         children.append(shared_bg)
     if prev is not None:
         prev_root = build_slide_root(prev[0], _no_web(prev[1]), theme, width, height,
-                                     index - 1, debug, counter, bg=root_bg)
+                                     index - 1, debug, counter, bg=root_bg, animate=False)
         children.append(wrap(prev_root, prev_off))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug,
                                 counter, bg=root_bg)

@@ -121,18 +121,30 @@ def compute_sections(slides: list, theme, speakers: dict) -> list:
     return sections
 
 
-def expand_fragments(slides: list) -> list:
-    """Expand slides flagged ``fragment`` into one slide per cumulative top-level
-    bullet, so bullets reveal progressively. Non-fragment slides pass through."""
+def _wants_steps(meta: dict, steps_default: bool) -> bool:
+    """Whether a slide should be split into multiple .rc files (stepped reveal). Per-slide
+    `fragment`/`steps` flags force on; `nosteps`/`nofragment` or `steps=off` force off; else
+    the global `[reveal] steps` default applies."""
+    flags = meta.get("flags", [])
+    if "nosteps" in flags or "nofragment" in flags:
+        return False
+    if str(meta.get("overrides", {}).get("steps", "")).lower() in ("off", "false", "no", "0"):
+        return False
+    if "fragment" in flags or "steps" in flags:
+        return True
+    return steps_default
+
+
+def expand_fragments(slides: list, steps_default: bool = False) -> list:
+    """Expand stepped slides into one .rc per cumulative top-level bullet, so pressing the
+    next key reveals the next bullet. Every step after the first is marked ``reveal_step`` so
+    it animates that one new bullet in (via the `:: same` diff) rather than re-drawing all."""
     out = []
     for slide in slides:
         meta = slide.get("meta") or {}
-        if "fragment" not in meta.get("flags", []):
-            out.append(slide)
-            continue
-        # Find the (first) bullets block; reveal its top-level groups one at a time.
-        bidx = next((k for k, b in enumerate(slide["blocks"]) if b["kind"] == "bullets"), None)
-        if bidx is None:
+        bidx = next((k for k, b in enumerate(slide.get("blocks", []))
+                     if b["kind"] == "bullets"), None)
+        if bidx is None or not _wants_steps(meta, steps_default):
             out.append(slide)
             continue
         items = slide["blocks"][bidx]["items"]
@@ -148,7 +160,12 @@ def expand_fragments(slides: list) -> list:
             revealed = [it for g in groups[:step] for it in g]
             new_blocks = list(slide["blocks"])
             new_blocks[bidx] = {"kind": "bullets", "items": revealed}
-            out.append({**slide, "blocks": new_blocks})
+            # A fresh meta per step; steps after the first same-transition from the prior
+            # step so only the newly-revealed bullet animates in.
+            step_meta = {**meta}
+            if step > 1:
+                step_meta["reveal_step"] = True
+            out.append({**slide, "meta": step_meta, "blocks": new_blocks})
     return out
 
 
@@ -244,17 +261,21 @@ def main() -> int:
 
 
 def run_once(args) -> int:
+    deck_dir = os.path.abspath(args.deck)
+    # Settings precedence: CLI flag > settings.toml > built-in default. Loaded before the
+    # deck so the reveal-steps default can drive fragment expansion.
+    settings = load_settings(deck_dir)
+    theme = build_theme(settings, deck_dir)
     try:
         slides = load_deck(args.deck, {os.path.abspath(args.deck)})
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 1
-    slides = apply_agenda(expand_fragments(slides))
+    slides = apply_agenda(expand_fragments(slides, theme.reveal_steps))
     if not slides:
         print("no slides found", file=sys.stderr)
         return 1
 
-    deck_dir = os.path.abspath(args.deck)
     out_dir = os.path.join(deck_dir, "out")
     json_dir = os.path.join(out_dir, "json")
     os.makedirs(json_dir, exist_ok=True)
@@ -267,9 +288,6 @@ def run_once(args) -> int:
             if fname.endswith(exts):
                 os.remove(os.path.join(d, fname))
 
-    # Settings precedence: CLI flag > settings.toml > built-in default.
-    settings = load_settings(deck_dir)
-    theme = build_theme(settings, deck_dir)
     slide_cfg = settings.get("slide", {})
     trans_cfg = settings.get("transition", {})
     width = args.width if args.width is not None else slide_cfg.get("width", 1600)
@@ -330,6 +348,10 @@ def run_once(args) -> int:
             changes["slide_author"] = author
             if author in theme.authors:
                 changes["accent"] = theme.authors[author]
+        # Per-slide content-reveal override: `reveal=stagger` / `reveal=immediate`.
+        reveal_ov = meta.get("overrides", {}).get("reveal")
+        if reveal_ov:
+            changes["content_reveal"] = reveal_ov.lower()
         # Per-slide-type transition defaults live in [transition.<type>] (e.g.
         # [transition.section] style="slide-up" duration=0.9 fx=true). Precedence for every
         # knob: per-slide `transition*=` override > [transition.<type>] > [transition] > default.
@@ -353,12 +375,12 @@ def run_once(args) -> int:
         # Push/slide duration (seconds); larger = slower.
         push_dur = float(meta.get("overrides", {}).get("transition_duration",
                          type_trans.get("duration", trans_cfg.get("duration", PUSH_DURATION))))
-        is_same = meta.get("type", "").lower() == "same"
+        # `:: same`, or a stepped-reveal step (both animate only the changed content in
+        # place, independent of --transitions).
+        is_same = meta.get("type", "").lower() == "same" or bool(meta.get("reveal_step"))
         if is_same and prev is not None:
-            # `:: same` — shared-element transition from the previous slide (always on,
-            # independent of --transitions, since marking a slide `same` is the opt-in).
             doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
-            tag = "same"
+            tag = "step" if meta.get("reveal_step") else "same"
         elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
             doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
             tag = "graph-morph"

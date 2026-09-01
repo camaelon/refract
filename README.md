@@ -157,13 +157,37 @@ Precedence for each knob: per-slide `transition*=` override → `[transition.<ty
 python3 refract.py examples/deck --transitions
 ```
 
-### Fragments (progressive reveal)
+### Content reveal (animate content in)
 
-Add the `fragment` flag to a slide to reveal its top-level bullets one at a time —
-refract expands it into one slide per cumulative bullet:
+How bullets and content blocks appear when a slide loads, set by `[reveal] mode` and
+overridable per slide with `reveal=`:
+
+- **immediate** (default) — everything appears at once.
+- **stagger** — items cascade in (fade + a small upward slide, snappy ease-out), each a
+  little after the last. Timing via `[reveal] delay` / `stagger` / `duration` / `rise`.
 
 ```markdown
-:: content fragment
+:: content reveal=stagger
+# Cascades in
+- first
+- second
+- third
+```
+
+The reveal runs on load (it also plays as a slide transitions in); the *outgoing* slide of
+a transition is never re-revealed.
+
+### Stepped reveal — one `.rc` per step (progressive)
+
+To reveal bullets across **separate slides** (press the next key → the next bullet appears),
+enable *steps*. refract expands the slide into one `.rc` per cumulative top-level bullet; each
+step after the first animates just the newly-revealed bullet in (via the `:: same` diff).
+
+- Per slide: the `fragment` / `steps` flag turns it on; `nosteps` (or `steps=off`) turns it off.
+- Globally: `[reveal] steps = true` makes every bullet slide stepped by default.
+
+```markdown
+:: content steps
 # Build it up
 - first
 - second
@@ -278,6 +302,14 @@ duration = 0.45                 # push/slide time in seconds (larger = slower)
 style    = "slide-up"           # section slides rise up from below…
 duration = 0.9
 fx       = true                 # …with the [shader.transition] overlay on
+
+[reveal]                        # how content appears on a slide
+mode     = "immediate"          # immediate | stagger (cascade bullets/blocks in)
+delay    = 0.0                  # seconds before the first item animates
+stagger  = 0.12                 # seconds between items
+duration = 0.32                 # per-item animation time
+rise     = 26                   # px each item slides up as it fades in
+steps    = false                # also split bullet slides into one .rc per step
 ```
 
 Precedence: **CLI flag > settings.toml > built-in default**. Any theme colour /

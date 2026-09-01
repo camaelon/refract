@@ -61,6 +61,28 @@ class Fragments(unittest.TestCase):
         s = self._slide([], [{"level": 0, "text": "a"}])
         self.assertEqual(refract.expand_fragments([s]), [s])
 
+    def test_steps_after_first_marked_reveal(self):
+        items = [{"level": 0, "text": "a"}, {"level": 0, "text": "b"},
+                 {"level": 0, "text": "c"}]
+        out = refract.expand_fragments([self._slide(["steps"], items)])
+        self.assertEqual(len(out), 3)
+        self.assertFalse(out[0]["meta"].get("reveal_step"))      # first step: normal
+        self.assertTrue(out[1]["meta"]["reveal_step"])           # later steps animate the diff
+        self.assertTrue(out[2]["meta"]["reveal_step"])
+
+    def test_global_steps_default_and_overrides(self):
+        items = [{"level": 0, "text": "a"}, {"level": 0, "text": "b"}]
+        base = {"meta": {"type": "content", "flags": [], "overrides": {}},
+                "blocks": [{"kind": "bullets", "items": items}]}
+        # global default on → a plain content slide with bullets is stepped
+        self.assertEqual(len(refract.expand_fragments([base], steps_default=True)), 2)
+        # per-slide opt-out wins over the global default
+        off = {**base, "meta": {"type": "content", "flags": ["nosteps"], "overrides": {}}}
+        self.assertEqual(len(refract.expand_fragments([off], steps_default=True)), 1)
+        # and `steps=off` override too
+        off2 = {**base, "meta": {"type": "content", "flags": [], "overrides": {"steps": "off"}}}
+        self.assertEqual(len(refract.expand_fragments([off2], steps_default=True)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
