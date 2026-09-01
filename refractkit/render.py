@@ -18,6 +18,17 @@ LOGO_H_FRAC = 0.32   # image height on a title/section slide, as a fraction of s
 CHROME_BAND = 80.0   # approx height of the bottom chrome (footer row + progress bar)
 
 
+def _pad_sides(pad) -> tuple[float, float, float, float]:
+    """Normalise a slide's ``padding`` spec to (left, top, right, bottom). A number is
+    uniform; a 4-list is [left, top, right, bottom]; a dict uses those named keys."""
+    if isinstance(pad, dict):
+        return (float(pad.get("left", 0)), float(pad.get("top", 0)),
+                float(pad.get("right", 0)), float(pad.get("bottom", 0)))
+    if isinstance(pad, (list, tuple)) and len(pad) == 4:
+        return tuple(float(v) for v in pad)  # type: ignore[return-value]
+    return (float(pad), float(pad), float(pad), float(pad))
+
+
 def _chrome_reserve(theme: "Theme", stype: str, pad: float) -> float:
     """Vertical space to keep free at the bottom for the chrome, so content (especially a
     native webview/video overlay) doesn't sit under it. Zero unless the chrome is shown
@@ -35,7 +46,10 @@ SLIDE_TYPES = {
     "title":   {"h_align": "center", "v_align": "center", "padding": PADDING},
     "section": {"h_align": "center", "v_align": "center", "padding": PADDING},
     "content": {"h_align": "start",  "v_align": "top",    "padding": PADDING},
-    "max":     {"h_align": "start",  "v_align": "top",    "padding": 32.0},
+    # Near-fullscreen: tight top/left/right margins to maximise the content, but keep a
+    # normal bottom margin so the footer chrome still has room.
+    "max":     {"h_align": "start",  "v_align": "top",
+                "padding": {"left": 16.0, "top": 16.0, "right": 16.0, "bottom": 32.0}},
 }
 DEFAULT_TYPE = "content"
 
@@ -134,6 +148,10 @@ def _title_shader_box(title: str, title_size: float, band_h: float, content_w: f
     ``h_align``-aligned (centred on centred slides) and vertically centred within it."""
     txt = {"type": "text", "value": title, "fontSize": round(title_size, 2),
            "color": theme.title_color}
+    if theme.title_font:
+        txt["fontFamily"] = theme.title_font
+    if theme.title_weight and theme.title_weight != 400.0:
+        txt["fontWeight"] = float(theme.title_weight)
     if h_align == "center":
         txt["textAlign"] = "center"
     if debug:
@@ -146,6 +164,18 @@ def _title_shader_box(title: str, title_size: float, band_h: float, content_w: f
     }
 
 
+def _numbered_title_row(number: int, title: str, size: float, theme: Theme,
+                        debug: bool) -> dict:
+    """A section heading whose leading ``N.`` is tinted with the deck's primary colour.
+    A Row that wraps to its content, so the parent column centres it like a plain title."""
+    num = text(f"{number}.", size, theme.primary, debug,
+               family=theme.title_font, weight=theme.title_weight)
+    ttl = text(f" {title}", size, theme.title_color, debug,
+               family=theme.title_font, weight=theme.title_weight)
+    return {"type": "row", "verticalAlignment": "center",
+            "modifiers": dbg([], debug), "children": [num, ttl]}
+
+
 def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
                  theme: Theme, centered: bool, debug: bool) -> tuple:
     """Build the [title, gap-spacer] nodes and reserved title height for a slide. Applies
@@ -155,13 +185,19 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
     if not slide.get("title"):
         return [], 0
     gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
+    num = slide.get("section_number")
     if theme.title_shader and stype not in theme.shaders:
         band_h = round(title_size * 2.1, 2)
-        node = _title_shader_box(slide["title"], title_size, band_h, content_w, theme,
+        disp = f"{num}. {slide['title']}" if num else slide["title"]
+        node = _title_shader_box(disp, title_size, band_h, content_w, theme,
                                  debug, "center" if centered else "start")
         title_h = int(band_h + gap)
+    elif num:
+        node = _numbered_title_row(num, slide["title"], title_size, theme, debug)
+        title_h = int(title_size * 1.8 + gap)
     else:
-        node = text(slide["title"], title_size, theme.title_color, debug)
+        node = text(slide["title"], title_size, theme.title_color, debug,
+                    family=theme.title_font, weight=theme.title_weight)
         title_h = int(title_size * 1.8 + gap)
     return [node, vspacer(gap)], title_h
 
@@ -226,7 +262,7 @@ def _styled(line: str, size: float, color: str, theme: Theme, debug: bool,
     else a plain wrapping Text. ``align`` centres the Flow on title/section slides."""
     if has_markup(line) or has_author(line, theme.authors):
         return styled_line(line, size, color, theme, debug, align)
-    comp = text(line, size, color, debug)
+    comp = text(line, size, color, debug, family=theme.body_font, weight=theme.body_weight)
     if align == "center":
         comp["textAlign"] = "center"
     return comp
@@ -357,6 +393,8 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         out = render_weblink(block, theme, debug, avail_w, avail_h)
     elif kind == "video":
         out = render_video(block, theme, debug, avail_w, avail_h)
+    elif kind == "outline":
+        out = render_outline(block, theme, debug)
     else:
         out = None
 
@@ -383,14 +421,16 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
 
 
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-                     index: int, debug: bool, counter: list, same_ctx: dict | None = None) -> dict:
-    """Build the root Column for one slide (no header wrapper)."""
+                     index: int, debug: bool, counter: list, same_ctx: dict | None = None,
+                     bg: str = "default") -> dict:
+    """Build the root Column for one slide (no header wrapper). ``bg="none"`` omits the
+    per-slide background (see ``frame_slide``)."""
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
-    pad = spec.get("padding", PADDING)
+    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
     title_size = theme.title_size(stype)
     body_size = theme.body_size(stype)
-    content_w = width - 2 * pad
+    content_w = width - pad_l - pad_r
     centered = stype in ("title", "section")
 
     # Title, followed by a configurable vertical gap before the content. ``max`` slides
@@ -400,7 +440,7 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     # Keep content clear of the bottom chrome. It only matters when the slide's margin is
     # smaller than the chrome band (e.g. a `max` slide) — a native overlay like a webview
     # would otherwise cover it. Normal slides' larger margins already clear it.
-    avail_h = height - 2 * pad - title_h - _chrome_reserve(theme, stype, pad)
+    avail_h = height - pad_t - pad_b - title_h - _chrome_reserve(theme, stype, pad_b)
 
     children = []
     panes = split_panes(blocks)
@@ -447,21 +487,25 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             "children": pane_nodes,
         })
 
-    return frame_slide(children, spec, theme, slide_type(slide), width, height, debug)
+    return frame_slide(children, spec, theme, slide_type(slide), width, height, debug, bg)
 
 
 def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
-                width: int, height: int, debug: bool) -> dict:
+                width: int, height: int, debug: bool, bg: str = "default") -> dict:
     """Wrap slide children in the root column, layering a shader background behind
-    (in a Box) when the slide type has one, else a solid background."""
-    shader = theme.shader_for(stype)
-    bg_mods = [] if shader else [{"background": theme.background}]
-    pad = spec.get("padding", PADDING)
+    (in a Box) when the slide type has one, else a solid background. ``bg="none"`` omits
+    the background entirely (transparent) — used by push transitions that draw a single
+    shared background behind both sliding slides instead of one per slide."""
+    shader = None if bg == "none" else theme.shader_for(stype)
+    bg_mods = [] if (shader or bg == "none") else [{"background": theme.background}]
+    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_mod = ({"padding": float(pad_l)} if pad_l == pad_t == pad_r == pad_b
+               else {"padding": [pad_l, pad_t, pad_r, pad_b]})
     col = {
         "type": "column",
         "horizontalAlignment": spec["h_align"],
         "verticalAlignment": spec["v_align"],
-        "modifiers": dbg(["fillMaxSize", *bg_mods, {"padding": float(pad)}], debug),
+        "modifiers": dbg(["fillMaxSize", *bg_mods, pad_mod], debug),
         "children": children,
     }
     if shader:
@@ -471,6 +515,29 @@ def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
             "children": [shader_canvas(shader, width, height), col],
         }
     return col
+
+
+def render_outline(block: dict, theme: Theme, debug: bool) -> list[dict]:
+    """A synthesized deck outline: one row per numbered section, the number in the deck's
+    primary colour, the section title beside it. Built from the sections collected in
+    ``apply_agenda`` (an ``:: outline`` slide)."""
+    items = block.get("items", [])
+    size = float(theme.fonts.get("heading", 44.0))
+    rows: list[dict] = []
+    for i, it in enumerate(items):
+        if i:
+            rows.append(vspacer(size * 0.55))
+        num = text(f"{it['num']}.", round(size * 1.05, 1), theme.primary, debug,
+                   family=theme.title_font, weight=theme.title_weight)
+        ttl = text(str(it["title"]), size, theme.body_color, debug,
+                   family=theme.body_font, weight=theme.body_weight)
+        rows.append({
+            "type": "row", "verticalAlignment": "center",
+            "modifiers": dbg(["fillMaxWidth"], debug),
+            "children": [num, {"type": "box", "modifiers": [{"width": round(size * 0.6, 1)}],
+                               "children": []}, ttl],
+        })
+    return [{"type": "column", "modifiers": dbg(["fillMaxWidth"], debug), "children": rows}]
 
 
 def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
@@ -541,9 +608,9 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
 
 def with_chrome(content: dict, theme: Theme, index: int, total: int,
                 width: int, height: int, debug: bool, stype: str = "content") -> dict:
-    """Layer the chrome overlay on top of a slide's content node. The title slide is
-    a clean cover — it never carries footer / page number / progress chrome."""
-    if stype == "title":
+    """Layer the chrome overlay on top of a slide's content node. Title and section
+    slides are clean covers — they never carry footer / page number / progress chrome."""
+    if stype in ("title", "section"):
         return content
     overlay = _chrome_overlay(theme, index, total, width, height, debug)
     if overlay is None:
@@ -553,11 +620,12 @@ def with_chrome(content: dict, theme: Theme, index: int, total: int,
 
 
 def _no_web(blocks: list[dict]) -> list[dict]:
-    """Drop web-link blocks. The outgoing (previous) slide in a transition is rendered
-    without its embedded browser: a native WKWebView can't slide with the Skia content
-    anyway, and baking it in leaves a lingering off-screen view and extra weight. The
-    incoming slide keeps its webview — it's the destination."""
-    return [b for b in blocks if b.get("kind") != "weblink"]
+    """Drop native overlay blocks (web pages and videos). The outgoing (previous) slide in
+    a transition is rendered without them: a native WKWebView / AVFoundation video player
+    can't slide with the Skia content anyway, and baking it in re-instantiates the player
+    on the destination slide (and leaves a lingering off-screen view). The incoming slide
+    keeps its own overlay — it's the destination."""
+    return [b for b in blocks if b.get("kind") not in ("weblink", "video")]
 
 
 def header(slide: dict, width: int, height: int, index: int, profiles: int | None = None) -> dict:
@@ -663,11 +731,32 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
         return {"type": "box", "modifiers": dbg(["fillMaxSize", {"offset": off}], debug),
                 "children": [root]}
 
-    children = []
+    # If both slides share the same background (same shader source, or both solid), draw it
+    # ONCE behind the whole stage instead of once per sliding slide. A full-slide animated
+    # shader is the dominant per-frame GPU cost, and rendering two of them (plus overdraw)
+    # during a push is what makes the transition stutter. The ambient background doesn't
+    # need to slide, so a single shared copy is visually equivalent and roughly halves the
+    # transition's fragment work.
+    shared_bg = None
     if prev is not None:
-        prev_root = build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter)
+        prev_bg = theme.shader_for(slide_type(prev[0]))
+        cur_bg = theme.shader_for(slide_type(cur[0]))
+        if prev_bg and prev_bg == cur_bg:
+            shared_bg = shader_canvas(cur_bg, width, height)
+        elif not prev_bg and not cur_bg:
+            shared_bg = {"type": "box", "modifiers": dbg(
+                ["fillMaxSize", {"background": theme.background}], debug), "children": []}
+    root_bg = "none" if shared_bg is not None else "default"
+
+    children = []
+    if shared_bg is not None:
+        children.append(shared_bg)
+    if prev is not None:
+        prev_root = build_slide_root(prev[0], _no_web(prev[1]), theme, width, height,
+                                     index - 1, debug, counter, bg=root_bg)
         children.append(wrap(prev_root, prev_off))
-    cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
+    cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug,
+                                counter, bg=root_bg)
     children.append(wrap(cur_root, cur_off))
 
     stage = {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": children}
@@ -690,13 +779,14 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     slide, blocks = cur
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
-    content_w = width - 2 * PADDING
+    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    content_w = width - pad_l - pad_r
 
     children = []
     title_group, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
                                         theme, stype in ("title", "section"), debug)
     children.extend(title_group)
-    avail_h = height - 2 * PADDING - title_h
+    avail_h = height - pad_t - pad_b - title_h - _chrome_reserve(theme, stype, pad_b)
 
     children.extend(render_graph_morph(graph_block(prev[1]), graph_block(blocks),
                                        theme, debug, content_w, avail_h, GRAPH_PROGRESS_VAR))

@@ -86,11 +86,12 @@ digraph G { rankdir=LR; A -> B -> C }
 | Type      | Layout                                                        |
 |-----------|---------------------------------------------------------------|
 | `title`   | large title centered; an image renders above it (logo size)   |
-| `section` | title centered (auto-numbered when an `agenda` slide exists)   |
+| `section` | title centered, auto-numbered (the number is tinted with `[theme] primary`); section slides default to a slide-up transition |
 | `content` | default — title at top, content below, left-aligned           |
 | `max`     | near-fullscreen — small margin so the content is maximised, a smaller title (if any), chrome still shown; great for a full-bleed graph, image, video or web page |
 | `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
-| `agenda`  | replaced by an auto-generated table of contents of the `section` slides |
+| `outline` | replaced by a synthesized outline of the deck's `section` slides — numbers in the primary colour beside each section title |
+| `agenda`  | like `outline` but a plainer numbered bullet list |
 
 ### Content blocks
 
@@ -139,6 +140,19 @@ Push/slide **speed** is the slide time in seconds — set `[transition] duration
 or `transition_duration=` per slide (larger = slower), e.g.
 `:: section transition=slide-up transition_duration=0.9`.
 
+**Per-slide-type defaults** live in `[transition.<type>]`, so every slide of a type shares a
+transition without repeating it. Section slides default to sliding up from below via:
+
+```toml
+[transition.section]
+style    = "slide-up"
+duration = 0.9
+fx       = true          # draw the [shader.transition] overlay during the transition
+```
+
+Precedence for each knob: per-slide `transition*=` override → `[transition.<type>]` →
+`[transition]` → built-in default.
+
 ```sh
 python3 refract.py examples/deck --transitions
 ```
@@ -169,7 +183,9 @@ preset          = "dark"        # dark | light | midnight | warm | mono (applied
 background      = "#FF141A2E"
 title_color     = "#FFFFFFFF"
 body_color      = "#FFE6EEF6"
-accent          = "#FF4FC3F7"   # subtitles, table headers, emphasis
+accent          = "#FF4FC3F7"   # subtitles, table headers, emphasis (overridable per slide)
+primary         = "#FF4FC3F7"   # deck brand colour (section numbers, outline); stable across
+                                # slides. Defaults to accent if unset.
 table_bg        = "#1AFFFFFF"
 table_header_bg = "#22FFFFFF"
 
@@ -196,11 +212,19 @@ Yuri = "#FFFFB74D"
 
 # Font sizes (px). Aliases: title (title-slide) / section / heading (content title) /
 # body (content) / subtitle / table / code. Direct keys also work (content_body…).
+# Named system font families + weights: title_* for headings, body_* for everything
+# else, code_family for code. Resolved by the OS font manager (macOS CoreText / Linux
+# fontconfig), so any installed family works.
 [font]
 heading  = 76
 body     = 44
 subtitle = 48
 table    = 40
+title_family = "Futura"         # headings
+title_weight = 500              # 100–900 (Medium here)
+body_family  = "Avenir Next"    # body / bullets / subtitle / tables
+body_weight  = 400
+code_family  = "SF Mono"        # code blocks & spans
 
 [image]
 corner_radius = 28              # round embedded images
@@ -232,7 +256,12 @@ file = "title.sksl"
 
 [transition]
 enabled = false                 # same as --transitions
-style   = "fade"                # fade | push | slide | push-up
+style   = "fade"                # fade | push | slide | slide-left | slide-up | push-up
+duration = 0.45                 # push/slide time in seconds (larger = slower)
+[transition.section]            # per-slide-type defaults (any [transition.<type>])
+style    = "slide-up"           # section slides rise up from below…
+duration = 0.9
+fx       = true                 # …with the [shader.transition] overlay on
 ```
 
 Precedence: **CLI flag > settings.toml > built-in default**. Any theme colour /
@@ -389,3 +418,7 @@ python3 -m unittest discover -s tests
   `[graph] glow`, `glow_radius`, `glow_strength`. Implementing this added blur support to
   the C++ player (`saveLayerWithBlur`) and exposed a `blur` key on the `graphicsLayer`
   JSON modifier — both reusable beyond graphs.
+- **Push transitions share one background**: when the outgoing and incoming slides use the
+  same background (shader or solid), it's drawn once behind the stage and only the
+  foreground content slides — half the full-slide shader work per frame, so the animate-in
+  stays smooth. The ambient background simply doesn't slide (visually equivalent).

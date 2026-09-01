@@ -74,10 +74,24 @@ class Agenda(unittest.TestCase):
             {"meta": {"type": "section"}, "title": "Deep Dive", "blocks": []},
         ]
         out = refract.apply_agenda(slides)
-        # sections numbered
-        self.assertEqual(out[1]["title"], "1. Intro")
-        self.assertEqual(out[2]["title"], "2. Deep Dive")
+        # sections keep a clean title but carry their number (renderer colours it)
+        self.assertEqual(out[1]["title"], "Intro")
+        self.assertEqual(out[1]["section_number"], 1)
+        self.assertEqual(out[2]["section_number"], 2)
         # agenda expanded to a bullets TOC
         items = out[0]["blocks"][0]["items"]
         self.assertEqual(len(items), 2)
         self.assertIn("Intro", items[0]["text"])
+
+    def test_outline_slide_synthesizes_section_list(self):
+        slides = [
+            {"meta": {"type": "outline"}, "title": None, "blocks": [], "base_dir": "."},
+            {"meta": {"type": "section"}, "title": "Intro", "blocks": []},
+            {"meta": {"type": "section"}, "title": "Deep Dive", "blocks": []},
+        ]
+        out = refract.apply_agenda(slides)
+        block = out[0]["blocks"][0]
+        self.assertEqual(block["kind"], "outline")
+        self.assertEqual(out[0]["title"], "Outline")
+        self.assertEqual([(it["num"], it["title"]) for it in block["items"]],
+                         [(1, "Intro"), (2, "Deep Dive")])

@@ -127,13 +127,14 @@ def highlight(code: str, lang: str) -> list[list[tuple[str, str]]]:
 def render_code(block: dict, theme, debug: bool) -> list[dict]:
     """Render a code block as a dark panel of syntax-highlighted monospace lines."""
     size = theme.code_font_size
+    fam = getattr(theme, "code_font_family", "monospace")
     lines = highlight(block.get("text", ""), block.get("lang", ""))
     rows = []
     for line in lines:
         if not line:
-            spans = [text(" ", size, theme.code_foreground, debug, mono=True)]
+            spans = [text(" ", size, theme.code_foreground, debug, family=fam)]
         else:
-            spans = [text(t, size, theme.syntax_color(tt), debug, mono=True)
+            spans = [text(t, size, theme.syntax_color(tt), debug, family=fam)
                      for t, tt in line]
         rows.append({"type": "row", "children": spans})
     mods = ["fillMaxWidth"]

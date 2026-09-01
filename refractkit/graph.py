@@ -242,6 +242,11 @@ def _fit_font(label: str, w: float, h: float) -> float:
     return round(max(10.0, min(38.0, h * 0.42, w / max(1, len(label)) * 1.7)), 1)
 
 
+def _r2(v):
+    """Round a numeric coordinate; pass expression strings (from _lerp) through untouched."""
+    return round(v, 2) if isinstance(v, (int, float)) else v
+
+
 def _lerp(a: float, b: float, t: str):
     """A number if a≈b, else an expression string interpolating a→b by t (var ref)."""
     a, b = round(a, 2), round(b, 2)
@@ -362,7 +367,7 @@ def _static_edge(e: dict, theme, alpha, pid: list, part: str = "both") -> list[d
 def _cluster_cmds(c: dict, theme, pid: list, alpha=None) -> list[dict]:
     """A subgraph cluster: filled/stroked rounded box with an optional label. ``alpha``
     (literal or expression) fades the whole cluster."""
-    l, t, r, b = round(c["l"], 2), round(c["t"], 2), round(c["r"], 2), round(c["b"], 2)
+    l, t, r, b = _r2(c["l"]), _r2(c["t"]), _r2(c["r"]), _r2(c["b"])
     cmds = []
     if c.get("fill"):
         cmds.append(_paint(_with_alpha([{"color": c["fill"]}, {"style": "fill"}], alpha)))
@@ -375,12 +380,24 @@ def _cluster_cmds(c: dict, theme, pid: list, alpha=None) -> list[dict]:
                                        if c.get("dash") else None}], alpha)))
     cmds.append(_rr(l, t, r, b, 12.0))
     if c.get("label") and c.get("lpos"):
-        lx, ly = round(c["lpos"][0], 2), round(c["lpos"][1], 2)
+        lx, ly = _r2(c["lpos"][0]), _r2(c["lpos"][1])
         cmds.append(_paint(_with_alpha([{"color": c.get("stroke") or theme.graph_node_text},
                             {"style": "fill"}, {"textSize": 24.0}], alpha)))
         cmds.append({"type": "drawtextanchored", "text": c["label"], "x": lx, "y": ly,
                      "panX": 0.0, "panY": 0.0})
     return cmds
+
+
+def _morph_cluster_cmds(ca: dict, cb: dict, theme, t: str, pid: list) -> list[dict]:
+    """A matched cluster (same label in both layouts): lerp its box and label position by
+    ``t`` so the dashed frame glides/resizes with its nodes instead of snapping to target."""
+    c = dict(cb)
+    c["l"], c["t"] = _lerp(ca["l"], cb["l"], t), _lerp(ca["t"], cb["t"], t)
+    c["r"], c["b"] = _lerp(ca["r"], cb["r"], t), _lerp(ca["b"], cb["b"], t)
+    if ca.get("lpos") and cb.get("lpos"):
+        c["lpos"] = [_lerp(ca["lpos"][0], cb["lpos"][0], t),
+                     _lerp(ca["lpos"][1], cb["lpos"][1], t)]
+    return _cluster_cmds(c, theme, pid)
 
 
 def _morph_edge(ea: dict, eb: dict, theme, t: str, pid: list, part: str = "both") -> list[dict]:
@@ -470,15 +487,16 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
     # Clusters, behind everything. Match by label: a cluster present in both layouts stays
     # put; one only in the old layout fades out; a *new* one fades in only after the nodes
     # have finished moving (its alpha ramps up over the tail of the morph).
-    ga_labels = {c.get("label") for c in ga.get("clusters", [])}
+    ca_by_label = {c.get("label"): c for c in ga.get("clusters", [])}
     gb_labels = {c.get("label") for c in gb.get("clusters", [])}
     new_cluster_alpha = f"min(1.0, max(0.0, ({t} - 0.55) / 0.45))"
     for c in ga.get("clusters", []):
         if c.get("label") not in gb_labels:                    # gone → fade out
             cmds += _cluster_cmds(c, theme, pid, alpha=f"1.0 - {t}")
     for c in gb.get("clusters", []):
-        if c.get("label") in ga_labels:                        # persists → static
-            cmds += _cluster_cmds(c, theme, pid)
+        ca = ca_by_label.get(c.get("label"))
+        if ca is not None:                                     # persists → morph box + label
+            cmds += _morph_cluster_cmds(ca, c, theme, t, pid)
         else:                                                  # new → delayed fade-in
             cmds += _cluster_cmds(c, theme, pid, alpha=new_cluster_alpha)
 
@@ -513,10 +531,14 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
         rad = _lerp(min(a2["nw"], a2["nh"]) * 0.28, min(b2["nw"], b2["nh"]) * 0.28, t)
         ll, tt = _lerp(a2["l"], b2["l"], t), _lerp(a2["t"], b2["t"], t)
         rr, bb = _lerp(a2["r"], b2["r"], t), _lerp(a2["b"], b2["b"], t)
+        # Lerp the label size too (from the source to the target fit) so the text scales
+        # with the box, instead of snapping to the target size while the box is still big.
+        fs = _lerp(_fit_font(a2["label"], a2["nw"], a2["nh"]),
+                   _fit_font(b2["label"], b2["nw"], b2["nh"]), t)
         cmds += _node_cmds(
             ll, tt, rr, bb,
             _lerp(a2["cx"], b2["cx"], t), _lerp(a2["cy"], b2["cy"], t),
-            rad, b2["label"], _fit_font(b2["label"], b2["nw"], b2["nh"]), theme, None)
+            rad, b2["label"], fs, theme, None)
         glow += _glow_stroke(ll, tt, rr, bb, rad,
                              b2.get("stroke") or theme.graph_node_stroke, None)
 

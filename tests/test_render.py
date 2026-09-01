@@ -48,11 +48,27 @@ def _all_paddings(node):
     return out
 
 
-def _web_configs(node):
+def _all_padding_arrays(node):
     out = []
     def walk(n):
         if isinstance(n, dict):
-            if n.get("type") == "custom" and str(n.get("config", "")).startswith("web:"):
+            for m in n.get("modifiers", []):
+                if isinstance(m, dict) and isinstance(m.get("padding"), list):
+                    out.append(list(m["padding"]))
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
+def _custom_configs(node, prefix):
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "custom" and str(n.get("config", "")).startswith(prefix):
                 out.append(n["config"])
             for v in n.values():
                 walk(v)
@@ -61,6 +77,10 @@ def _web_configs(node):
                 walk(v)
     walk(node)
     return out
+
+
+def _web_configs(node):
+    return _custom_configs(node, "web:")
 
 
 def _find_uniform(doc, name):
@@ -201,16 +221,20 @@ class SlideRoot(unittest.TestCase):
         # `max` uses a small margin and a smaller title, and still shows chrome.
         from refractkit.theme import build_theme
         theme = build_theme({"chrome": {"page": True}})
-        self.assertLess(render.SLIDE_TYPES["max"]["padding"],
-                        render.SLIDE_TYPES["content"]["padding"])
+        # `max` has tight top/left/right margins but keeps a normal bottom for the chrome.
+        ml, mt, mr, mb = render._pad_sides(render.SLIDE_TYPES["max"]["padding"])
+        cl, ct, cr, cb = render._pad_sides(render.SLIDE_TYPES["content"]["padding"])
+        self.assertLess(mt, ct)
+        self.assertLess(ml, cl)
+        self.assertLess(mr, cr)
+        self.assertGreater(mb, mt)          # bottom margin bigger than the top
         self.assertLess(theme.title_size("max"), theme.title_size("content"))
         doc = render.build_doc({"title": "T", "meta": {"type": "max"}},
                                [{"kind": "text", "text": "x"}], theme, 1600, 900, 0,
                                False, total=3)
-        # chrome present (unlike title), and the outer padding is the small max margin
+        # chrome present (unlike title), and the outer padding is the per-side max margin
         self.assertIn("1 / 3", _texts_all(doc["root"]))
-        pads = _all_paddings(doc["root"])
-        self.assertIn(32.0, pads)
+        self.assertIn([ml, mt, mr, mb], _all_padding_arrays(doc["root"]))
 
     def test_title_shader_backdrop_unless_type_has_full_shader(self):
         from dataclasses import replace
@@ -260,6 +284,48 @@ class Framing(unittest.TestCase):
         root = render.frame_slide([], SPEC, theme, "content", 1600, 900, False)
         self.assertEqual(root["type"], "box")
         self.assertEqual(root["children"][0]["type"], "canvas")   # shader behind
+
+
+def _texts_with_color(node):
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "text":
+                out.append((n.get("value"), n.get("color")))
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
+class Outline(unittest.TestCase):
+    def test_outline_block_numbers_use_primary(self):
+        theme = build_theme({"theme": {"primary": "#FF00AAFF"}})
+        out = render.render_outline(
+            {"kind": "outline", "items": [{"num": 1, "title": "Intro"},
+                                          {"num": 2, "title": "Deep Dive"}]}, theme, False)
+        pairs = _texts_with_color(out)
+        # the numbers are in the primary colour, the titles in the body colour
+        self.assertIn(("1.", "#FF00AAFF"), pairs)
+        self.assertIn(("2.", "#FF00AAFF"), pairs)
+        self.assertIn(("Intro", theme.body_color), pairs)
+
+    def test_section_number_colored_primary(self):
+        theme = build_theme({"theme": {"primary": "#FF00AAFF"}})
+        root = render.build_slide_root(
+            {"title": "Intro", "section_number": 1, "meta": {"type": "section"}},
+            [], theme, 1600, 900, 0, False, [0])
+        pairs = _texts_with_color(root)
+        self.assertIn(("1.", "#FF00AAFF"), pairs)          # number tinted
+        self.assertIn((" Intro", theme.title_color), pairs)  # title in normal colour
+
+    def test_primary_defaults_to_accent(self):
+        # A deck that never sets [theme] primary falls back to the accent colour.
+        theme = build_theme({"theme": {"accent": "#FFABCDEF"}})
+        self.assertEqual(theme.primary, "#FFABCDEF")
 
 
 class Docs(unittest.TestCase):
@@ -322,6 +388,15 @@ class Docs(unittest.TestCase):
         doc = render.build_push_doc(prev, cur, THEME, 1600, 900, 1, False)
         webs = _web_configs(doc)
         self.assertEqual(webs, ["web:https://b.dev"])   # only the incoming page
+
+    def test_push_drops_previous_video(self):
+        # Like the webview: the outgoing slide's video is stripped so the transition
+        # doesn't re-instantiate the player; the incoming slide keeps its own.
+        prev = ({"title": "A"}, [{"kind": "video", "path": "a.mp4", "src": "a.mp4"}])
+        cur = ({"title": "B"}, [{"kind": "video", "path": "b.mp4", "src": "b.mp4"}])
+        doc = render.build_push_doc(prev, cur, THEME, 1600, 900, 1, False)
+        vids = _custom_configs(doc, "video:")
+        self.assertEqual(vids, ["video:b.mp4"])         # only the incoming clip
 
     def test_graph_transition_two_vars(self):
         prev = ({"title": "G"}, [{"kind": "graph", "engine": "dot", "dot": "digraph{A->B}"}])

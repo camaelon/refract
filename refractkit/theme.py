@@ -71,13 +71,22 @@ class Theme:
     background: str = "#FF0D1B2A"
     title_color: str = "#FFFFFFFF"
     body_color: str = "#FFE6EEF6"
-    accent: str = "#FF4FC3F7"           # subtitles, table headers, emphasis
+    accent: str = "#FF4FC3F7"           # subtitles, table headers, emphasis (can be
+                                        # overridden per-slide by a speaker/author colour)
+    primary: str = ""                   # the deck's brand colour (section numbers, outline);
+                                        # stable across slides. Falls back to accent if unset.
     table_bg: str = "#1AFFFFFF"
     table_header_bg: str = "#22FFFFFF"
     code_background: str = "#FF1E1E1E"
     code_foreground: str = "#FFD4D4D4"
     code_font_size: float = 28.0
     code_corner_radius: float = 0.0
+    # Font families (named system fonts) and weights. Empty family = default sans.
+    title_font: str = ""            # headings (title/section/content/max)
+    title_weight: float = 400.0
+    body_font: str = ""             # body / bullets / subtitle / tables / chrome
+    body_weight: float = 400.0
+    code_font_family: str = "monospace"   # code blocks & spans
     title_gap: float = 44.0             # vertical gap between the title and content
     # Slide chrome (page number / footer / progress bar). Rendered in the theme's own
     # colours (body / accent) and made translucent via chrome_alpha, so it reads as a
@@ -168,6 +177,9 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.title_color = th.get("title_color", t.title_color)
     t.body_color = th.get("body_color", t.body_color)
     t.accent = th.get("accent", t.accent)
+    # Deck brand colour: explicit [theme] primary wins, else fall back to the accent so
+    # existing decks keep working. Unlike accent, it is never overridden per slide.
+    t.primary = th.get("primary", t.accent)
     t.table_bg = th.get("table_bg", t.table_bg)
     t.table_header_bg = th.get("table_header_bg", t.table_header_bg)
 
@@ -184,12 +196,22 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     # [font]: friendly aliases (body/content, title, section, heading, subtitle,
     # table, code) plus any direct internal key (e.g. content_body, title_title).
     font = settings.get("font", {})
+    # Family + weight keys are handled separately from the size keys.
+    _font_meta = {"title_family", "title_weight", "body_family", "body_weight",
+                  "code_family"}
     for key, val in font.items():
+        if key in _font_meta:
+            continue
         target = FONT_ALIASES.get(key, key)
         if target == "code":
             t.code_font_size = float(val)
         elif target in t.fonts:
             t.fonts[target] = float(val)
+    t.title_font = str(font.get("title_family", t.title_font))
+    t.title_weight = float(font.get("title_weight", t.title_weight))
+    t.body_font = str(font.get("body_family", t.body_font))
+    t.body_weight = float(font.get("body_weight", t.body_weight))
+    t.code_font_family = str(font.get("code_family", t.code_font_family))
 
     layout = {**settings.get("slide", {}), **settings.get("layout", {})}
     if "title_gap" in layout:

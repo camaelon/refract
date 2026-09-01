@@ -51,28 +51,40 @@ def find_json2rc(repo_root: str) -> str | None:
 
 
 def apply_agenda(slides: list) -> list:
-    """Number ``section`` slides and expand any ``:: agenda`` slide into a table of
-    contents listing those numbered sections."""
+    """Number ``section`` slides and synthesize an outline from those sections. A
+    ``:: outline`` slide renders the sections as a styled list (numbers in the deck's
+    primary colour); ``:: agenda`` is a plainer bullet-list alias. The section number is
+    stored on the slide (``section_number``) rather than baked into the title, so the
+    renderer can colour it."""
     sections = []  # (number, title)
     n = 0
     for slide in slides:
         if slide_meta_type(slide) == "section" and slide.get("title"):
             n += 1
             sections.append((n, slide["title"]))
-            slide["title"] = f"{n}. {slide['title']}"
+            slide["section_number"] = n
 
     out = []
     for slide in slides:
-        if slide_meta_type(slide) == "agenda":
-            items = [{"level": 0, "text": f"{num}.  {title}"} for num, title in sections]
-            out.append({
-                "meta": {"type": "content", "params": (slide.get("meta") or {}).get("params", ""),
-                         "flags": [], "overrides": {}, "ratio": None},
-                "title": slide.get("title") or "Agenda",
-                "blocks": [{"kind": "bullets", "items": items}],
+        stype = slide_meta_type(slide)
+        if stype in ("outline", "agenda"):
+            meta = slide.get("meta") or {}
+            base = {
+                "meta": {"type": "content", "params": meta.get("params", ""),
+                         "flags": [], "overrides": meta.get("overrides", {}), "ratio": None},
+                "title": slide.get("title") or ("Outline" if stype == "outline" else "Agenda"),
                 "notes": None,
                 "base_dir": slide.get("base_dir", "."),
-            })
+            }
+            if stype == "outline":
+                base["blocks"] = [{"kind": "outline",
+                                   "items": [{"num": num, "title": title}
+                                             for num, title in sections]}]
+            else:
+                base["blocks"] = [{"kind": "bullets",
+                                   "items": [{"level": 0, "text": f"{num}.  {title}"}
+                                             for num, title in sections]}]
+            out.append(base)
         else:
             out.append(slide)
     return out
@@ -288,21 +300,29 @@ def run_once(args) -> int:
             changes["slide_author"] = author
             if author in theme.authors:
                 changes["accent"] = theme.authors[author]
-        # Transition overlay FX (the [shader.transition] shader) is opt-in per slide:
-        # only drawn on a slide's transition when it requests `transition_fx=on`.
-        fx = meta.get("overrides", {}).get("transition_fx", "").lower()
-        if fx not in ("on", "true", "1", "yes"):
+        # Per-slide-type transition defaults live in [transition.<type>] (e.g.
+        # [transition.section] style="slide-up" duration=0.9 fx=true). Precedence for every
+        # knob: per-slide `transition*=` override > [transition.<type>] > [transition] > default.
+        stype = slide_type(slide)
+        type_trans = trans_cfg.get(stype, {})
+        if not isinstance(type_trans, dict):
+            type_trans = {}
+        # Transition overlay FX (the [shader.transition] shader) is opt-in: a slide draws it
+        # only when it — or its slide-type default — requests fx.
+        fx_raw = meta.get("overrides", {}).get("transition_fx")
+        fx_on = (str(fx_raw).lower() in ("on", "true", "1", "yes")) if fx_raw is not None \
+                else bool(type_trans.get("fx", False))
+        if not fx_on:
             changes["transition_shader"] = ""
         changes.update(theme_overrides(meta.get("overrides", {}), theme))
         stheme = replace(theme, **changes) if changes else theme
 
         total = len(slides)
-        # Transition style: per-slide `transition=` override > [transition] style > fade.
-        style = meta.get("overrides", {}).get("transition", trans_cfg.get("style", "fade"))
-        # Push/slide duration (seconds): per-slide `transition_duration=` > [transition]
-        # duration > default. Larger = slower.
-        push_dur = float(meta.get("overrides", {}).get(
-            "transition_duration", trans_cfg.get("duration", PUSH_DURATION)))
+        style = (meta.get("overrides", {}).get("transition")
+                 or type_trans.get("style") or trans_cfg.get("style", "fade"))
+        # Push/slide duration (seconds); larger = slower.
+        push_dur = float(meta.get("overrides", {}).get("transition_duration",
+                         type_trans.get("duration", trans_cfg.get("duration", PUSH_DURATION))))
         is_same = meta.get("type", "").lower() == "same"
         if is_same and prev is not None:
             # `:: same` — shared-element transition from the previous slide (always on,

@@ -11,11 +11,16 @@ def dbg(mods: list, debug: bool) -> list:
 
 
 def text(value: str, size: float, color: str, debug: bool,
-         extra: list | None = None, mono: bool = False) -> dict:
-    """A Text component. ``mono`` selects a monospace font (for code)."""
+         extra: list | None = None, mono: bool = False,
+         family: str | None = None, weight: float | None = None) -> dict:
+    """A Text component. ``mono`` selects monospace; ``family`` a named system font;
+    ``weight`` a font weight (400 = regular, omitted)."""
     comp = {"type": "text", "value": value, "fontSize": size, "color": color}
-    if mono:
-        comp["fontFamily"] = "monospace"
+    fam = "monospace" if mono else family
+    if fam:
+        comp["fontFamily"] = fam
+    if weight and float(weight) != 400.0:
+        comp["fontWeight"] = float(weight)
     mods = dbg(list(extra or []), debug)
     if mods:
         comp["modifiers"] = mods

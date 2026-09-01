@@ -92,13 +92,20 @@ def styled_line(line: str, size: float, color: str, theme, debug: bool,
                 if not piece:
                     continue
                 comp = {"type": "text", "value": piece, "fontSize": size, "color": base_color}
-                if "bold" in styles:
-                    comp["fontWeight"] = _BOLD_W
+                if "code" in styles:
+                    comp["fontFamily"] = getattr(theme, "code_font_family", "monospace")
+                    comp["color"] = theme.accent
+                    if "bold" in styles:
+                        comp["fontWeight"] = _BOLD_W
+                else:
+                    body_font = getattr(theme, "body_font", "")
+                    if body_font:
+                        comp["fontFamily"] = body_font
+                    w = _BOLD_W if "bold" in styles else getattr(theme, "body_weight", 400.0)
+                    if w and float(w) != 400.0:
+                        comp["fontWeight"] = float(w)
                 if "italic" in styles:
                     comp["fontStyle"] = "italic"
-                if "code" in styles:
-                    comp["fontFamily"] = "monospace"
-                    comp["color"] = theme.accent
                 # Align every token on its text baseline so mixed styles (and the
                 # slightly different metrics of italic/monospace runs) share one baseline.
                 comp["modifiers"] = dbg(["alignByBaseline"], debug)
