@@ -94,6 +94,33 @@ def slide_meta_type(slide: dict) -> str:
     return ((slide.get("meta") or {}).get("type") or "").lower()
 
 
+def slide_accent(slide: dict, theme, speakers: dict) -> str | None:
+    """The accent colour a slide is attributed to (speaker or @author), or None."""
+    meta = slide.get("meta") or {}
+    speaker = meta.get("params", "")
+    if speaker in speakers:
+        return speakers[speaker]
+    author = meta.get("author")
+    if author and author in theme.authors:
+        return theme.authors[author]
+    return None
+
+
+def compute_sections(slides: list, theme, speakers: dict) -> list:
+    """Section spans for the progress bar: one entry per ``section`` slide with its start
+    index and the colour of the section's expected speaker — the section slide's own
+    attribution, or the first attributed slide within the section, else the deck primary."""
+    starts = [i for i, s in enumerate(slides)
+              if slide_meta_type(s) == "section" and s.get("title")]
+    sections = []
+    for si, start in enumerate(starts):
+        end = starts[si + 1] if si + 1 < len(starts) else len(slides)
+        color = next((c for c in (slide_accent(slides[j], theme, speakers)
+                                  for j in range(start, end)) if c), None)
+        sections.append({"start": start, "color": color or theme.primary})
+    return sections
+
+
 def expand_fragments(slides: list) -> list:
     """Expand slides flagged ``fragment`` into one slide per cumulative top-level
     bullet, so bullets reveal progressively. Non-fragment slides pass through."""
@@ -250,6 +277,9 @@ def run_once(args) -> int:
     transitions = args.transitions or bool(trans_cfg.get("enabled", False))
 
     speakers = settings.get("speakers", {})
+    # Section spans for the progress bar (marks + per-section speaker colours). Deck-wide,
+    # so attach to the base theme; per-slide themes are replace()-copies that inherit it.
+    theme.chrome_sections = compute_sections(slides, theme, speakers)
 
     pairs = []       # (json_path, rc_path) to convert
     copies = []      # (src, dst) whole-slide passthroughs (rc / video)

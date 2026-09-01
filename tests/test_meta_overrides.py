@@ -83,6 +83,22 @@ class Agenda(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertIn("Intro", items[0]["text"])
 
+    def test_compute_sections_colors_by_expected_speaker(self):
+        from refractkit.theme import build_theme
+        theme = build_theme({"theme": {"primary": "#FF111111"},
+                             "authors": {"Nico": "#FF00AAFF", "John": "#FFEE8800"}})
+        speakers = {}
+        slides = [
+            {"meta": {"type": "content"}, "title": "Cover"},                 # 0: no section
+            {"meta": {"type": "section", "author": "Nico"}, "title": "A"},   # 1: Nico
+            {"meta": {"type": "content", "author": "Nico"}, "title": "a1"},  # 2
+            {"meta": {"type": "section"}, "title": "B"},                     # 3: unattributed…
+            {"meta": {"type": "content", "author": "John"}, "title": "b1"},  # 4: …first authored = John
+        ]
+        secs = refract.compute_sections(slides, theme, speakers)
+        self.assertEqual([(s["start"], s["color"]) for s in secs],
+                         [(1, "#FF00AAFF"), (3, "#FFEE8800")])
+
     def test_outline_slide_synthesizes_section_list(self):
         slides = [
             {"meta": {"type": "outline"}, "title": None, "blocks": [], "base_dir": "."},

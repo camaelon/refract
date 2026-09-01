@@ -135,8 +135,62 @@ class RenderBlock(unittest.TestCase):
         out = self.rb({"kind": "bullets", "items": [
             {"level": 0, "text": "a"}, {"level": 1, "text": "b"}]})
         self.assertEqual(len(out), 2)
-        self.assertTrue(out[0]["value"].startswith("•"))
-        self.assertTrue(out[1]["value"].startswith("    "))  # sub-indent
+        # each bullet is a Row: [marker canvas, gap, text]; sub-levels add a leading indent
+        self.assertEqual(out[0]["type"], "row")
+        self.assertEqual(out[0]["children"][0]["type"], "canvas")   # drawn shape marker
+        self.assertIn("a", _texts_all(out[0]))
+        # the level-1 bullet has one extra leading child (the indent spacer)
+        self.assertGreater(len(out[1]["children"]), len(out[0]["children"]))
+
+    def test_sub_bullets_override_font_and_colour(self):
+        from dataclasses import replace
+        theme = replace(THEME, body_color="#FFEEEEEE", body_weight=400.0,
+                        bullet_sub_color="#FF888888", bullet_sub_weight=300.0,
+                        bullet_sub_font="Sub Font")
+        out = render.render_block({"kind": "bullets", "items": [
+            {"level": 0, "text": "top"}, {"level": 1, "text": "child"}]},
+            40.0, theme, False, 800, 400, [0])
+        # top level keeps the body colour; sub level uses the override
+        top_txt = next(c for c in out[0]["children"] if c.get("type") == "text")
+        sub_txt = next(c for c in out[1]["children"] if c.get("type") == "text")
+        self.assertEqual(top_txt["color"], "#FFEEEEEE")
+        self.assertEqual(sub_txt["color"], "#FF888888")
+        self.assertEqual(sub_txt.get("fontFamily"), "Sub Font")
+        self.assertEqual(sub_txt.get("fontWeight"), 300.0)
+
+    def test_bullet_marker_defaults_to_primary_color(self):
+        from dataclasses import replace
+        theme = replace(THEME, primary="#FF0055AA", body_color="#FFEEEEEE")
+        out = render.render_block({"kind": "bullets", "items": [{"level": 0, "text": "x"}]},
+                                  40.0, theme, False, 800, 400, [0])
+        canvas = out[0]["children"][0]
+        paint = next(c for c in canvas["commands"] if c["type"] == "paint")
+        col = next(o["color"] for o in paint["ops"] if "color" in o)
+        self.assertEqual(col, "#FF0055AA")                    # marker uses primary, not body
+        txt = next(c for c in out[0]["children"] if c.get("type") == "text")
+        self.assertEqual(txt["color"], "#FFEEEEEE")           # text still body colour
+
+    def test_bullet_marker_color_override(self):
+        from dataclasses import replace
+        theme = replace(THEME, primary="#FF0055AA", bullet_color="#FFFF00FF")
+        out = render.render_block({"kind": "bullets", "items": [{"level": 0, "text": "x"}]},
+                                  40.0, theme, False, 800, 400, [0])
+        paint = next(c for c in out[0]["children"][0]["commands"] if c["type"] == "paint")
+        col = next(o["color"] for o in paint["ops"] if "color" in o)
+        self.assertEqual(col, "#FFFF00FF")
+
+    def test_sub_bullets_can_use_a_different_shape(self):
+        from dataclasses import replace
+        theme = replace(THEME, bullet_shape="circle", bullet_sub_shape="hline")
+        out = render.render_block({"kind": "bullets", "items": [
+            {"level": 0, "text": "top"}, {"level": 1, "text": "child"}]},
+            40.0, theme, False, 800, 400, [0])
+        top_canvas = out[0]["children"][0]
+        sub_canvas = next(c for c in out[1]["children"] if c.get("type") == "canvas")
+        top_ops = [c["type"] for c in top_canvas["commands"] if c.get("type") != "paint"]
+        sub_ops = [c["type"] for c in sub_canvas["commands"] if c.get("type") != "paint"]
+        self.assertEqual(top_ops, ["drawcircle"])
+        self.assertEqual(sub_ops, ["drawline"])
 
     def test_embedded_video_custom_component(self):
         out = self.rb({"kind": "video", "path": "clips/demo.mp4", "src": "demo.mp4"})
@@ -326,6 +380,90 @@ class Outline(unittest.TestCase):
         # A deck that never sets [theme] primary falls back to the accent colour.
         theme = build_theme({"theme": {"accent": "#FFABCDEF"}})
         self.assertEqual(theme.primary, "#FFABCDEF")
+
+
+def _mark_colors(node):
+    """Paint colours of the shapes drawn in the progress-mark canvas (one paint per mark)."""
+    out = []
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "canvas":
+                for c in n.get("commands", []):
+                    if isinstance(c, dict) and c.get("type") == "paint":
+                        col = next((o["color"] for o in c.get("ops", [])
+                                    if isinstance(o, dict) and "color" in o), None)
+                        if col:
+                            out.append(col)
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+    walk(node)
+    return out
+
+
+class ProgressChrome(unittest.TestCase):
+    def _theme(self, **kw):
+        from dataclasses import replace
+        base = dict(chrome_progress=True, accent="#FFACC0FF", primary="#FF111111",
+                    chrome_sections=[{"start": 2, "color": "#FF00FF00"},
+                                     {"start": 6, "color": "#FFFF0000"}])
+        base.update(kw)
+        return replace(THEME, **base)
+
+    def test_section_marks_circles_colored_per_section(self):
+        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="section")
+        ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
+        self.assertEqual(_mark_colors(ov), ["#FF00FF00", "#FFFF0000"])  # one circle per section
+
+    def test_marks_use_current_accent_in_current_mode(self):
+        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="current")
+        ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
+        self.assertEqual(_mark_colors(ov), ["#FFACC0FF", "#FFACC0FF"])  # both current accent
+
+    def test_no_circles_when_marks_off(self):
+        theme = self._theme(chrome_progress_marks=False, chrome_progress_color="section")
+        ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
+        self.assertEqual(_mark_colors(ov), [])
+
+    def test_section_mode_fill_uses_section_colors(self):
+        theme = self._theme(chrome_progress_color="section")
+        ov = render._chrome_overlay(theme, 9, 10, 1600, 900, False)  # last slide → fully filled
+        bgs = []
+        def walk(n):
+            if isinstance(n, dict):
+                for m in n.get("modifiers", []) if isinstance(n.get("modifiers"), list) else []:
+                    if isinstance(m, dict) and "background" in m:
+                        bgs.append(m["background"])
+                for v in n.values():
+                    walk(v)
+            elif isinstance(n, list):
+                for v in n:
+                    walk(v)
+        walk(ov)
+        # both section colours appear in the segmented fill
+        self.assertIn("#FF00FF00", bgs)
+        self.assertIn("#FFFF0000", bgs)
+
+    def test_current_mode_single_accent_fill(self):
+        theme = self._theme(chrome_progress_color="current")
+        ov = render._chrome_overlay(theme, 9, 10, 1600, 900, False)
+        bgs = []
+        def walk(n):
+            if isinstance(n, dict):
+                for m in n.get("modifiers", []) if isinstance(n.get("modifiers"), list) else []:
+                    if isinstance(m, dict) and "background" in m:
+                        bgs.append(m["background"])
+                for v in n.values():
+                    walk(v)
+            elif isinstance(n, list):
+                for v in n:
+                    walk(v)
+        walk(ov)
+        # the section colours are NOT used for the fill in current mode
+        self.assertNotIn("#FF00FF00", bgs)
+        self.assertIn("#FFACC0FF", bgs)   # current accent fill
 
 
 class Docs(unittest.TestCase):

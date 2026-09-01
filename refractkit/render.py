@@ -10,6 +10,7 @@ from .graph import render_graph, render_graph_morph
 from .highlight import render_code
 from .inline import has_author, has_markup, styled_line
 from .images import render_image
+from .markers import marker_canvas, marker_commands, normalize_shape
 from .theme import Theme
 
 PADDING = 80
@@ -268,6 +269,43 @@ def _styled(line: str, size: float, color: str, theme: Theme, debug: bool,
     return comp
 
 
+def _bullet_row(item: dict, size: float, theme: Theme, debug: bool, counter: list) -> dict:
+    """A bullet as a Row: a drawn shape marker aligned to the first text line, then the
+    wrapping text. Sub-levels (level >= 1) are indented and may use a different marker,
+    font family, weight and colour (theme ``bullet_sub_*``, else inherit the top level)."""
+    from dataclasses import replace as _replace
+    level = item["level"]
+    sub = level >= 1
+    shape = (theme.bullet_sub_shape or theme.bullet_shape) if sub else theme.bullet_shape
+    marker_color = theme.bullet_color or theme.primary        # its own colour, default primary
+    text_color = (theme.bullet_sub_color or theme.body_color) if sub else theme.body_color
+    # Render the text through a theme whose body font/weight/colour carry the sub overrides.
+    txt_theme = theme
+    if sub and (theme.bullet_sub_font or theme.bullet_sub_weight or theme.bullet_sub_color):
+        txt_theme = _replace(theme,
+                             body_font=theme.bullet_sub_font or theme.body_font,
+                             body_weight=theme.bullet_sub_weight or theme.body_weight,
+                             body_color=text_color)
+    line_h = round(size * 1.2, 1)
+    slot_w = round(size * 0.9, 1)          # marker column width
+    r = round(size * (0.28 if normalize_shape(shape) in ("four", "asanoha", "quad") else 0.2), 1)
+    counter[0] += 1
+    # Marker centred vertically on the first line's cap (a touch above the line midpoint).
+    marker = marker_canvas(shape, slot_w, line_h, r, marker_color, theme.bullet_filled,
+                           debug, uid=f"bm{counter[0]}", cy=round(size * 0.56, 1))
+    txt = _styled(item["text"], size, text_color, txt_theme, debug)
+    txt = dict(txt)
+    txt["modifiers"] = list(txt.get("modifiers", [])) + [{"weight": 1.0}]  # take remaining width
+    kids: list = []
+    if level:
+        kids.append({"type": "box", "modifiers": [{"width": round(size * 1.3 * level, 1)}],
+                     "children": []})
+    kids += [marker, {"type": "box", "modifiers": [{"width": round(size * 0.32, 1)}],
+                      "children": []}, txt]
+    return {"type": "row", "verticalAlignment": "top",
+            "modifiers": dbg(["fillMaxWidth"], debug), "children": kids}
+
+
 def _enter_mods(theme: Theme) -> list:
     """Modifiers that animate an appearing (`:: same`) component in, driven by $__st."""
     t = SAME_VAR
@@ -367,14 +405,13 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     elif kind == "table":
         out = render_table(block["rows"], theme, debug)
     elif kind == "bullets":
-        # One line per bullet. For `:: same`, appearing bullets fade in and disappearing
-        # ones (from the previous slide) collapse out in their old position.
+        # One row per bullet: a drawn shape marker + the (wrapping) text. For `:: same`,
+        # appearing bullets fade in and disappearing ones collapse out in their old spot.
         display = (_bullet_display(block["items"], same_ctx) if same_ctx
                    else [(it, "static") for it in block["items"]])
         out = []
         for item, state in display:
-            comp = _styled("    " * item["level"] + "•  " + item["text"],
-                           body_size, theme.body_color, theme, debug)
+            comp = _bullet_row(item, body_size, theme, debug, counter)
             if state == "enter":
                 comp = _apply_enter(comp, theme)
             elif state == "exit":
@@ -557,6 +594,21 @@ def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
     }
 
 
+def _progress_spans(secs: list, total: int, theme: Theme) -> list:
+    """(start_frac, end_frac, colour) spans tiling the progress bar: a neutral pre-section
+    lead-in (title/outline slides), then one span per section in its speaker's colour."""
+    tf = float(total)
+    spans = []
+    first = secs[0]["start"] / tf
+    if first > 0:
+        spans.append((0.0, first, theme.primary))
+    for i, sec in enumerate(secs):
+        s = sec["start"] / tf
+        e = secs[i + 1]["start"] / tf if i + 1 < len(secs) else 1.0
+        spans.append((s, e, sec["color"]))
+    return spans
+
+
 def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: int, debug: bool):
     """A bottom overlay: footer (left), page number (right), progress bar (very bottom).
     Returns None if no chrome is enabled."""
@@ -588,14 +640,43 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
                      "children": line})
 
     if theme.chrome_progress and total:
+        bar_h, cr, gap = 6.0, 6.0, 5.0
         frac = round((index + 1) / total, 4)
-        filled = round(width * frac, 2)
-        # Accent-tinted fill over a faint track — translucent (via the overlay layer),
-        # not a grey block.
-        rows.append({"type": "box", "modifiers": ["fillMaxWidth", {"height": 6.0},
-                     {"background": theme.table_bg}], "children": [
-                        {"type": "box", "modifiers": [{"width": filled}, {"height": 6.0},
-                         {"background": theme.accent}], "children": []}]})
+        secs = getattr(theme, "chrome_sections", None) or []
+        by_section = getattr(theme, "chrome_progress_color", "current") == "section"
+
+        # Filled bar over a faint track: one accent block (current-speaker mode) or per-
+        # section coloured segments (section mode). Translucent via the overlay layer.
+        if by_section and secs:
+            fill = []
+            for s0, s1, col in _progress_spans(secs, total, theme):
+                fe = min(s1, frac)
+                if fe > s0:
+                    fill.append({"type": "box", "modifiers": [
+                        {"width": round((fe - s0) * width, 2)}, {"height": bar_h},
+                        {"background": col}, {"offset": {"x": round(s0 * width, 2), "y": 0.0}}],
+                        "children": []})
+        else:
+            fill = [{"type": "box", "modifiers": [{"width": round(width * frac, 2)},
+                     {"height": bar_h}, {"background": theme.accent}], "children": []}]
+        bar = {"type": "box", "modifiers": ["fillMaxWidth", {"height": bar_h},
+               {"background": theme.table_bg}], "children": fill}
+
+        # Optional shape marks at each section start, a little above the bar. All marks are
+        # drawn into one full-width canvas at their section fraction.
+        if getattr(theme, "chrome_progress_marks", False) and secs:
+            shape = getattr(theme, "progress_mark_shape", "circle")
+            filled = getattr(theme, "progress_mark_filled", True)
+            cmds = []
+            for i, sec in enumerate(secs):
+                cx = max(cr, min(sec["start"] / total * width, width - cr))
+                col = sec["color"] if by_section else theme.accent
+                cmds += marker_commands(shape, cx, cr, cr, col, filled, uid=f"pm{i}")
+            rows.append({"type": "canvas",
+                         "modifiers": dbg(["fillMaxWidth", {"height": 2 * cr}], debug),
+                         "commands": cmds})
+            rows.append(vspacer(gap))
+        rows.append(bar)
 
     # Anchor the chrome column to the bottom of the slide, translucent as a whole.
     return {"type": "box", "horizontalAlignment": "start", "verticalAlignment": "bottom",

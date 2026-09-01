@@ -96,6 +96,25 @@ class Theme:
     chrome_progress: bool = False
     chrome_color: str = "#66FFFFFF"     # deprecated (kept for back-compat); use chrome_alpha
     chrome_alpha: float = 0.55          # translucency of the whole chrome overlay
+    # Progress bar: mark section starts with a small circle above the bar, and colour the
+    # bar/marks either by the current speaker (default) or per-section by that section's
+    # expected speaker.
+    chrome_progress_marks: bool = False
+    chrome_progress_color: str = "current"   # "current" | "section"
+    progress_mark_shape: str = "circle"      # circle | square | four | diamond
+    progress_mark_filled: bool = True
+    # Bullet-point marker shape/fill, plus optional overrides for sub-levels (level >= 1):
+    # a different marker, font family, weight and colour. Empty/0 → inherit the top level.
+    bullet_shape: str = "circle"             # circle | square | four | diamond | asanoha | quad | hline | vline
+    bullet_filled: bool = True
+    bullet_color: str = ""                   # the marker's own colour; "" → primary accent
+    bullet_sub_shape: str = ""               # "" → same as bullet_shape
+    bullet_sub_font: str = ""                # sub-level (>=1) text font; "" → same as body_font
+    bullet_sub_weight: float = 0.0           # sub-level text weight; 0 → same as body_weight
+    bullet_sub_color: str = ""               # sub-level text colour; "" → same as body_color
+    # Deck-wide section spans for the progress bar, filled in by the deck builder:
+    # [{"start": <0-based slide index>, "color": "#AARRGGBB"}], in order.
+    chrome_sections: list = field(default_factory=list)
     # `:: same` shared-element transition (enter/exit for appearing/disappearing content).
     same_enter: str = "fade"        # fade | slide-left | slide-right | slide-up | slide-down
     same_exit: str = "fade"
@@ -223,6 +242,19 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.chrome_progress = bool(chrome.get("progress", t.chrome_progress))
     t.chrome_color = chrome.get("color", t.chrome_color)
     t.chrome_alpha = float(chrome.get("alpha", t.chrome_alpha))
+    t.chrome_progress_marks = bool(chrome.get("section_marks", t.chrome_progress_marks))
+    t.chrome_progress_color = str(chrome.get("progress_color", t.chrome_progress_color)).lower()
+    t.progress_mark_shape = str(chrome.get("mark_shape", t.progress_mark_shape)).lower()
+    t.progress_mark_filled = bool(chrome.get("mark_filled", t.progress_mark_filled))
+
+    bullet = settings.get("bullet", {})
+    t.bullet_shape = str(bullet.get("shape", t.bullet_shape)).lower()
+    t.bullet_filled = bool(bullet.get("filled", t.bullet_filled))
+    t.bullet_color = str(bullet.get("color", t.bullet_color))
+    t.bullet_sub_shape = str(bullet.get("sub_shape", t.bullet_sub_shape)).lower()
+    t.bullet_sub_font = str(bullet.get("sub_font", t.bullet_sub_font))
+    t.bullet_sub_weight = float(bullet.get("sub_weight", t.bullet_sub_weight) or 0.0)
+    t.bullet_sub_color = str(bullet.get("sub_color", t.bullet_sub_color))
 
     for name, color in (settings.get("authors", {}) or {}).items():
         t.authors[name] = color

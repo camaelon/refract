@@ -99,7 +99,7 @@ digraph G { rankdir=LR; A -> B -> C }
 |---------------|---------------------------------------------------------------|
 | text          | plain paragraphs                                              |
 | subtitle      | `*italic*` line directly under the title                     |
-| bullet list   | `- item`, indent two spaces per sub-level                     |
+| bullet list   | `- item`, indent two spaces per sub-level; marker shape/fill/colour and per-sub-level font set by `[bullet]` (see settings) |
 | table         | markdown pipe table `\| a \| b \|` (first row = header)      |
 | code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, java, json) |
 | graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … — laid out by graphviz, drawn by refract (clusters, dashed/dotted/coloured edges, per-node colours, neon node glow) |
@@ -193,7 +193,23 @@ table_header_bg = "#22FFFFFF"
 page     = true                 # "n / total" page number
 footer   = "RemoteCompose · 2026"
 progress = true                 # bottom progress bar
+section_marks  = true           # mark above the bar at each section start
+mark_shape     = "circle"       # circle | square | four | quad | diamond | asanoha | hline | vline
+mark_filled    = true           # filled shape, or false for an outline
+progress_color = "current"      # "current" = current speaker's accent (default);
+                                # "section" = each section coloured by its expected speaker
 color    = "#66FFFFFF"
+
+[bullet]                        # bullet-point marker
+shape  = "circle"               # circle | square | four (diamond crest) | quad (square crest)
+                                # | diamond | asanoha (hemp-leaf) | hline | vline
+filled = true                   # filled shape, or false for an outline
+color  = "#FF4FC3F7"            # the marker's own colour (default: the deck primary accent)
+# Sub-levels (indented bullets, level >= 1) may differ from the top level:
+sub_shape  = "hline"            # marker shape for sub-bullets ("" = same as shape)
+sub_font   = "Avenir Next"      # text font family for sub-bullets ("" = same as body)
+sub_weight = 300                # text weight for sub-bullets (thinner here)
+sub_color  = "#FFB8C2D0"        # text colour for sub-bullets (light grey)
 
 # Per-author colours. A slide/include marked "@Nico" takes that colour as its accent
 # and shows the name in the chrome; names are also tinted wherever they appear in text.
