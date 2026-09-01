@@ -88,6 +88,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | `title`   | large title centered; an image renders above it (logo size)   |
 | `section` | title centered, auto-numbered (the number is tinted with `[theme] primary`); section slides default to a slide-up transition |
 | `content` | default — title at top, content below, left-aligned           |
+| `split`   | two columns from `+++`, laid out row-first: the **right** column runs full-height (from the top, past the title) while the **title** is confined to the **left** column's width; `[ratio]` sets the split (default 1:1) |
 | `max`     | near-fullscreen — small margin so the content is maximised, a smaller title (if any), chrome still shown; great for a full-bleed graph, image, video or web page |
 | `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
 | `outline` | replaced by a synthesized outline of the deck's `section` slides — numbers in the primary colour beside each section title |
@@ -118,6 +119,19 @@ finds `logo.png`). Speaker accent comes from `[speakers]` (below).
 
 Split a slide with `+++`; a ratio in the metadata sets the pane **widths** (height is
 shared): `:: content [2:3]`, `:: [1:1]`, `:: [2:2:4]` — one number per pane.
+
+The **`split`** slide type reuses the same `+++` split but lays it out row-first — the right
+column runs full-height past the title, and the title is confined to the left column:
+
+```markdown
+:: split [3:2]
+# Left title
+- a point
++++
+```kotlin
+fun rightColumn() { }
+```
+```
 
 ## Transitions & "magic move"
 

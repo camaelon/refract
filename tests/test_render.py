@@ -285,6 +285,62 @@ class RenderBlock(unittest.TestCase):
         self.assertIn("gone", out[0]["value"])
 
 
+def _find_type(node, t):
+    """First node of type ``t`` anywhere in the tree, or None."""
+    if isinstance(node, dict):
+        if node.get("type") == t:
+            return node
+        for v in node.values():
+            r = _find_type(v, t)
+            if r is not None:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _find_type(v, t)
+            if r is not None:
+                return r
+    return None
+
+
+class SplitLayout(unittest.TestCase):
+    def _root(self, ratio=None):
+        slide = {"title": "T", "meta": {"type": "split", "ratio": ratio}}
+        blocks = [{"kind": "bullets", "items": [{"level": 0, "text": "left"}]},
+                  {"kind": "pane_break"},
+                  {"kind": "text", "text": "right"}]
+        return render.build_slide_root(slide, blocks, THEME, 1600, 900, 0, False, [0])
+
+    def test_row_first_two_columns(self):
+        row = _find_type(self._root(), "row")
+        cols = [c for c in row["children"] if c.get("type") == "column"]
+        self.assertEqual(len(cols), 2)                       # left + right columns
+        left, right = cols
+        # the title lives INSIDE the left column (constrained to its width), not full-width
+        self.assertIn("T", _texts_all(left))
+        self.assertNotIn("T", _texts_all(right))
+        # the right column runs full height
+        self.assertIn("fillMaxHeight", right["modifiers"])
+        # the right column holds the right-pane content
+        self.assertIn("right", _texts_all(right))
+
+    def test_ratio_sets_column_widths(self):
+        row = _find_type(self._root(ratio=[3, 1]), "row")
+        cols = [c for c in row["children"] if c.get("type") == "column"]
+        lw = next(m["width"] for m in cols[0]["modifiers"] if isinstance(m, dict) and "width" in m)
+        rw = next(m["width"] for m in cols[1]["modifiers"] if isinstance(m, dict) and "width" in m)
+        self.assertAlmostEqual(lw / rw, 3.0, places=1)       # 3:1 widths
+
+    def test_split_without_panes_falls_back_to_content(self):
+        # A split slide with no `+++` degrades to a normal (column-first) content layout.
+        slide = {"title": "T", "meta": {"type": "split"}}
+        root = render.build_slide_root(slide, [{"kind": "text", "text": "x"}],
+                                       THEME, 1600, 900, 0, False, [0])
+        # no two-column row wrapping title + content
+        row = _find_type(root, "row")
+        self.assertTrue(row is None or
+                        len([c for c in row["children"] if c.get("type") == "column"]) < 2)
+
+
 class SlideRoot(unittest.TestCase):
     def build(self, slide, blocks):
         return render.build_slide_root(slide, blocks, THEME, 1600, 900, 0, False, [0])

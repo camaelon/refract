@@ -51,6 +51,9 @@ SLIDE_TYPES = {
     # normal bottom margin so the footer chrome still has room.
     "max":     {"h_align": "start",  "v_align": "top",
                 "padding": {"left": 16.0, "top": 16.0, "right": 16.0, "bottom": 32.0}},
+    # Two columns from `+++`, but laid out row-first: the last column runs full-height (from
+    # the top, past the title), and the title is confined to the left column's width.
+    "split":   {"h_align": "start",  "v_align": "top",    "padding": PADDING},
 }
 DEFAULT_TYPE = "content"
 
@@ -496,6 +499,58 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     return []
 
 
+def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
+                      index: int, debug: bool, counter: list, same_ctx: dict | None,
+                      bg: str, do_stagger: bool) -> dict:
+    """``split`` layout: two side-by-side columns from `+++`. The **right** column runs the
+    full content height (from the top, above where the title sits), while the **left** column
+    holds the title — sized only to the left column's width — with its content beneath. The
+    last pane is the full-height right column; everything before it stacks in the left column.
+    Widths come from the slide's `[ratio]` (default 1:1)."""
+    spec = SLIDE_TYPES["split"]
+    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    title_size = theme.title_size("split")
+    body_size = theme.body_size("split")
+    content_w = width - pad_l - pad_r
+    content_h = height - pad_t - pad_b - _chrome_reserve(theme, "split", pad_b)
+
+    panes = split_panes(blocks)
+    right_blocks = panes[-1]
+    left_blocks = [b for pane in panes[:-1] for b in pane]
+
+    ratio = (slide.get("meta") or {}).get("ratio")
+    if not ratio or len(ratio) != 2:
+        ratio = [1, 1]
+    avail = content_w - PANE_GAP
+    left_w = round(avail * ratio[0] / sum(ratio), 2)
+    right_w = round(avail * ratio[1] / sum(ratio), 2)
+
+    # Left column: title (constrained to left_w) then its content beneath.
+    title_group, title_h = _title_group(slide, "split", title_size, left_w, theme, False, debug)
+    left_body: list = []
+    for block in left_blocks:
+        left_body.extend(render_block(block, body_size, theme, debug, left_w,
+                                      content_h - title_h, counter, same_ctx))
+    left_children = list(title_group) + (_stagger(left_body, theme) if do_stagger else left_body)
+    left_col = {"type": "column", "modifiers": dbg([{"width": left_w}], debug),
+                "children": left_children}
+
+    # Right column: full-height content, starting at the top (level with the title).
+    right_body: list = []
+    for block in right_blocks:
+        right_body.extend(render_block(block, body_size, theme, debug, right_w,
+                                       content_h, counter, same_ctx))
+    right_col = {"type": "column",
+                 "modifiers": dbg([{"width": right_w}, "fillMaxHeight"], debug),
+                 "children": _stagger(right_body, theme) if do_stagger else right_body}
+
+    row = {"type": "row", "verticalAlignment": "top",
+           "modifiers": dbg(["fillMaxSize"], debug),
+           "children": [left_col, {"type": "box", "modifiers": [{"width": float(PANE_GAP)}],
+                                   "children": []}, right_col]}
+    return frame_slide([row], spec, theme, "split", width, height, debug, bg)
+
+
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
                      index: int, debug: bool, counter: list, same_ctx: dict | None = None,
                      bg: str = "default", animate: bool | None = None) -> dict:
@@ -514,6 +569,12 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     body_size = theme.body_size(stype)
     content_w = width - pad_l - pad_r
     centered = stype in ("title", "section")
+
+    # ``split``: row-first two-column layout (see _build_split_root). Needs two `+++` panes;
+    # with fewer it degrades to a normal content slide.
+    if stype == "split" and len(split_panes(blocks)) >= 2:
+        return _build_split_root(slide, blocks, theme, width, height, index, debug,
+                                 counter, same_ctx, bg, do_stagger)
 
     # Title, followed by a configurable vertical gap before the content. ``max`` slides
     # use a tighter gap so the maximised content keeps more room.
