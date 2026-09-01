@@ -69,8 +69,9 @@ def resolve_include(name: str, includes_dir: str) -> dict:
             if ext in VIDEO_EXTS:
                 return {"kind": "video", "path": os.path.abspath(path), "name": name}
             if ext == ".rc":
-                # A binary .rc can't be spliced into a JSON tree, but its source
-                # .json (if present) can — that embeds it *live* as components.
+                # Prefer the sibling .json when present (spliced into the JSON tree as a flat
+                # document); otherwise the binary .rc is embedded *live* as a nested document
+                # via the rc-document custom-component host — see render_rc_embed.
                 sib = os.path.splitext(path)[0] + ".json"
                 return {"kind": "rc_include", "path": os.path.abspath(path), "name": name,
                         "json": os.path.abspath(sib) if os.path.isfile(sib) else None}

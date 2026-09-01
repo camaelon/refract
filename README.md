@@ -108,7 +108,7 @@ digraph G { rankdir=LR; A -> B -> C }
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
 | video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
-| rc include    | `<name.rc>` — live-embedded via its sibling `.json`; a lone `.rc` (no title) becomes a whole-slide passthrough |
+| rc include    | `<name.rc>` — a prebuilt RemoteCompose doc embedded **live** in the slide: spliced flat if a sibling `.json` exists, else painted as a nested sub-document (its own id space, animates on its own, and receives mouse drags — e.g. rotate a 3D plot). A lone `.rc` (no title) is a whole-slide passthrough. Scaling via `[embed] fit`. The asset is copied to `out/media/` (not listed as a slide). |
 | web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box |
 
 Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
@@ -268,6 +268,9 @@ code_family  = "SF Mono"        # code blocks & spans
 
 [image]
 corner_radius = 28              # round embedded images
+
+[embed]                         # prebuilt `.rc` sub-documents (<name.rc>)
+fit = "fit"                     # fit (aspect, centred) | fill (cover) | native (1:1)
 
 [code]
 background    = "#FF1E1E1E"

@@ -397,16 +397,32 @@ def render_weblink(block: dict, theme: Theme, debug: bool,
 
 def render_video(block: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float) -> list[dict]:
-    """An embedded video as a native custom component (op 93). The viewer's video host
-    plays it, aspect-fit, inside the box; here we just size the box (16:9, fit to the
-    available area) and hand the file name in the config string."""
-    w = float(avail_w)
-    h = min(float(avail_h), w * 9.0 / 16.0)
-    mods: list = ["fillMaxWidth", {"height": round(h, 2)}]
+    """An embedded video as a native custom component (op 93). The box fills the available
+    area (width × height); the viewer's video host plays the clip **aspect-fit** inside it,
+    so a portrait phone recording fills the height and a landscape clip fills the width —
+    refract doesn't need to know the clip's real aspect. The file name rides in the config."""
+    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
     if theme.image_corner_radius > 0:
         mods.append({"clip": float(theme.image_corner_radius)})
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
     return [{"type": "custom", "config": f"video:{src}",
+             "modifiers": dbg(mods, debug), "children": []}]
+
+
+def render_rc_embed(block: dict, theme: Theme, debug: bool,
+                    avail_w: float, avail_h: float) -> list[dict]:
+    """A prebuilt binary ``.rc`` embedded live as a native custom component (op 93). The
+    player loads it into a nested document and paints it — fit, aspect-preserved — into the
+    box. Unlike the ``.json``-sibling splice this needs no source JSON; here we just size the
+    box and hand the file name (``rc:<name>``) to the host, which resolves it by real dims."""
+    import os
+    src = block.get("src") or os.path.basename(block["path"])
+    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
+    if theme.image_corner_radius > 0:
+        mods.append({"clip": float(theme.image_corner_radius)})
+    fit = getattr(theme, "embed_fit", "fit")
+    config = f"rc:{src}" + (f"#{fit}" if fit and fit != "fit" else "")   # #fit suffix (host parses)
+    return [{"type": "custom", "config": config,
              "modifiers": dbg(mods, debug), "children": []}]
 
 
@@ -468,11 +484,11 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         return _splice_json(block["path"])
 
     if kind == "rc_include":
-        # Embed the running document live by splicing its source JSON components.
+        # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
+        # the prebuilt .rc live as a nested document via the rc-document host.
         if block.get("json"):
             return _splice_json(block["json"])
-        return [text(f"[rc include: {block['name']} — no .json sibling to embed live]",
-                     body_size, theme.body_color, debug)]
+        return render_rc_embed(block, theme, debug, avail_w, avail_h)
 
     if kind == "missing":
         return [text(f"<{block['name']} missing>", body_size, theme.body_color, debug)]

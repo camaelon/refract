@@ -226,14 +226,29 @@ class RenderBlock(unittest.TestCase):
         out = self.rb({"kind": "video", "path": "clips/demo.mp4", "src": "demo.mp4"})
         self.assertEqual(out[0]["type"], "custom")
         self.assertEqual(out[0]["config"], "video:demo.mp4")
-        # sized 16:9 within the available box
-        self.assertTrue(any(isinstance(m, dict) and "height" in m
-                            for m in out[0]["modifiers"]))
+        # box fills the available height (rb passes avail_h=400); the host aspect-fits the clip
+        h = next(m["height"] for m in out[0]["modifiers"] if isinstance(m, dict) and "height" in m)
+        self.assertEqual(h, 400.0)
 
     def test_embedded_video_src_falls_back_to_basename(self):
         # Without an explicit copied `src`, the config uses the path's file name.
         out = self.rb({"kind": "video", "path": "clips/demo.mp4"})
         self.assertEqual(out[0]["config"], "video:demo.mp4")
+
+    def test_video_box_fills_height_not_capped_to_16_9(self):
+        # A tall content area (avail_h > avail_w*9/16) must still fill the height so a
+        # portrait clip isn't shrunk inside a short 16:9 landscape box.
+        out = render.render_block({"kind": "video", "path": "p.mp4", "src": "p.mp4"},
+                                  40.0, THEME, False, 800, 700, [0])   # 700 > 800*9/16=450
+        h = next(m["height"] for m in out[0]["modifiers"] if isinstance(m, dict) and "height" in m)
+        self.assertEqual(h, 700.0)
+
+    def test_rc_embed_uses_media_src(self):
+        # refract copies embed assets to out/media/ and references them as media/<name>.
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None},
+                                  40.0, THEME, False, 800, 400, [0])
+        self.assertEqual(out[0]["config"], "rc:media/widget.rc")
 
     def test_weblink_custom_component(self):
         # A web link is a native custom component the viewer embeds as a live WKWebView.
@@ -251,10 +266,19 @@ class RenderBlock(unittest.TestCase):
         out = self.rb({"kind": "rc_include", "name": "w", "json": p})
         self.assertEqual(out, [{"type": "box"}])
 
-    def test_rc_include_without_json_placeholder(self):
-        out = self.rb({"kind": "rc_include", "name": "w", "json": None})
-        self.assertEqual(out[0]["type"], "text")
-        self.assertIn("w", out[0]["value"])
+    def test_rc_include_without_json_embeds_as_custom(self):
+        # No .json sibling → embed the prebuilt .rc live as a custom component.
+        out = self.rb({"kind": "rc_include", "name": "w", "path": "/x/widget.rc", "json": None})
+        self.assertEqual(out[0]["type"], "custom")
+        self.assertEqual(out[0]["config"], "rc:widget.rc")
+
+    def test_rc_embed_encodes_fit(self):
+        from dataclasses import replace
+        theme = replace(THEME, embed_fit="fill")
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "widget.rc", "json": None},
+                                  40.0, theme, False, 800, 400, [0])
+        self.assertEqual(out[0]["config"], "rc:widget.rc#fill")
 
     def test_missing_placeholder(self):
         out = self.rb({"kind": "missing", "name": "gone"})

@@ -152,6 +152,8 @@ class Theme:
     title_shader: str = ""
     # Image corner radius in px (0 = square). Rounds embedded images.
     image_corner_radius: float = 0.0
+    # Embedded prebuilt `.rc` documents: how the nested doc is scaled into its box.
+    embed_fit: str = "fit"          # fit (aspect, centred) | fill (cover) | native (1:1)
     # Graph (graphviz) rendering colours.
     graph_node_fill: str = "#FF1B2A3D"
     graph_node_stroke: str = "#FF4FC3F7"
@@ -285,6 +287,8 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.image_corner_radius = float(image["corner_radius"])
     elif image.get("rounded"):
         t.image_corner_radius = 28.0
+
+    t.embed_fit = str(settings.get("embed", {}).get("fit", t.embed_fit)).lower()
 
     graph = settings.get("graph", {})
     t.graph_node_fill = graph.get("node_fill", t.graph_node_fill)

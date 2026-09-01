@@ -278,12 +278,14 @@ def run_once(args) -> int:
 
     out_dir = os.path.join(deck_dir, "out")
     json_dir = os.path.join(out_dir, "json")
+    media_dir = os.path.join(out_dir, "media")
     os.makedirs(json_dir, exist_ok=True)
+    os.makedirs(media_dir, exist_ok=True)
     repo_root = os.path.dirname(os.path.abspath(__file__))
 
     # Fresh output: remove previously generated files so renamed or deleted slides
-    # don't leave stale .rc/.json behind (the player would keep showing them).
-    for d, exts in ((out_dir, (".rc",)), (json_dir, (".json",))):
+    # don't leave stale .rc/.json/asset behind (the player would keep showing them).
+    for d, exts in ((out_dir, (".rc",)), (json_dir, (".json",)), (media_dir, (".rc",))):
         for fname in os.listdir(d):
             if fname.endswith(exts):
                 os.remove(os.path.join(d, fname))
@@ -334,6 +336,15 @@ def run_once(args) -> int:
             print(f"copy {rc_path}  [rc passthrough]")
             prev = None
             continue
+
+        # Embedded prebuilt .rc (no .json sibling): copy each into out/media/ so the
+        # rc-document host can load it by name — a subdirectory, so the viewer doesn't list
+        # the asset as a navigable slide (out/*.rc is the deck; out/media/*.rc are assets).
+        for b in blocks:
+            if b["kind"] == "rc_include" and not b.get("json"):
+                base = os.path.basename(b["path"])
+                copies.append((b["path"], os.path.join(out_dir, "media", base)))
+                b["src"] = f"media/{base}"
 
         # Per-slide theme: speaker accent + author attribution + inline overrides.
         meta = slide.get("meta") or {}
