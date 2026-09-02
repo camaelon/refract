@@ -145,6 +145,17 @@ def _wants_steps(meta: dict, steps_default: bool) -> bool:
     return steps_default
 
 
+def is_skipped(slide: dict) -> bool:
+    """True if a slide is marked to be dropped from the deck — either the ``skip`` flag
+    (``:: content skip``) or a ``skip=true`` override. Skipped slides are removed before
+    numbering, so they don't consume a section number, agenda entry, or page count."""
+    meta = slide.get("meta") or {}
+    if "skip" in (meta.get("flags") or []):
+        return True
+    val = (meta.get("overrides") or {}).get("skip")
+    return val is not None and str(val).lower() not in ("off", "false", "no", "0")
+
+
 def expand_fragments(slides: list, steps_default: bool = False) -> list:
     """Expand stepped slides into one .rc per cumulative top-level bullet, so pressing the
     next key reveals the next bullet. Every step after the first is marked ``reveal_step`` so
@@ -373,6 +384,8 @@ def run_once(args) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 1
+    # Drop slides marked `skip` before anything numbers or expands them.
+    slides = [s for s in slides if not is_skipped(s)]
     slides = apply_agenda(expand_fragments(slides, theme.reveal_steps))
     if not slides:
         print("no slides found", file=sys.stderr)
@@ -390,7 +403,7 @@ def run_once(args) -> int:
     # Videos live in out/ (lone-video slides) and out/media/ (embedded); clear both so a
     # renamed clip doesn't linger as an orphan slide/page.
     vid_exts = (".mp4", ".mov", ".m4v", ".webm")
-    for d, exts in ((out_dir, (".rc",) + vid_exts), (json_dir, (".json",)),
+    for d, exts in ((out_dir, (".rc", ".notes") + vid_exts), (json_dir, (".json",)),
                     (media_dir, (".rc",) + vid_exts)):
         for fname in os.listdir(d):
             if fname.endswith(exts):
@@ -565,6 +578,10 @@ def run_once(args) -> int:
         with open(json_path, "w") as f:
             json.dump(doc, f, indent=2)
         pairs.append((json_path, rc_path))
+        # Sidecar notes file next to the .rc — the PDF exporter draws it below the slide.
+        if slide.get("notes"):
+            with open(rc_path + ".notes", "w") as nf:
+                nf.write(slide["notes"])
         print(f"wrote {json_path}  [{tag}]")
         prev = (slide, blocks)
 

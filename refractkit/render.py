@@ -234,13 +234,17 @@ def _splice_json(path: str) -> list[dict]:
     return []
 
 
-def _clipped_splice(path: str, theme: Theme, debug: bool, avail_h: float) -> list[dict]:
+def _clipped_splice(path: str, theme: Theme, debug: bool, avail_h: float,
+                    block: dict | None = None) -> list[dict]:
     """Splice a document's components into the slide, wrapped in a clip frame so its canvas
     draw instructions can't spill past the area it occupies (a fillMaxSize embed otherwise
-    draws unclipped). Rounds the corners if ``[image] corner_radius`` is set."""
-    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)},
+    draws unclipped). Rounds the corners if ``[image] corner_radius`` is set. A ``title``
+    option on the block draws a centred caption below the spliced content."""
+    _, _, cap_h = _caption_metrics(block or {}, theme)
+    mods: list = ["fillMaxWidth", {"height": round(float(avail_h - cap_h), 2)},
                   {"clip": float(theme.image_corner_radius or 0.0)}]
-    return [{"type": "box", "modifiers": dbg(mods, debug), "children": _splice_json(path)}]
+    box = {"type": "box", "modifiers": dbg(mods, debug), "children": _splice_json(path)}
+    return _with_caption(box, block or {}, theme, debug, avail_h)
 
 
 def render_table(rows: list[list[str]], theme: Theme, debug: bool) -> list[dict]:
@@ -422,20 +426,53 @@ def _crop_opt(block: dict) -> str:
     return ",".join(str(round(float(c), 4)) for c in crop) if crop else ""
 
 
+def _caption_metrics(block: dict, theme: Theme) -> tuple:
+    """(caption text, font size, reserved height) for an embed's optional ``title`` caption,
+    or (None, 0, 0) when it has none. The caption is a touch smaller than body text."""
+    cap = block.get("caption")
+    if not cap:
+        return None, 0.0, 0.0
+    size = round(theme.body_size("content") * 0.78, 1)
+    gap = round(size * 0.5, 1)
+    return cap, size, size * 1.5 + gap
+
+
+def _with_caption(content, block: dict, theme: Theme, debug: bool, avail_h: float) -> list[dict]:
+    """Wrap an embed's node(s) in a column with a centred caption beneath (from the block's
+    ``title`` option). ``content`` is the embed node or a list of them; the caller has already
+    shrunk it by the reserved caption height so the pair still fits ``avail_h``. Returns the
+    content unwrapped (as a list) when there's no caption."""
+    children = content if isinstance(content, list) else [content]
+    cap, size, _ = _caption_metrics(block, theme)
+    if not cap:
+        return children
+    node = text(cap, size, theme.body_color, debug,
+                family=theme.body_font, weight=theme.body_weight,
+                extra=["fillMaxWidth", {"padding": [0.0, round(size * 0.5, 1), 0.0, 0.0]}])
+    node["textAlign"] = "center"
+    return [{"type": "column",
+             "modifiers": dbg(["fillMaxWidth", {"height": round(float(avail_h), 2)}], debug),
+             "children": [*children, node]}]
+
+
 def render_video(block: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float) -> list[dict]:
     """An embedded video as a native custom component (op 93). The box fills the available
     area (width × height); the viewer's video host plays the clip **aspect-fit** inside it,
     so a portrait phone recording fills the height and a landscape clip fills the width —
     refract doesn't need to know the clip's real aspect. An optional ``crop`` (source
-    fractions ``l,t,r,b``) trims the frame, e.g. to remove black bars."""
-    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
+    fractions ``l,t,r,b``) trims the frame, e.g. to remove black bars. A ``title`` option
+    draws a centred caption below the clip."""
+    _, _, cap_h = _caption_metrics(block, theme)
+    box_h = avail_h - cap_h
+    mods: list = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
     if theme.image_corner_radius > 0:
         mods.append({"clip": float(theme.image_corner_radius)})
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
     config = _media_config("video", src, {"crop": _crop_opt(block)})
-    return [{"type": "custom", "config": config,
-             "modifiers": dbg(mods, debug), "children": []}]
+    box = {"type": "custom", "config": config,
+           "modifiers": dbg(mods, debug), "children": []}
+    return _with_caption(box, block, theme, debug, avail_h)
 
 
 def render_rc_embed(block: dict, theme: Theme, debug: bool,
@@ -443,17 +480,21 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     """A prebuilt binary ``.rc`` embedded live as a native custom component (op 93). The
     player loads it into a nested document and paints it — fit, aspect-preserved — into the
     box. ``[embed] fit`` chooses fit/fill/native; an optional ``crop`` (source fractions
-    ``l,t,r,b``) shows only that region of the sub-document."""
+    ``l,t,r,b``) shows only that region of the sub-document. A ``title`` option draws a
+    centred caption below the embed."""
     import os
     src = block.get("src") or os.path.basename(block["path"])
-    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
+    _, _, cap_h = _caption_metrics(block, theme)
+    box_h = avail_h - cap_h
+    mods: list = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
     if theme.image_corner_radius > 0:
         mods.append({"clip": float(theme.image_corner_radius)})
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
     config = _media_config("rc", src, {"fit": fit if fit and fit != "fit" else "",
                                        "crop": _crop_opt(block)})
-    return [{"type": "custom", "config": config,
-             "modifiers": dbg(mods, debug), "children": []}]
+    box = {"type": "custom", "config": config,
+           "modifiers": dbg(mods, debug), "children": []}
+    return _with_caption(box, block, theme, debug, avail_h)
 
 
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
@@ -490,7 +531,9 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     elif kind == "code":
         out = render_code(block, theme, debug)
     elif kind == "image":
-        out = render_image(block, theme, debug, avail_w, avail_h, counter)
+        _, _, cap_h = _caption_metrics(block, theme)
+        out = _with_caption(render_image(block, theme, debug, avail_w, avail_h - cap_h, counter),
+                            block, theme, debug, avail_h)
     elif kind == "graph":
         out = render_graph(block, theme, debug, avail_w, avail_h, counter)
     elif kind == "chart":
@@ -511,13 +554,13 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         return out
 
     if kind == "json_include":
-        return _clipped_splice(block["path"], theme, debug, avail_h)
+        return _clipped_splice(block["path"], theme, debug, avail_h, block)
 
     if kind == "rc_include":
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
         # the prebuilt .rc live as a nested document via the rc-document host.
         if block.get("json"):
-            return _clipped_splice(block["json"], theme, debug, avail_h)
+            return _clipped_splice(block["json"], theme, debug, avail_h, block)
         return render_rc_embed(block, theme, debug, avail_w, avail_h)
 
     if kind == "missing":

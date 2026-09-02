@@ -101,17 +101,21 @@ def parse_crop(value) -> list | None:
 
 
 _FRAMEABLE = ("video", "rc_include", "json_include")
+_CAPTIONABLE = _FRAMEABLE + ("image",)
 
 
 def _apply_include_opts(block: dict, opts: dict) -> dict:
     """Apply per-include options (from ``<name | key=val …>``) to a resolved media block: a
-    source ``crop`` and a ``fit`` override. These apply to video and to rc/json embeds — for
-    a spliced json/rc, a crop/fit reframes it as a nested document (see refract's build)."""
+    source ``crop``, a ``fit`` override, and a ``title`` caption drawn below the embed. Crop
+    and fit apply to video and rc/json embeds (for a spliced json/rc, a crop/fit reframes it
+    as a nested document); the caption applies to those plus images."""
     crop = parse_crop(opts.get("crop"))
     if crop and block["kind"] in _FRAMEABLE:
         block["crop"] = crop
     if opts.get("fit") and block["kind"] in _FRAMEABLE:
         block["fit"] = opts["fit"].lower()
+    if opts.get("title") and block["kind"] in _CAPTIONABLE:
+        block["caption"] = opts["title"]
     return block
 
 

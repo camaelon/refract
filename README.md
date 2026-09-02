@@ -78,7 +78,9 @@ digraph G { rankdir=LR; A -> B -> C }
   **baseline** across mixed styles.
 - Author names from `[authors]` are tinted with their colour wherever they appear in
   body text (e.g. the title-slide byline).
-- A `???` line starts **speaker notes** — the rest of the slide goes to `out/notes.md`.
+- A `===` (or `???`) line starts **speaker notes** — everything after it, to the slide's end,
+  is presenter notes. They're written to `out/notes.md` and, in the exported PDF, laid out in a
+  panel **below** the slide (the page grows taller so notes never overlap the slide).
 - Everything else is content **blocks**, in order.
 
 ### Slide types (`<type>`)
@@ -93,6 +95,10 @@ digraph G { rankdir=LR; A -> B -> C }
 | `include` | splice a sub-deck from `includes/<param>/slides.md` (or a `<section … will go there>` placeholder) |
 | `outline` | replaced by a synthesized outline of the deck's `section` slides — numbers in the primary colour beside each section title |
 | `agenda`  | like `outline` but a plainer numbered bullet list |
+
+Mark a slide `skip` (`:: content skip`, or `skip=true`) to drop it from the deck entirely —
+it's removed before numbering, so it consumes no section number, agenda entry, or page.
+Use `skip=false` to keep one while leaving the flag in place.
 
 ### Content blocks
 
@@ -121,6 +127,9 @@ and rc/json embeds:
   scaled to fill the box. Handy to remove black bars around a portrait recording, e.g.
   `<phone.mp4 | crop=0.28,0,0.72,1>`, or to zoom into part of an embedded doc.
 - `fit=fit|fill|native` — override the `[embed] fit` for this embed.
+- `title=…` — a centred caption drawn below the embed (the embed shrinks to make room). Quote
+  it for multiple words: `<widget.rc | fit=fit title="Launcher Widget">`. Works on video,
+  rc/json embeds and images.
 
 A `crop`/`fit` on a **`.json` or `.rc` include** *frames* it: instead of splicing it flat
 into the slide (which re-lays-it-out to fill), refract embeds it as a nested document at its
@@ -483,7 +492,8 @@ python3 refract.py <deck> [options]
   --json2rc PATH         explicit json2rc launcher (default: auto-detect prebuilt)
 ```
 
-Speaker notes (`???` blocks) are written to `<deck>/out/notes.md`.
+Speaker notes (`===` or `???` blocks) are written to `<deck>/out/notes.md`, and in the PDF
+export they appear in a panel below each slide (the page grows to fit them).
 
 ## Prebuilt tools
 

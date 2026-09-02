@@ -250,6 +250,27 @@ class RenderBlock(unittest.TestCase):
                                   40.0, THEME, False, 800, 400, [0])
         self.assertEqual(out[0]["config"], "rc:media/widget.rc")
 
+    def test_embed_title_draws_caption_below(self):
+        # A `title` caption wraps the embed in a column: the custom box, then a centred text.
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None,
+                                   "caption": "My Widget"}, 40.0, THEME, False, 800, 400, [0])
+        self.assertEqual(out[0]["type"], "column")
+        kids = out[0]["children"]
+        self.assertEqual(kids[0]["type"], "custom")            # embed first
+        self.assertEqual(kids[-1]["type"], "text")             # caption below
+        self.assertEqual(kids[-1]["value"], "My Widget")
+        self.assertEqual(kids[-1].get("textAlign"), "center")
+        # the embed box shrank to make room for the caption
+        box_h = next(m["height"] for m in kids[0]["modifiers"] if isinstance(m, dict) and "height" in m)
+        self.assertLess(box_h, 400.0)
+
+    def test_embed_without_title_has_no_caption(self):
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None},
+                                  40.0, THEME, False, 800, 400, [0])
+        self.assertEqual(out[0]["type"], "custom")             # no column wrapper
+
     def test_weblink_custom_component(self):
         # A web link is a native custom component the viewer embeds as a live WKWebView.
         out = self.rb({"kind": "weblink", "url": "https://demo.dev", "label": "Live"})

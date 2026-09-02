@@ -44,6 +44,28 @@ class ThemeOverrides(unittest.TestCase):
         self.assertEqual(ch["shaders"], {})
 
 
+class Skip(unittest.TestCase):
+    def _slide(self, flags=None, overrides=None):
+        return {"meta": {"type": "content", "flags": flags or [],
+                         "overrides": overrides or {}}, "blocks": []}
+
+    def test_skip_flag(self):
+        self.assertTrue(refract.is_skipped(self._slide(flags=["skip"])))
+
+    def test_skip_override_true(self):
+        self.assertTrue(refract.is_skipped(self._slide(overrides={"skip": "true"})))
+
+    def test_skip_override_bare(self):
+        # `skip` with no value (present in overrides) still skips.
+        self.assertTrue(refract.is_skipped(self._slide(overrides={"skip": ""})))
+
+    def test_not_skipped_by_default(self):
+        self.assertFalse(refract.is_skipped(self._slide()))
+
+    def test_skip_false_stays(self):
+        self.assertFalse(refract.is_skipped(self._slide(overrides={"skip": "false"})))
+
+
 class Fragments(unittest.TestCase):
     def _slide(self, flags, items):
         return {"meta": {"type": "content", "flags": flags},

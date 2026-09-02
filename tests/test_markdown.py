@@ -73,6 +73,26 @@ class ParseSlide(unittest.TestCase):
         s = md.parse_slide("<pic.png>")
         self.assertNotIn("opts", s["blocks"][0])
 
+    def test_include_quoted_title_option(self):
+        # A quoted value may contain spaces (e.g. a multi-word caption).
+        s = md.parse_slide('<widget.rc | fit=fit title="Launcher Widget">')
+        self.assertEqual(s["blocks"][0]["opts"],
+                         {"fit": "fit", "title": "Launcher Widget"})
+
+    def test_notes_equals_marker(self):
+        s = md.parse_slide("# Title\n- a bullet\n===\nPresenter note here.")
+        self.assertEqual(s["notes"], "Presenter note here.")
+        self.assertEqual(len(s["blocks"]), 1)           # notes are not a content block
+        self.assertEqual(s["blocks"][0]["kind"], "bullets")
+
+    def test_notes_question_marker_still_works(self):
+        s = md.parse_slide("# Title\n???\nlegacy note")
+        self.assertEqual(s["notes"], "legacy note")
+
+    def test_no_notes(self):
+        s = md.parse_slide("# Title\n- a bullet")
+        self.assertIsNone(s["notes"])
+
     def test_metadata_line(self):
         s = md.parse_slide(":: section : hi\n# Head")
         self.assertEqual(s["meta"]["type"], "section")

@@ -18,14 +18,18 @@ import re
 GRAPH_ENGINES = {"dot", "neato", "fdp", "sfdp", "twopi", "circo", "graphviz"}
 
 
+_OPT_RE = re.compile(r'([\w-]+)=("[^"]*"|\'[^\']*\'|\S+)')
+
+
 def _parse_include_opts(opts: str) -> dict:
     """Parse space-separated ``key=value`` include options into a dict, e.g.
-    ``crop=0.28,0,0.72,1 fit=fill`` → ``{"crop": "0.28,0,0.72,1", "fit": "fill"}``."""
+    ``crop=0.28,0,0.72,1 fit=fill`` → ``{"crop": "0.28,0,0.72,1", "fit": "fill"}``. Values may
+    be quoted to include spaces, e.g. ``title="Widgets 1"`` → ``{"title": "Widgets 1"}``."""
     out = {}
-    for tok in opts.split():
-        if "=" in tok:
-            k, v = tok.split("=", 1)
-            out[k.strip()] = v.strip()
+    for k, v in _OPT_RE.findall(opts):
+        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+            v = v[1:-1]
+        out[k] = v
     return out
 
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")
@@ -113,12 +117,16 @@ def parse_slide(chunk: str) -> dict | None:
             i += 1
             continue
 
-        # speaker notes: a ``???`` line; everything after it (to slide end) is notes.
-        if stripped == "???" or stripped.startswith("??? "):
+        # speaker notes: a ``===`` (or legacy ``???``) separator; everything after it, to the
+        # slide's end, is presenter notes (kept out of the slide, shown below it in the PDF).
+        is_marker = (stripped == "???" or stripped.startswith("??? ")
+                     or (stripped and set(stripped) == {"="} and len(stripped) >= 3)
+                     or stripped.startswith("=== "))
+        if is_marker:
             flush_para()
             flush_bullets()
-            rest = [stripped[4:]] if stripped.startswith("??? ") else []
-            rest += lines[i + 1:]
+            inline = stripped[4:] if stripped.startswith(("??? ", "=== ")) else ""
+            rest = ([inline] if inline else []) + lines[i + 1:]
             notes = "\n".join(rest).strip()
             break
 

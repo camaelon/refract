@@ -78,6 +78,17 @@ class ResolveBlocks(unittest.TestCase):
         self.assertEqual(out[0]["crop"], [0.28, 0.0, 0.72, 1.0])
         self.assertEqual(out[0]["fit"], "fill")
 
+    def test_include_title_becomes_caption(self):
+        d = tempfile.mkdtemp()
+        inc = os.path.join(d, "includes")
+        os.makedirs(inc)
+        open(os.path.join(inc, "v.mp4"), "wb").close()
+        slide = {"base_dir": d, "blocks": [
+            {"kind": "include", "name": "v.mp4", "opts": {"title": "My Clip"}},
+        ]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["caption"], "My Clip")
+
 
 class ParseCrop(unittest.TestCase):
     def test_valid(self):
