@@ -41,7 +41,9 @@ TITLE_RE = re.compile(r"^#\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)-\s+(.+)$")
 INCLUDE_LINE = re.compile(r"^<([^>]+)>$")
 RATIO_RE = re.compile(r"\[(\d+(?::\d+)+)\]")
-SUBTITLE_RE = re.compile(r"^\*(.+)\*$")
+# A *single-asterisk italic* line = subtitle. The lookarounds exclude **bold** (and ***…***),
+# which must stay inline emphasis rather than being swallowed as a subtitle.
+SUBTITLE_RE = re.compile(r"^\*(?!\*)(.+?)(?<!\*)\*$")
 TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|\s*$")
 

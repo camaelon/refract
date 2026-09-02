@@ -10,6 +10,47 @@ def dbg(mods: list, debug: bool) -> list:
     return mods + [DEBUG_BORDER] if debug else mods
 
 
+def zigzag_edge(x0: float, x1: float, base: float, amp: float, tooth: float,
+                sign: int) -> list:
+    """Points of a triangle-wave edge from x0 to x1 along y=``base``, teeth of height ``amp``
+    displaced by ``sign``. An even tooth count keeps both ends on the base line (y=base) so the
+    corners meet the straight side edges cleanly."""
+    length = abs(x1 - x0)
+    steps = max(2, int(round(length / (tooth / 2.0))))
+    if steps % 2:
+        steps += 1
+    pts = []
+    for k in range(steps + 1):
+        x = x0 + (x1 - x0) * k / steps
+        y = base if k % 2 == 0 else base + sign * amp
+        pts.append((round(x, 2), round(y, 2)))
+    return pts
+
+
+def torn_fill_commands(pid: str, w: float, h: float, top: bool, bottom: bool,
+                       amp: float, tooth: float, color: str, outward: bool = False) -> list:
+    """Canvas commands that fill the rect (0,0,w,h) in ``color`` with its ``top``/``bottom``
+    edges torn into a zigzag (straight where not torn). ``outward=True`` makes the teeth spill
+    beyond the rect (drawn behind a clipped viewport — the scroll case); otherwise the torn band
+    stays inside [0,h] for a self-contained panel. Left/right edges are always straight."""
+    s = -1 if outward else 1     # inward: valleys bite into the panel; outward: teeth spill out
+    pts: list = []
+    pts += zigzag_edge(0.0, w, 0.0, amp, tooth, s) if top else [(0.0, 0.0), (w, 0.0)]
+    pts += zigzag_edge(w, 0.0, h, amp, tooth, -s) if bottom else [(w, h), (0.0, h)]
+    cmds = [{"type": "pathcreate", "id": pid, "x": pts[0][0], "y": pts[0][1]}]
+    cmds += [{"type": "pathappendlineto", "path": pid, "x": x, "y": yy} for x, yy in pts[1:]]
+    cmds.append({"type": "pathappendclose", "path": pid})
+    m = amp + 2.0
+    cmds += [
+        {"type": "paint", "ops": [{"color": color}, {"style": "fill"}]},
+        {"type": "save", "commands": [
+            {"type": "clippath", "path": pid},
+            {"type": "drawrect", "left": 0.0, "top": (-m if outward else 0.0),
+             "right": w, "bottom": (h + m if outward else h)}]},
+    ]
+    return cmds
+
+
 def text(value: str, size: float, color: str, debug: bool,
          extra: list | None = None, mono: bool = False,
          family: str | None = None, weight: float | None = None) -> dict:

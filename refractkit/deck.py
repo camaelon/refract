@@ -100,6 +100,22 @@ def parse_crop(value) -> list | None:
     return [round(l, 4), round(t, 4), round(r, 4), round(b, 4)]
 
 
+def parse_ratio(value) -> float | None:
+    """Parse an embed aspect ratio into a ``width / height`` float, or None. Accepts ``W:H``
+    (e.g. ``16:9``, ``1:1``) or a bare decimal (``1.5`` = 3:2). Non-positive / malformed
+    values are ignored."""
+    if not value:
+        return None
+    s = str(value).strip()
+    try:
+        w, h = ((float(x) for x in s.split(":", 1)) if ":" in s else (float(s), 1.0))
+    except ValueError:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return round(w / h, 4)
+
+
 _FRAMEABLE = ("video", "rc_include", "json_include")
 _CAPTIONABLE = _FRAMEABLE + ("image",)
 
@@ -114,6 +130,11 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         block["crop"] = crop
     if opts.get("fit") and block["kind"] in _FRAMEABLE:
         block["fit"] = opts["fit"].lower()
+    # ``ratio=W:H`` frames the embed in a centred box of that aspect ratio (rendered live as a
+    # custom component) rather than filling the whole content area.
+    ratio = parse_ratio(opts.get("ratio"))
+    if ratio and block["kind"] in _FRAMEABLE:
+        block["ratio"] = ratio
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
     # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):

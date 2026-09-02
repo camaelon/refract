@@ -221,11 +221,13 @@ def resolve_same_types(slides: list) -> list:
 
 
 def is_skipped(slide: dict) -> bool:
-    """True if a slide is marked to be dropped from the deck — either the ``skip`` flag
-    (``:: content skip``) or a ``skip=true`` override. Skipped slides are removed before
-    numbering, so they don't consume a section number, agenda entry, or page count."""
+    """True if a slide is marked to be dropped from the deck — the ``skip`` keyword anywhere on
+    the ``::`` line (``:: content skip`` *or* ``:: skip content``: as the first token it parses
+    into ``type`` rather than ``flags``, so both are checked) or a ``skip=true`` override.
+    Skipped slides are removed before numbering, so they don't consume a section number,
+    agenda entry, or page count."""
     meta = slide.get("meta") or {}
-    if "skip" in (meta.get("flags") or []):
+    if "skip" in (meta.get("flags") or []) or str(meta.get("type", "")).lower() == "skip":
         return True
     val = (meta.get("overrides") or {}).get("skip")
     return val is not None and str(val).lower() not in ("off", "false", "no", "0")

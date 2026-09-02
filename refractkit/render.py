@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from .chart import render_chart
-from .components import dbg, text
+from .components import dbg, text, torn_fill_commands
 from .graph import render_graph, render_graph_morph
 from .highlight import render_code
 from .inline import has_author, has_markup, styled_line
@@ -463,6 +463,32 @@ def _with_caption(content, block: dict, theme: Theme, debug: bool, avail_h: floa
              "children": [*children, node]}]
 
 
+def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner: float,
+               debug: bool) -> dict:
+    """Size an embed's box. By default it fills the width at ``box_h`` tall; when ``ratio``
+    (width / height) is set the box is fitted to that aspect ratio within (avail_w, box_h) and
+    centred in the area, so a square face doesn't stretch to fill a wide slide. ``inner`` is the
+    embed node — this sets its size/clip modifiers (it must not already carry them)."""
+    framed = ratio is not None
+    if framed:
+        bh = float(box_h)
+        bw = bh * ratio
+        if bw > avail_w:
+            bw, bh = float(avail_w), float(avail_w) / ratio
+        mods: list = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
+    else:
+        mods = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
+    if corner and corner > 0:
+        mods.append({"clip": float(corner)})
+    inner["modifiers"] = dbg(mods, debug)
+    if not framed:
+        return inner
+    return {"type": "box",
+            "modifiers": dbg(["fillMaxWidth", {"height": round(float(box_h), 2)}], debug),
+            "horizontalAlignment": "center", "verticalAlignment": "center",
+            "children": [inner]}
+
+
 def render_video(block: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float) -> list[dict]:
     """An embedded video as a native custom component (op 93). The box fills the available
@@ -473,13 +499,10 @@ def render_video(block: dict, theme: Theme, debug: bool,
     draws a centred caption below the clip."""
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
-    mods: list = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
-    if theme.image_corner_radius > 0:
-        mods.append({"clip": float(theme.image_corner_radius)})
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
     config = _media_config("video", src, {"crop": _crop_opt(block)})
-    box = {"type": "custom", "config": config,
-           "modifiers": dbg(mods, debug), "children": []}
+    box = _embed_box({"type": "custom", "config": config, "children": []},
+                     avail_w, box_h, block.get("ratio"), theme.image_corner_radius, debug)
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -494,14 +517,11 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     src = block.get("src") or os.path.basename(block["path"])
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
-    mods: list = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
-    if theme.image_corner_radius > 0:
-        mods.append({"clip": float(theme.image_corner_radius)})
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
     config = _media_config("rc", src, {"fit": fit if fit and fit != "fit" else "",
                                        "crop": _crop_opt(block)})
-    box = {"type": "custom", "config": config,
-           "modifiers": dbg(mods, debug), "children": []}
+    box = _embed_box({"type": "custom", "config": config, "children": []},
+                     avail_w, box_h, block.get("ratio"), theme.image_corner_radius, debug)
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -559,7 +579,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
             out.append(comp)
         return out
     elif kind == "code":
-        out = render_code(block, theme, debug)
+        out = render_code(block, theme, debug, avail_w=avail_w, avail_h=avail_h)
     elif kind == "image":
         _, _, cap_h = _caption_metrics(block, theme)
         out = _with_caption(render_image(block, theme, debug, avail_w, avail_h - cap_h, counter),
@@ -589,8 +609,9 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
 
     if kind == "rc_include":
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
-        # the prebuilt .rc live as a nested document via the rc-document host.
-        if block.get("json"):
+        # the prebuilt .rc live as a nested document via the rc-document host. A ``ratio`` frames
+        # the embed in a fixed-aspect box, which needs the live custom-component path.
+        if block.get("json") and not block.get("ratio"):
             return _apply_reveal(_clipped_splice(block["json"], theme, debug, avail_h, block), block)
         return _apply_reveal(render_rc_embed(block, theme, debug, avail_w, avail_h), block)
 
@@ -671,6 +692,7 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
                                        content_h, counter, same_ctx))
     right_col = {"type": "column",
                  "modifiers": dbg([{"width": right_w}, "fillMaxHeight"], debug),
+                 "verticalArrangement": "center",   # centre the right content in the column
                  "children": _stagger(right_body, theme) if do_stagger else right_body}
 
     row = {"type": "row", "verticalAlignment": "top",
@@ -727,23 +749,6 @@ def scroll_spec(prev_off: float, cur_off: float, viewport: float) -> dict:
     return {"viewport": round(float(viewport), 2), "y": _scroll_y(prev_off, cur_off)}
 
 
-def _zigzag_edge(x0: float, x1: float, base: float, amp: float, tooth: float,
-                 sign: int) -> list[tuple[float, float]]:
-    """Points of a triangle-wave edge from x0 to x1 along y=``base``, teeth of height ``amp``
-    displaced by ``sign`` (into the panel). An even tooth count keeps both ends on the base
-    line (y=base) so the corners meet the straight side edges cleanly."""
-    length = abs(x1 - x0)
-    steps = max(2, int(round(length / (tooth / 2.0))))
-    if steps % 2:
-        steps += 1
-    pts = []
-    for k in range(steps + 1):
-        x = x0 + (x1 - x0) * k / steps
-        y = base if k % 2 == 0 else base + sign * amp
-        pts.append((round(x, 2), round(y, 2)))
-    return pts
-
-
 def _jagged_bg_canvas(jag: dict, viewport: float, debug: bool) -> dict:
     """A fixed, viewport-sized canvas that fills the code panel background as a shape whose cut
     edges (``top``/``bottom``) are torn into zigzag teeth pointing *outward* — beyond the text
@@ -753,23 +758,9 @@ def _jagged_bg_canvas(jag: dict, viewport: float, debug: bool) -> dict:
     shows through the gaps between teeth."""
     w = float(jag["width"])
     h = round(float(viewport), 2)
-    amp = float(jag.get("amp", 12.0))
-    tooth = float(jag.get("tooth", 32.0))
-    # Teeth point away from the panel body: up (−amp) at the top, down (+amp) at the bottom.
-    pts: list[tuple[float, float]] = []
-    pts += _zigzag_edge(0.0, w, 0.0, amp, tooth, -1) if jag.get("top") else [(0.0, 0.0), (w, 0.0)]
-    pts += _zigzag_edge(w, 0.0, h, amp, tooth, +1) if jag.get("bottom") else [(w, h), (0.0, h)]
-    pid = "czz"
-    path = [{"type": "pathcreate", "id": pid, "x": pts[0][0], "y": pts[0][1]}]
-    path += [{"type": "pathappendlineto", "path": pid, "x": x, "y": yy} for x, yy in pts[1:]]
-    path.append({"type": "pathappendclose", "path": pid})
-    m = amp + 2.0   # fill rect overscans the teeth (which extend beyond [0, h])
-    cmds = path + [
-        {"type": "paint", "ops": [{"color": jag["color"]}, {"style": "fill"}]},
-        {"type": "save", "commands": [
-            {"type": "clippath", "path": pid},
-            {"type": "drawrect", "left": 0.0, "top": -m, "right": w, "bottom": h + m}]},
-    ]
+    cmds = torn_fill_commands("czz", w, h, bool(jag.get("top")), bool(jag.get("bottom")),
+                              float(jag.get("amp", 12.0)), float(jag.get("tooth", 32.0)),
+                              jag["color"], outward=True)
     return {"type": "canvas",
             "modifiers": dbg([{"width": round(w, 2)}, {"height": h}], debug),
             "commands": cmds}
