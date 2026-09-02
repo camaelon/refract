@@ -727,18 +727,77 @@ def scroll_spec(prev_off: float, cur_off: float, viewport: float) -> dict:
     return {"viewport": round(float(viewport), 2), "y": _scroll_y(prev_off, cur_off)}
 
 
-def _scroll_viewport(content: list, viewport: float, y, debug: bool) -> dict:
+def _zigzag_edge(x0: float, x1: float, base: float, amp: float, tooth: float,
+                 sign: int) -> list[tuple[float, float]]:
+    """Points of a triangle-wave edge from x0 to x1 along y=``base``, teeth of height ``amp``
+    displaced by ``sign`` (into the panel). An even tooth count keeps both ends on the base
+    line (y=base) so the corners meet the straight side edges cleanly."""
+    length = abs(x1 - x0)
+    steps = max(2, int(round(length / (tooth / 2.0))))
+    if steps % 2:
+        steps += 1
+    pts = []
+    for k in range(steps + 1):
+        x = x0 + (x1 - x0) * k / steps
+        y = base if k % 2 == 0 else base + sign * amp
+        pts.append((round(x, 2), round(y, 2)))
+    return pts
+
+
+def _jagged_bg_canvas(jag: dict, viewport: float, debug: bool) -> dict:
+    """A fixed, viewport-sized canvas that fills the code panel background as a shape whose cut
+    edges (``top``/``bottom``) are torn into zigzag teeth pointing *outward* — beyond the text
+    clip, into the margin — so the teeth never eat into the text. The canvas doesn't clip its
+    own drawing, so the outward teeth render even though it's the size of the viewport; it must
+    sit outside the viewport's rectangular clip (see _scroll_viewport). The slide background
+    shows through the gaps between teeth."""
+    w = float(jag["width"])
+    h = round(float(viewport), 2)
+    amp = float(jag.get("amp", 12.0))
+    tooth = float(jag.get("tooth", 32.0))
+    # Teeth point away from the panel body: up (−amp) at the top, down (+amp) at the bottom.
+    pts: list[tuple[float, float]] = []
+    pts += _zigzag_edge(0.0, w, 0.0, amp, tooth, -1) if jag.get("top") else [(0.0, 0.0), (w, 0.0)]
+    pts += _zigzag_edge(w, 0.0, h, amp, tooth, +1) if jag.get("bottom") else [(w, h), (0.0, h)]
+    pid = "czz"
+    path = [{"type": "pathcreate", "id": pid, "x": pts[0][0], "y": pts[0][1]}]
+    path += [{"type": "pathappendlineto", "path": pid, "x": x, "y": yy} for x, yy in pts[1:]]
+    path.append({"type": "pathappendclose", "path": pid})
+    m = amp + 2.0   # fill rect overscans the teeth (which extend beyond [0, h])
+    cmds = path + [
+        {"type": "paint", "ops": [{"color": jag["color"]}, {"style": "fill"}]},
+        {"type": "save", "commands": [
+            {"type": "clippath", "path": pid},
+            {"type": "drawrect", "left": 0.0, "top": -m, "right": w, "bottom": h + m}]},
+    ]
+    return {"type": "canvas",
+            "modifiers": dbg([{"width": round(w, 2)}, {"height": h}], debug),
+            "commands": cmds}
+
+
+def _scroll_viewport(content: list, viewport: float, y, debug: bool,
+                     jag: dict | None = None) -> dict:
     """Wrap a slide's content nodes in a fixed-height, clipped viewport whose inner column is
     translated up by ``y`` (a number for a static page, or an expression string to animate the
     scroll). Content taller than ``viewport`` is clipped, so only the current scroll window
-    shows — the mechanism behind both ``scroll = N`` pages and scroll-aware `:: same`."""
+    shows — the mechanism behind both ``scroll = N`` pages and scroll-aware `:: same``.
+
+    ``jag`` (a dict with width/color/top/bottom) draws a fixed torn zigzag panel background
+    whose teeth extend *outside* the text clip, so the cut edges look ripped from the deck."""
     inner = {"type": "column",
              "modifiers": dbg(["fillMaxWidth", {"offset": {"x": 0.0, "y": y}}], debug),
              "children": content}
+    vp = round(float(viewport), 2)
+    viewport_box = {"type": "box",
+                    "modifiers": dbg(["fillMaxWidth", {"height": vp}, {"clip": 0.0}], debug),
+                    "children": [inner]}
+    if not jag:
+        return viewport_box
+    # The torn background sits behind the rect-clipped text, in a parent that does NOT clip, so
+    # its outward teeth spill into the margin instead of being cut off.
     return {"type": "box",
-            "modifiers": dbg(["fillMaxWidth", {"height": round(float(viewport), 2)},
-                              {"clip": 0.0}], debug),
-            "children": [inner]}
+            "modifiers": dbg(["fillMaxWidth", {"height": vp}], debug),
+            "children": [_jagged_bg_canvas(jag, viewport, debug), viewport_box]}
 
 
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
@@ -806,10 +865,25 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
             # is the entrance).
             bsize = (body_size if scroll else
                      _autosize_body(pane_blocks, theme, content_w, avail_h, body_size, same_ctx))
-            for block in pane_blocks:
-                content.extend(render_block(block, bsize, theme, debug, content_w, avail_h, counter, same_ctx))
+            # Torn zigzag edges on a scrolled code panel: draw the panel background as a fixed
+            # jagged shape at the viewport with the code scrolling transparently over it, so the
+            # cut edges (top when there's content above, bottom when there's more below) look
+            # ripped from the rest of the deck.
+            jag = None
+            if scroll and getattr(theme, "code_jagged_scroll", True) \
+                    and len(pane_blocks) == 1 and pane_blocks[0].get("kind") == "code":
+                sp = (slide.get("meta") or {}).get("scroll_page") or {}
+                idx, cnt = sp.get("index", 0), sp.get("count", 1)
+                jag = {"top": idx > 0, "bottom": idx < cnt - 1, "width": content_w,
+                       "color": theme.code_background,
+                       "amp": float(getattr(theme, "code_jagged_amp", 12.0)),
+                       "tooth": float(getattr(theme, "code_jagged_tooth", 32.0))}
+                content = render_code(pane_blocks[0], theme, debug, panel_bg=False)
+            else:
+                for block in pane_blocks:
+                    content.extend(render_block(block, bsize, theme, debug, content_w, avail_h, counter, same_ctx))
             if scroll:
-                children.append(_scroll_viewport(content, scroll["viewport"], scroll["y"], debug))
+                children.append(_scroll_viewport(content, scroll["viewport"], scroll["y"], debug, jag))
             else:
                 children.extend(_stagger(content, theme) if do_stagger else content)
     else:

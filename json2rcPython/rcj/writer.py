@@ -76,6 +76,7 @@ LOOP_START = 215
 CONDITIONAL_OPERATIONS = 178
 PAINT_VALUES = 40
 DRAW_RECT = 42
+DRAW_TEXT_RUN = 43
 DRAW_CIRCLE = 46
 DRAW_LINE = 47
 DRAW_OVAL = 56
@@ -131,8 +132,14 @@ PB_SHADER = 9
 PB_GRADIENT = 11
 PB_ALPHA = 12
 PB_STROKE_JOIN = 15
+PB_TYPEFACE = 16
 PB_COLOR_ID = 19
 PB_PATH_EFFECT = 25
+# PaintBundle TYPEFACE fontType values (PaintBundle.java) — canvas text font family.
+FONT_TYPE_DEFAULT = 0
+FONT_TYPE_SANS_SERIF = 1
+FONT_TYPE_SERIF = 2
+FONT_TYPE_MONOSPACE = 3
 # PaintPathEffects type tags (written as raw int bits inside the effect payload).
 PPE_DASH = 1
 GRAD_LINEAR = 0
@@ -1006,6 +1013,20 @@ class RemoteComposeWriter:
         for b in (x, y, pan_x, pan_y):
             self.buffer.write_int(b)
         self.buffer.write_int(flags)
+
+    def draw_text_run(self, text_id: int, start: int, end: int, ctx_start: int,
+                      ctx_end: int, x: int, y: int, rtl: bool = False) -> None:
+        """DRAW_TEXT_RUN (43) — draw glyphs [start,end) of a text at (x, baseline=y).
+
+        No measuring: the run is drawn directly at the given left/baseline, which is
+        what makes a canvas of positioned runs far cheaper than one Text component per
+        span. x/y are raw float bits (may be NaN-encoded expression ids)."""
+        self.buffer.start(DRAW_TEXT_RUN)
+        for v in (text_id, start, end, ctx_start, ctx_end):
+            self.buffer.write_int(v)
+        self.buffer.write_int(x)
+        self.buffer.write_int(y)
+        self.buffer.write_boolean(rtl)
 
     def draw_round_rect(self, left: int, top: int, right: int, bottom: int,
                         rx: int, ry: int) -> None:

@@ -124,8 +124,30 @@ def highlight(code: str, lang: str) -> list[list[tuple[str, str]]]:
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
-def render_code(block: dict, theme, debug: bool) -> list[dict]:
-    """Render a code block as a dark panel of syntax-highlighted monospace lines."""
+def _panel_mods(theme, debug: bool, bg: bool = True) -> list:
+    """Shared outer-panel modifiers: full width, (optional rounded clip + bg), padding.
+
+    ``bg=False`` drops the background and clip — used for a scrolled code panel whose
+    background is drawn separately as a fixed jagged-edged shape (see _jagged_bg_canvas),
+    with the text scrolling transparently on top."""
+    mods = ["fillMaxWidth"]
+    if bg:
+        if theme.code_corner_radius > 0:
+            mods.append({"clip": float(theme.code_corner_radius)})   # rounds the panel
+        mods.append({"background": theme.code_background})
+    mods.append({"padding": 24.0})
+    return dbg(mods, debug)
+
+
+def render_code(block: dict, theme, debug: bool, panel_bg: bool = True) -> list[dict]:
+    """Render a code block as a dark panel of syntax-highlighted monospace lines.
+
+    Two renderers (see Theme.code_renderer): "components" lays each token as its own
+    Text (precise, but one layout component per span — heavy for large files), "canvas"
+    draws positioned monospace runs on a single canvas (~2 components total).
+    ``panel_bg=False`` omits the panel background/clip (the scrolled jagged-edge case)."""
+    if getattr(theme, "code_renderer", "components") == "canvas":
+        return render_code_canvas(block, theme, debug, panel_bg)
     size = theme.code_font_size
     fam = getattr(theme, "code_font_family", "monospace")
     lines = highlight(block.get("text", ""), block.get("lang", ""))
@@ -137,12 +159,71 @@ def render_code(block: dict, theme, debug: bool) -> list[dict]:
             spans = [text(t, size, theme.syntax_color(tt), debug, family=fam)
                      for t, tt in line]
         rows.append({"type": "row", "children": spans})
-    mods = ["fillMaxWidth"]
-    if theme.code_corner_radius > 0:
-        mods.append({"clip": float(theme.code_corner_radius)})   # rounds the panel
-    mods += [{"background": theme.code_background}, {"padding": 24.0}]
     return [{
         "type": "column",
-        "modifiers": dbg(mods, debug),
+        "modifiers": _panel_mods(theme, debug, panel_bg),
         "children": rows,
+    }]
+
+
+def _coalesce(line: list[tuple[str, str]]) -> list[tuple[int, str, str]]:
+    """Merge adjacent same-colour spans into (start_column, text, token_type) runs so a
+    long stretch of one colour is a single drawTextRun. Whitespace-only runs are dropped
+    (nothing to draw) but still advance the column."""
+    runs: list[tuple[int, str, str]] = []
+    col = 0
+    buf, buf_tt, buf_col = "", None, 0
+    def flush():
+        if buf and buf.strip():
+            runs.append((buf_col, buf, buf_tt))
+    for t, tt in line:
+        t = t.replace("\t", "    ")   # expand tabs so the monospace grid stays aligned
+        if tt != buf_tt:
+            flush()
+            buf, buf_tt, buf_col = "", tt, col
+        buf += t
+        col += len(t)
+    flush()
+    return runs
+
+
+def render_code_canvas(block: dict, theme, debug: bool, panel_bg: bool = True) -> list[dict]:
+    """Code panel drawn as a single canvas of positioned monospace runs.
+
+    Tokens sit on a fixed grid: x = column * (size*char_advance), baseline advances by
+    size*line_height per line. One typeface/size paint op up front, then a colour op only
+    when the colour changes. Collapses hundreds of Text components to one canvas node —
+    trivial layout, cheap paint — at the cost of exact per-glyph metrics (fine for a
+    monospace font)."""
+    size = theme.code_font_size
+    char_w = size * float(getattr(theme, "code_char_advance", 0.6))
+    line_h = size * float(getattr(theme, "code_line_height", 1.35))
+    ascent = size * 0.82                      # baseline offset of the first line
+    lines = highlight(block.get("text", ""), block.get("lang", ""))
+
+    cmds: list[dict] = [{"type": "paint", "ops": [
+        {"style": "fill"}, {"fontType": "monospace"}, {"textSize": float(size)},
+        {"color": theme.code_foreground}]}]
+    cur_color = theme.code_foreground
+    for i, line in enumerate(lines):
+        y = round(ascent + i * line_h, 2)
+        for col, txt, tt in _coalesce(line):
+            color = theme.syntax_color(tt)
+            if color != cur_color:
+                cmds.append({"type": "paint", "ops": [{"color": color}]})
+                cur_color = color
+            # Explicit UTF-16 start/end: the player draws chars [start,end); the parser's
+            # default end=-1 would draw nothing.
+            n = len(txt.encode("utf-16-le")) // 2
+            cmds.append({"type": "drawtextrun", "text": txt, "start": 0, "end": n,
+                         "x": round(col * char_w, 2), "y": y})
+
+    canvas_h = round(max(1, len(lines)) * line_h, 2)
+    canvas = {"type": "canvas",
+              "modifiers": dbg(["fillMaxWidth", {"height": canvas_h}], debug),
+              "commands": cmds}
+    return [{
+        "type": "column",
+        "modifiers": _panel_mods(theme, debug, panel_bg),
+        "children": [canvas],
     }]

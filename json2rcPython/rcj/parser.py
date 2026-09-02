@@ -206,6 +206,17 @@ def _paint_setter(p, key: str, src: dict, ints: list[int]) -> None:
         ints.append(W.PB_STROKE_JOIN | (join << 16))
     elif key == "textSize":
         ints += [W.PB_TEXT_SIZE, p._fbits(src["textSize"])]
+    elif key == "fontType":
+        # Canvas text font family: "default"|"sans-serif"|"serif"|"monospace".
+        # Encodes as TYPEFACE(tag=16, upper=weight|italic — 0 → default weight 400)
+        # followed by the fontType int (PaintBundle reads it as arr[i++]).
+        ft = {"default": W.FONT_TYPE_DEFAULT, "sans-serif": W.FONT_TYPE_SANS_SERIF,
+              "sans": W.FONT_TYPE_SANS_SERIF, "serif": W.FONT_TYPE_SERIF,
+              "monospace": W.FONT_TYPE_MONOSPACE, "mono": W.FONT_TYPE_MONOSPACE}
+        v = ft.get(str(src["fontType"]).lower())
+        if v is None:
+            raise NotImplementedComponent(f"fontType {src['fontType']!r}")
+        ints += [W.PB_TYPEFACE, v]
     else:
         raise NotImplementedComponent(f"paint key {key!r}")
 
@@ -1391,6 +1402,14 @@ class RemoteComposeJsonParser:
             w.draw_text_anchored(tid, fb(command["x"]), fb(command["y"]),
                                  fb(command["panX"]), fb(command["panY"]),
                                  int(command.get("flags", 0)))
+        elif ctype == "drawtextrun":
+            # Draw a whole string at (x, baseline=y). start/end are UTF-16 char indices
+            # into the string (the player converts them to UTF-8 byte offsets).
+            s = str(command["text"])
+            n = len(s.encode("utf-16-le")) // 2   # UTF-16 code-unit length
+            tid = w.add_text(s)
+            w.draw_text_run(tid, 0, n, 0, n, fb(command["x"]), fb(command["y"]),
+                            bool(command.get("rtl", False)))
         elif ctype == "drawroundrect":
             w.draw_round_rect(fb(command["left"]), fb(command["top"]), fb(command["right"]),
                               fb(command["bottom"]), fb(command["rx"]), fb(command["ry"]))

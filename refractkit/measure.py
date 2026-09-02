@@ -71,12 +71,16 @@ def block_height(block: dict, body_size: float, theme, width: float) -> float:
             h += _wrap_lines(it.get("text", ""), body_size, width - indent) * body_size * LINE_H
         return h
     if kind == "code":
-        size = float(theme.fonts.get("code", body_size)) if hasattr(theme, "fonts") else body_size
+        # Match the code renderer exactly (n source lines at code_font_size * code_line_height,
+        # inside a panel padded 24 top+bottom) so scroll offsets line up with the real content
+        # height — the canvas renderer never wraps, so line count == source line count.
+        size = float(getattr(theme, "code_font_size", body_size))
+        lh = float(getattr(theme, "code_line_height", 1.35))
         lines = block.get("lines")
         if lines is None:
             lines = block.get("text", "").split("\n")
         n = max(1, len(lines))
-        return n * size * 1.35 + size * 1.6          # + panel padding
+        return n * size * lh + 48.0                  # + panel padding (24 + 24)
     if kind == "table":
         rows = block.get("rows", [])
         return max(1, len(rows)) * body_size * 1.9    # padded table rows

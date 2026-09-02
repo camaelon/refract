@@ -81,6 +81,19 @@ class Theme:
     code_foreground: str = "#FFD4D4D4"
     code_font_size: float = 28.0
     code_corner_radius: float = 0.0
+    # Code block renderer: "components" (a Text per token — precise metrics, but one
+    # layout component per span) or "canvas" (positioned monospace drawTextRun ops on a
+    # single canvas — collapses hundreds of components to ~2, far cheaper to paint for
+    # large embedded source files). The canvas path assumes a monospace font and lays
+    # tokens on a fixed character grid; the two ratios below tune that grid.
+    code_renderer: str = "components"
+    code_char_advance: float = 0.6      # glyph advance as a fraction of font size (mono)
+    code_line_height: float = 1.35      # line pitch as a fraction of font size
+    # Torn "zigzag" edge on a code panel that scrolls across several slides: the cut edge
+    # (top when there's content above, bottom when there's more below) is drawn ripped.
+    code_jagged_scroll: bool = True
+    code_jagged_amp: float = 12.0       # zigzag tooth height (px)
+    code_jagged_tooth: float = 32.0     # zigzag tooth width (px)
     # Font families (named system fonts) and weights. Empty family = default sans.
     title_font: str = ""            # headings (title/section/content/max)
     title_weight: float = 400.0
@@ -231,6 +244,18 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.code_font_size = float(code["font_size"])
     if "corner_radius" in code:
         t.code_corner_radius = float(code["corner_radius"])
+    if "renderer" in code:
+        t.code_renderer = str(code["renderer"]).lower()
+    if "char_advance" in code:
+        t.code_char_advance = float(code["char_advance"])
+    if "line_height" in code:
+        t.code_line_height = float(code["line_height"])
+    if "jagged" in code:
+        t.code_jagged_scroll = bool(code["jagged"])
+    if "jagged_amp" in code:
+        t.code_jagged_amp = float(code["jagged_amp"])
+    if "jagged_tooth" in code:
+        t.code_jagged_tooth = float(code["jagged_tooth"])
     for token_type, color in (code.get("syntax", {}) or {}).items():
         t.syntax[token_type] = color
 
