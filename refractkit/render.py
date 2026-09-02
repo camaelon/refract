@@ -275,9 +275,13 @@ def render_table(rows: list[list[str]], theme: Theme, debug: bool) -> list[dict]
         if is_header:
             row_mods.append({"background": theme.table_header_bg})
         out_rows.append({"type": "row", "modifiers": dbg(row_mods, debug), "children": cell_nodes})
+    mods: list = ["fillMaxWidth"]
+    if theme.table_corner_radius > 0:
+        mods.append({"clip": float(theme.table_corner_radius)})   # round the panel (+ header)
+    mods += [{"background": theme.table_bg}, {"padding": 16.0}]
     return [{
         "type": "column",
-        "modifiers": dbg(["fillMaxWidth", {"background": theme.table_bg}, {"padding": 16.0}], debug),
+        "modifiers": dbg(mods, debug),
         "children": out_rows,
     }]
 
@@ -791,6 +795,110 @@ def _scroll_viewport(content: list, viewport: float, y, debug: bool,
             "children": [_jagged_bg_canvas(jag, viewport, debug), viewport_box]}
 
 
+# ── Stacked layout sections (``===``) ─────────────────────────────────────────
+_MEDIA_KINDS = {"image", "rc_include", "json_include", "video", "weblink", "graph",
+                "chart", "include", "missing"}
+
+
+def _section_is_media(section: dict) -> bool:
+    """A section is 'media' (fills leftover height) if it has ``+++`` panes or any media block;
+    otherwise it's 'text' (title/bullets/paragraphs) and takes only its natural height."""
+    blocks = section["blocks"]
+    return (any(b.get("kind") == "pane_break" for b in blocks)
+            or any(b.get("kind") in _MEDIA_KINDS for b in blocks))
+
+
+def _section_type(section: dict) -> str:
+    """A section's layout type: its own ``:: <type>`` when it names a known one, else content."""
+    t = (section["meta"] or {}).get("type") if section["meta"] else None
+    return t if t in SLIDE_TYPES else "content"
+
+
+def _section_natural_h(section: dict, theme: Theme, stype: str, width: float) -> float:
+    """Estimated stacked height of a text section: its title plus content height (the tallest
+    pane for a ``+++`` section)."""
+    from .measure import content_height
+    _, title_h = _title_group(section, stype, theme.title_size(stype), width, theme, False, False)
+    bsize = theme.body_size(stype)
+    panes = split_panes(section["blocks"])
+    ch = (content_height(panes[0] if panes else [], bsize, theme, width) if len(panes) <= 1
+          else max((content_height(p, bsize, theme, width) for p in panes), default=0.0))
+    return title_h + ch
+
+
+def _section_nodes(section: dict, theme: Theme, stype: str, width: float, avail_h: float,
+                   debug: bool, counter: list, same_ctx: dict | None, do_stagger: bool) -> list:
+    """Nodes for one stacked layout section — its title (if any) then content, as a single
+    column or ``+++`` side-by-side panes, laid out within (width, avail_h)."""
+    body_size = theme.body_size(stype)
+    tgroup, title_h = _title_group(section, stype, theme.title_size(stype), width, theme, False, debug)
+    inner_h = max(1.0, avail_h - title_h)
+    panes = split_panes(section["blocks"])
+    nodes = list(tgroup)
+    if len(panes) <= 1:
+        pane_blocks = panes[0] if panes else []
+        bsize = _autosize_body(pane_blocks, theme, width, inner_h, body_size, same_ctx)
+        content: list = []
+        for block in pane_blocks:
+            content.extend(render_block(block, bsize, theme, debug, width, inner_h, counter, same_ctx))
+        nodes.extend(_stagger(content, theme) if do_stagger else content)
+    else:
+        n = len(panes)
+        ratio = (section["meta"] or {}).get("ratio") if section["meta"] else None
+        if not ratio or len(ratio) != n:
+            ratio = [1] * n
+        total = sum(ratio)
+        pane_nodes = []
+        for i, pane_blocks in enumerate(panes):
+            pane_w = width * ratio[i] / total
+            inner_w = pane_w - PANE_GAP
+            bsize = _autosize_body(pane_blocks, theme, inner_w, inner_h - PANE_GAP, body_size, same_ctx)
+            pane_children = []
+            for block in pane_blocks:
+                pane_children.extend(render_block(block, bsize, theme, debug, inner_w,
+                                                  inner_h - PANE_GAP, counter, same_ctx))
+            pane_nodes.append({"type": "column",
+                               "modifiers": dbg([{"width": round(pane_w, 2)},
+                                                 {"padding": float(PANE_GAP / 2)}], debug),
+                               "children": pane_children})
+        nodes.append({"type": "row", "modifiers": dbg(["fillMaxWidth"], debug),
+                      "children": pane_nodes})
+    return nodes
+
+
+def _build_sectioned_root(slide: dict, theme: Theme, width: int, height: int, index: int,
+                          debug: bool, counter: list, same_ctx: dict | None, bg: str,
+                          do_stagger: bool) -> dict:
+    """A slide split by ``===`` into stacked layout sections. Text sections take their natural
+    height; media sections (``+++`` panes / images / embeds) share the leftover height via a
+    layout weight, so e.g. a couple of links sit above two full-height image columns."""
+    sections = slide["sections"]
+    stype = slide_type(slide)
+    spec = SLIDE_TYPES[stype]
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
+    content_w = width - pad_l - pad_r
+    gap = round(theme.title_gap, 2)
+    avail = height - pad_t - pad_b - _chrome_reserve(theme, stype, pad_b) - gap * max(0, len(sections) - 1)
+
+    media = [_section_is_media(s) for s in sections]
+    stypes = [_section_type(s) for s in sections]
+    text_h = sum(_section_natural_h(s, theme, st, content_w)
+                 for s, st, m in zip(sections, stypes, media) if not m)
+    nmedia = sum(media)
+    media_share = max(1.0, (avail - text_h) / nmedia) if nmedia else 0.0
+
+    children: list = []
+    for k, sec in enumerate(sections):
+        sec_h = media_share if media[k] else _section_natural_h(sec, theme, stypes[k], content_w)
+        nodes = _section_nodes(sec, theme, stypes[k], content_w, sec_h, debug, counter,
+                               same_ctx, do_stagger)
+        mods = ([{"weight": 1.0}, "fillMaxWidth"] if media[k] else ["fillMaxWidth"])
+        children.append({"type": "column", "modifiers": dbg(mods, debug), "children": nodes})
+        if k < len(sections) - 1:
+            children.append(vspacer(gap))
+    return frame_slide(children, spec, theme, stype, width, height, debug, bg)
+
+
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
                      index: int, debug: bool, counter: list, same_ctx: dict | None = None,
                      bg: str = "default", animate: bool | None = None,
@@ -805,6 +913,10 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     # outgoing transition slide or when `:: same` is already animating the diff.
     do_stagger = (theme.content_reveal == "stagger" if animate is None else animate) \
         and same_ctx is None
+    # ``===`` splits a slide into stacked layout sections (each its own type/title/content).
+    if slide.get("sections") and not scroll:
+        return _build_sectioned_root(slide, theme, width, height, index, debug, counter,
+                                     same_ctx, bg, do_stagger)
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)

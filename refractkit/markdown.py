@@ -91,15 +91,60 @@ def parse_meta(spec: str) -> dict:
             "overrides": overrides, "flags": flags, "author": author}
 
 
+def _is_section_break(stripped: str) -> bool:
+    """A ``===`` line (three or more ``=``) — a layout-section separator within a slide."""
+    return bool(stripped) and set(stripped) == {"="} and len(stripped) >= 3
+
+
 def parse_slide(chunk: str) -> dict | None:
-    """Parse one slide chunk into {meta, title, blocks}."""
+    """Parse one slide chunk into {meta, title, blocks, notes[, sections]}.
+
+    ``???`` starts presenter notes (everything after it, to the slide's end). ``===`` splits the
+    slide into stacked *layout sections*: each is parsed like a mini-slide (its own ``::`` type,
+    title and content) and rendered one above the next. A slide with no ``===`` keeps the flat
+    single-section shape; with sections, ``sections`` holds the full list (the first also
+    populating the top-level meta/title/blocks for callers that read them)."""
     lines = chunk.strip("\n").split("\n")
+
+    # Presenter notes: from the first ``???`` marker to the slide's end (kept out of the layout).
+    notes = None
+    body = lines
+    for j, raw in enumerate(lines):
+        s = raw.strip()
+        if s == "???" or s.startswith("??? "):
+            inline = s[4:] if s.startswith("??? ") else ""
+            notes = "\n".join(([inline] if inline else []) + lines[j + 1:]).strip() or None
+            body = lines[:j]
+            break
+
+    # Split the body into layout sections on ``===`` lines, parse each independently.
+    groups: list[list[str]] = [[]]
+    for raw in body:
+        if _is_section_break(raw.strip()):
+            groups.append([])
+        else:
+            groups[-1].append(raw)
+    sections = [s for s in (_parse_section(g) for g in groups) if s is not None]
+
+    if not sections:
+        if notes is None:
+            return None
+        sections = [{"meta": None, "title": None, "blocks": []}]
+    first = sections[0]
+    out = {"meta": first["meta"], "title": first["title"],
+           "blocks": first["blocks"], "notes": notes}
+    if len(sections) > 1:
+        out["sections"] = sections
+    return out
+
+
+def _parse_section(lines: list[str]) -> dict | None:
+    """Parse the lines of one layout section into {meta, title, blocks}, or None if empty."""
     meta = None
     title = None
     blocks: list[dict] = []
     para: list[str] = []
     bullets: list[dict] = []
-    notes = None
 
     def flush_para():
         if para:
@@ -122,19 +167,6 @@ def parse_slide(chunk: str) -> dict | None:
             meta = parse_meta(stripped[2:])
             i += 1
             continue
-
-        # speaker notes: a ``===`` (or legacy ``???``) separator; everything after it, to the
-        # slide's end, is presenter notes (kept out of the slide, shown below it in the PDF).
-        is_marker = (stripped == "???" or stripped.startswith("??? ")
-                     or (stripped and set(stripped) == {"="} and len(stripped) >= 3)
-                     or stripped.startswith("=== "))
-        if is_marker:
-            flush_para()
-            flush_bullets()
-            inline = stripped[4:] if stripped.startswith(("??? ", "=== ")) else ""
-            rest = ([inline] if inline else []) + lines[i + 1:]
-            notes = "\n".join(rest).strip()
-            break
 
         # fenced code block
         if stripped.startswith("```"):
@@ -240,9 +272,9 @@ def parse_slide(chunk: str) -> dict | None:
     flush_para()
     flush_bullets()
 
-    if meta is None and title is None and not blocks and not notes:
+    if meta is None and title is None and not blocks:
         return None
-    return {"meta": meta, "title": title, "blocks": blocks, "notes": notes}
+    return {"meta": meta, "title": title, "blocks": blocks}
 
 
 def parse_markdown(text: str) -> list[dict]:

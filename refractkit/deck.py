@@ -144,11 +144,11 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     return block
 
 
-def resolve_blocks(slide: dict) -> list[dict]:
-    """Replace ``include`` blocks with resolved image/json/rc/missing blocks."""
-    includes_dir = os.path.join(slide["base_dir"], "includes")
+def _resolve_block_list(blocks: list[dict], includes_dir: str) -> list[dict]:
+    """Replace ``include`` blocks with resolved image/json/rc/missing blocks (others pass
+    through). Idempotent — re-resolving already-resolved blocks is a no-op."""
     resolved = []
-    for block in slide["blocks"]:
+    for block in blocks:
         if block["kind"] == "include":
             r = resolve_include(block["name"], includes_dir)
             if block.get("opts"):
@@ -157,3 +157,12 @@ def resolve_blocks(slide: dict) -> list[dict]:
         else:
             resolved.append(block)
     return resolved
+
+
+def resolve_blocks(slide: dict) -> list[dict]:
+    """Resolve the slide's includes. Also resolves each ``===`` layout section's blocks in
+    place, so a sectioned slide's sections render with real media blocks."""
+    includes_dir = os.path.join(slide["base_dir"], "includes")
+    for sec in slide.get("sections", []):
+        sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir)
+    return _resolve_block_list(slide["blocks"], includes_dir)

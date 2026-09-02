@@ -77,6 +77,7 @@ class Theme:
                                         # stable across slides. Falls back to accent if unset.
     table_bg: str = "#1AFFFFFF"
     table_header_bg: str = "#22FFFFFF"
+    table_corner_radius: float = 16.0   # rounded corners on the table panel (0 = square)
     code_background: str = "#FF1E1E1E"
     code_foreground: str = "#FFD4D4D4"
     code_font_size: float = 28.0
@@ -236,6 +237,8 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.primary = th.get("primary", t.accent)
     t.table_bg = th.get("table_bg", t.table_bg)
     t.table_header_bg = th.get("table_header_bg", t.table_header_bg)
+    if "table_corner_radius" in th:
+        t.table_corner_radius = float(th["table_corner_radius"])
 
     code = settings.get("code", {})
     t.code_background = code.get("background", th.get("code_background", t.code_background))
