@@ -122,6 +122,11 @@ class Theme:
     reveal_duration: float = 0.32       # per-item animation duration
     reveal_rise: float = 26.0           # px each item slides up as it fades in
     reveal_steps: bool = False          # also split content across multiple .rc files
+    # Autosize: shrink a slide's body font just enough that overflowing text/bullets fit the
+    # available height (shrink-only; never enlarges). On by default; disable per slide (e.g.
+    # when using scroll steps) with `autosize = false`.
+    autosize: bool = True
+    autosize_min: float = 0.5           # never shrink the body font past this fraction
     # `:: same` shared-element transition (enter/exit for appearing/disappearing content).
     same_enter: str = "fade"        # fade | slide-left | slide-right | slide-up | slide-down
     same_exit: str = "fade"
@@ -244,6 +249,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     layout = {**settings.get("slide", {}), **settings.get("layout", {})}
     if "title_gap" in layout:
         t.title_gap = float(layout["title_gap"])
+    if "autosize" in layout:
+        t.autosize = bool(layout["autosize"])
+    if "autosize_min" in layout:
+        t.autosize_min = float(layout["autosize_min"])
 
     chrome = settings.get("chrome", {})
     t.chrome_page = bool(chrome.get("page", t.chrome_page))

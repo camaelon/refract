@@ -17,6 +17,17 @@ import re
 
 GRAPH_ENGINES = {"dot", "neato", "fdp", "sfdp", "twopi", "circo", "graphviz"}
 
+
+def _parse_include_opts(opts: str) -> dict:
+    """Parse space-separated ``key=value`` include options into a dict, e.g.
+    ``crop=0.28,0,0.72,1 fit=fill`` → ``{"crop": "0.28,0,0.72,1", "fit": "fill"}``."""
+    out = {}
+    for tok in opts.split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")
 TITLE_RE = re.compile(r"^#\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)-\s+(.+)$")
@@ -191,7 +202,12 @@ def parse_slide(chunk: str) -> dict | None:
                 blocks.append({"kind": "weblink", "url": url.strip(),
                                "label": label.strip()})
             else:
-                blocks.append({"kind": "include", "name": inner})
+                # Per-include options after "|": <video1 | crop=0.28,0,0.72,1 fit=fill>.
+                name, _, opts = inner.partition("|")
+                block = {"kind": "include", "name": name.strip()}
+                if opts.strip():
+                    block["opts"] = _parse_include_opts(opts)
+                blocks.append(block)
             i += 1
             continue
 

@@ -11,6 +11,7 @@ from .highlight import render_code
 from .inline import has_author, has_markup, styled_line
 from .images import render_image
 from .markers import marker_canvas, marker_commands, normalize_shape
+from .measure import fit_body_size
 from .theme import Theme
 
 PADDING = 80
@@ -233,6 +234,15 @@ def _splice_json(path: str) -> list[dict]:
     return []
 
 
+def _clipped_splice(path: str, theme: Theme, debug: bool, avail_h: float) -> list[dict]:
+    """Splice a document's components into the slide, wrapped in a clip frame so its canvas
+    draw instructions can't spill past the area it occupies (a fillMaxSize embed otherwise
+    draws unclipped). Rounds the corners if ``[image] corner_radius`` is set."""
+    mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)},
+                  {"clip": float(theme.image_corner_radius or 0.0)}]
+    return [{"type": "box", "modifiers": dbg(mods, debug), "children": _splice_json(path)}]
+
+
 def render_table(rows: list[list[str]], theme: Theme, debug: bool) -> list[dict]:
     """A markdown table as a Column of Rows; first row is a header (accent, bold-ish)."""
     if not rows:
@@ -398,17 +408,33 @@ def render_weblink(block: dict, theme: Theme, debug: bool,
              "modifiers": dbg(mods, debug), "children": []}]
 
 
+def _media_config(kind: str, src: str, opts: dict) -> str:
+    """Build a custom-component config string ``kind:src`` with an optional ``#k=v&k=v``
+    option suffix. Both native hosts parse this scheme (a bare ``#value`` is still read as
+    the fit, for back-compat)."""
+    parts = [f"{k}={v}" for k, v in opts.items() if v not in (None, "")]
+    return f"{kind}:{src}" + ("#" + "&".join(parts) if parts else "")
+
+
+def _crop_opt(block: dict) -> str:
+    """A ``crop`` option value (``l,t,r,b``) from the block, or empty."""
+    crop = block.get("crop")
+    return ",".join(str(round(float(c), 4)) for c in crop) if crop else ""
+
+
 def render_video(block: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float) -> list[dict]:
     """An embedded video as a native custom component (op 93). The box fills the available
     area (width × height); the viewer's video host plays the clip **aspect-fit** inside it,
     so a portrait phone recording fills the height and a landscape clip fills the width —
-    refract doesn't need to know the clip's real aspect. The file name rides in the config."""
+    refract doesn't need to know the clip's real aspect. An optional ``crop`` (source
+    fractions ``l,t,r,b``) trims the frame, e.g. to remove black bars."""
     mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
     if theme.image_corner_radius > 0:
         mods.append({"clip": float(theme.image_corner_radius)})
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
-    return [{"type": "custom", "config": f"video:{src}",
+    config = _media_config("video", src, {"crop": _crop_opt(block)})
+    return [{"type": "custom", "config": config,
              "modifiers": dbg(mods, debug), "children": []}]
 
 
@@ -416,15 +442,16 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
                     avail_w: float, avail_h: float) -> list[dict]:
     """A prebuilt binary ``.rc`` embedded live as a native custom component (op 93). The
     player loads it into a nested document and paints it — fit, aspect-preserved — into the
-    box. Unlike the ``.json``-sibling splice this needs no source JSON; here we just size the
-    box and hand the file name (``rc:<name>``) to the host, which resolves it by real dims."""
+    box. ``[embed] fit`` chooses fit/fill/native; an optional ``crop`` (source fractions
+    ``l,t,r,b``) shows only that region of the sub-document."""
     import os
     src = block.get("src") or os.path.basename(block["path"])
     mods: list = ["fillMaxWidth", {"height": round(float(avail_h), 2)}]
     if theme.image_corner_radius > 0:
         mods.append({"clip": float(theme.image_corner_radius)})
-    fit = getattr(theme, "embed_fit", "fit")
-    config = f"rc:{src}" + (f"#{fit}" if fit and fit != "fit" else "")   # #fit suffix (host parses)
+    fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
+    config = _media_config("rc", src, {"fit": fit if fit and fit != "fit" else "",
+                                       "crop": _crop_opt(block)})
     return [{"type": "custom", "config": config,
              "modifiers": dbg(mods, debug), "children": []}]
 
@@ -484,13 +511,13 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         return out
 
     if kind == "json_include":
-        return _splice_json(block["path"])
+        return _clipped_splice(block["path"], theme, debug, avail_h)
 
     if kind == "rc_include":
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
         # the prebuilt .rc live as a nested document via the rc-document host.
         if block.get("json"):
-            return _splice_json(block["json"])
+            return _clipped_splice(block["json"], theme, debug, avail_h)
         return render_rc_embed(block, theme, debug, avail_w, avail_h)
 
     if kind == "missing":
@@ -499,46 +526,74 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     return []
 
 
-def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-                      index: int, debug: bool, counter: list, same_ctx: dict | None,
-                      bg: str, do_stagger: bool) -> dict:
-    """``split`` layout: two side-by-side columns from `+++`. The **right** column runs the
-    full content height (from the top, above where the title sits), while the **left** column
-    holds the title — sized only to the left column's width — with its content beneath. The
-    last pane is the full-height right column; everything before it stacks in the left column.
-    Widths come from the slide's `[ratio]` (default 1:1)."""
+def _split_geometry(slide: dict, theme: Theme, width: int, height: int) -> tuple:
+    """The split layout's key measurements — (left_w, right_w, content_h) — shared by the
+    renderer and ``split_left_metrics`` so overflow is measured against the real column."""
     spec = SLIDE_TYPES["split"]
     pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
-    title_size = theme.title_size("split")
-    body_size = theme.body_size("split")
     content_w = width - pad_l - pad_r
     content_h = height - pad_t - pad_b - _chrome_reserve(theme, "split", pad_b)
-
-    panes = split_panes(blocks)
-    right_blocks = panes[-1]
-    left_blocks = [b for pane in panes[:-1] for b in pane]
-
     ratio = (slide.get("meta") or {}).get("ratio")
     if not ratio or len(ratio) != 2:
         ratio = [1, 1]
     avail = content_w - PANE_GAP
     left_w = round(avail * ratio[0] / sum(ratio), 2)
     right_w = round(avail * ratio[1] / sum(ratio), 2)
+    return left_w, right_w, content_h
+
+
+def split_left_metrics(slide: dict, theme: Theme, width: int, height: int) -> tuple:
+    """(left column width, available height below the title) for a `:: split` slide — the
+    area its first column scrolls within. Used by the scroll-expansion pass."""
+    left_w, _, content_h = _split_geometry(slide, theme, width, height)
+    _, title_h = _title_group(slide, "split", theme.title_size("split"), left_w, theme, False, False)
+    return left_w, content_h - title_h
+
+
+def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
+                      index: int, debug: bool, counter: list, same_ctx: dict | None,
+                      bg: str, do_stagger: bool, scroll: dict | None = None) -> dict:
+    """``split`` layout: two side-by-side columns from `+++`. The **right** column runs the
+    full content height (from the top, above where the title sits), while the **left** column
+    holds the title — sized only to the left column's width — with its content beneath. The
+    last pane is the full-height right column; everything before it stacks in the left column.
+    Widths come from the slide's `[ratio]` (default 1:1). ``scroll`` (a ``scroll_spec``) clips
+    and scrolls the **left** column's content — for a split slide with `scroll = N`/`auto`, so
+    the overflowing text column pages while the right column stays put."""
+    spec = SLIDE_TYPES["split"]
+    body_size = theme.body_size("split")
+    title_size = theme.title_size("split")
+
+    panes = split_panes(blocks)
+    right_blocks = panes[-1]
+    left_blocks = [b for pane in panes[:-1] for b in pane]
+
+    left_w, right_w, content_h = _split_geometry(slide, theme, width, height)
 
     # Left column: title (constrained to left_w) then its content beneath.
     title_group, title_h = _title_group(slide, "split", title_size, left_w, theme, False, debug)
+    left_avail = content_h - title_h
+    # When scrolling, the left content is full-size and clipped to a moving window (no autosize
+    # or stagger — the scroll is the entrance); otherwise it autosizes to fit.
+    left_size = (body_size if scroll else
+                 _autosize_body(left_blocks, theme, left_w, left_avail, body_size, same_ctx))
     left_body: list = []
     for block in left_blocks:
-        left_body.extend(render_block(block, body_size, theme, debug, left_w,
-                                      content_h - title_h, counter, same_ctx))
-    left_children = list(title_group) + (_stagger(left_body, theme) if do_stagger else left_body)
+        left_body.extend(render_block(block, left_size, theme, debug, left_w,
+                                      left_avail, counter, same_ctx))
+    if scroll:
+        left_content = [_scroll_viewport(left_body, left_avail, scroll["y"], debug)]
+    else:
+        left_content = _stagger(left_body, theme) if do_stagger else left_body
+    left_children = list(title_group) + left_content
     left_col = {"type": "column", "modifiers": dbg([{"width": left_w}], debug),
                 "children": left_children}
 
     # Right column: full-height content, starting at the top (level with the title).
+    right_size = _autosize_body(right_blocks, theme, right_w, content_h, body_size, same_ctx)
     right_body: list = []
     for block in right_blocks:
-        right_body.extend(render_block(block, body_size, theme, debug, right_w,
+        right_body.extend(render_block(block, right_size, theme, debug, right_w,
                                        content_h, counter, same_ctx))
     right_col = {"type": "column",
                  "modifiers": dbg([{"width": right_w}, "fillMaxHeight"], debug),
@@ -551,13 +606,73 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     return frame_slide([row], spec, theme, "split", width, height, debug, bg)
 
 
+def _autosize_body(blocks: list[dict], theme: Theme, width: float, avail_h: float,
+                   base_size: float, same_ctx: dict | None = None) -> float:
+    """Shrink-only autosize: the body size at which ``blocks`` fit ``avail_h``, or the base
+    size unchanged when autosizing is off, the content already fits, or a `:: same` diff is
+    animating (its height changes over the transition, so a static estimate would be wrong)."""
+    if not getattr(theme, "autosize", True) or same_ctx is not None:
+        return base_size
+    return fit_body_size(blocks, base_size, theme, width, avail_h,
+                         min_scale=getattr(theme, "autosize_min", 0.5))
+
+
+def content_metrics(slide: dict, theme: Theme, width: int, height: int) -> tuple:
+    """The single-column content region's (width, available height, title height) for a
+    slide — the same geometry ``build_slide_root`` uses. Shared with the scroll-expansion
+    pass so it measures overflow against the exact area the renderer will lay out into."""
+    stype = slide_type(slide)
+    spec = SLIDE_TYPES[stype]
+    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    content_w = width - pad_l - pad_r
+    centered = stype in ("title", "section")
+    _, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
+                              theme, centered, False)
+    avail_h = height - pad_t - pad_b - title_h - _chrome_reserve(theme, stype, pad_b)
+    return content_w, avail_h, title_h
+
+
+def _scroll_y(prev_off: float, cur_off: float):
+    """The inner-column y translation for a scroll step: a static ``-offset`` when there's no
+    change, else an expression animating from ``-prev_off`` to ``-cur_off`` over the load
+    progress ($__st). Negative moves content up (scrolls down)."""
+    delta = round(cur_off - prev_off, 2)
+    if not delta:
+        return -round(prev_off, 2)
+    return f"-({round(prev_off, 2)} + ({delta}) * {SAME_VAR})"
+
+
+def scroll_spec(prev_off: float, cur_off: float, viewport: float) -> dict:
+    """A ``scroll`` argument for ``build_slide_root`` — the clip viewport plus the animated
+    y translation from ``prev_off`` to ``cur_off``. Shared by ``scroll = N`` pages
+    (``build_scroll_doc``) and scroll-aware `:: same` (``build_same_doc``)."""
+    return {"viewport": round(float(viewport), 2), "y": _scroll_y(prev_off, cur_off)}
+
+
+def _scroll_viewport(content: list, viewport: float, y, debug: bool) -> dict:
+    """Wrap a slide's content nodes in a fixed-height, clipped viewport whose inner column is
+    translated up by ``y`` (a number for a static page, or an expression string to animate the
+    scroll). Content taller than ``viewport`` is clipped, so only the current scroll window
+    shows — the mechanism behind both ``scroll = N`` pages and scroll-aware `:: same`."""
+    inner = {"type": "column",
+             "modifiers": dbg(["fillMaxWidth", {"offset": {"x": 0.0, "y": y}}], debug),
+             "children": content}
+    return {"type": "box",
+            "modifiers": dbg(["fillMaxWidth", {"height": round(float(viewport), 2)},
+                              {"clip": 0.0}], debug),
+            "children": [inner]}
+
+
 def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
                      index: int, debug: bool, counter: list, same_ctx: dict | None = None,
-                     bg: str = "default", animate: bool | None = None) -> dict:
+                     bg: str = "default", animate: bool | None = None,
+                     scroll: dict | None = None) -> dict:
     """Build the root Column for one slide (no header wrapper). ``bg="none"`` omits the
     per-slide background (see ``frame_slide``). ``animate`` forces the staggered content
     reveal on/off; None → the theme default. It is off for the *outgoing* slide of a
-    transition (that content already appeared) and when a `:: same` diff is animating."""
+    transition (that content already appeared) and when a `:: same` diff is animating.
+    ``scroll`` ({"viewport": h, "y": <px|expr>}) clips the single-column content to a scroll
+    window translated by ``y`` — full-size (autosize and stagger are suppressed)."""
     # Stagger content in when the theme asks for it (or the caller forces it), except on the
     # outgoing transition slide or when `:: same` is already animating the diff.
     do_stagger = (theme.content_reveal == "stagger" if animate is None else animate) \
@@ -570,11 +685,13 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     content_w = width - pad_l - pad_r
     centered = stype in ("title", "section")
 
-    # ``split``: row-first two-column layout (see _build_split_root). Needs two `+++` panes;
-    # with fewer it degrades to a normal content slide.
-    if stype == "split" and len(split_panes(blocks)) >= 2:
+    # ``split``: row-first two-column layout (see _build_split_root). With two `+++` panes
+    # the last is the full-height right column and the rest stack in the left column; with a
+    # single pane (no `+++`) that lone content still goes in the tall right column and the
+    # left column holds just the title.
+    if stype == "split" and split_panes(blocks)[-1]:
         return _build_split_root(slide, blocks, theme, width, height, index, debug,
-                                 counter, same_ctx, bg, do_stagger)
+                                 counter, same_ctx, bg, do_stagger, scroll)
 
     # Title, followed by a configurable vertical gap before the content. ``max`` slides
     # use a tighter gap so the maximised content keeps more room.
@@ -604,9 +721,17 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
         else:
             children.extend(title_group)
             content = []
+            # A scroll page shows full-size content clipped to a moving window: no autosize
+            # (that's the alternative to scrolling) and no per-item stagger (the scroll itself
+            # is the entrance).
+            bsize = (body_size if scroll else
+                     _autosize_body(pane_blocks, theme, content_w, avail_h, body_size, same_ctx))
             for block in pane_blocks:
-                content.extend(render_block(block, body_size, theme, debug, content_w, avail_h, counter, same_ctx))
-            children.extend(_stagger(content, theme) if do_stagger else content)
+                content.extend(render_block(block, bsize, theme, debug, content_w, avail_h, counter, same_ctx))
+            if scroll:
+                children.append(_scroll_viewport(content, scroll["viewport"], scroll["y"], debug))
+            else:
+                children.extend(_stagger(content, theme) if do_stagger else content)
     else:
         children.extend(title_group)
         n = len(panes)
@@ -614,15 +739,20 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
         if not ratio or len(ratio) != n:
             ratio = [1] * n
         total = sum(ratio)
-        avail = content_w - PANE_GAP * (n - 1)
+        # The panes should span the full content width; the inter-pane gaps come from each
+        # column's own PANE_GAP/2 padding (PANE_GAP between neighbours, PANE_GAP/2 inset at
+        # the edges). Don't also subtract the gaps from the width or the columns fall short
+        # of the content area (leaving dead space on the right of a start-aligned row).
+        avail = content_w
         pane_nodes = []
         for i, pane_blocks in enumerate(panes):
             pane_w = avail * ratio[i] / total
             inner_w = pane_w - PANE_GAP
             inner_h = avail_h - PANE_GAP
             pane_children = []
+            bsize = _autosize_body(pane_blocks, theme, inner_w, inner_h, body_size, same_ctx)
             for block in pane_blocks:
-                pane_children.extend(render_block(block, body_size, theme, debug, inner_w, inner_h, counter, same_ctx))
+                pane_children.extend(render_block(block, bsize, theme, debug, inner_w, inner_h, counter, same_ctx))
             pane_nodes.append({
                 "type": "column",
                 "modifiers": dbg([{"width": round(pane_w, 2)}, {"padding": float(PANE_GAP / 2)}], debug),
@@ -819,6 +949,25 @@ def _no_web(blocks: list[dict]) -> list[dict]:
     return [b for b in blocks if b.get("kind") not in ("weblink", "video")]
 
 
+def _strip_customs(node):
+    """Recursively remove custom-component nodes (op 93: video / web / embedded-rc hosts)
+    from a built root. Used on the *outgoing* slide of a transition: custom components are
+    painted by their native host every frame regardless of which StateLayout branch is
+    active, so an embed baked into the inactive (previous) state leaks through and lingers
+    on top of the incoming slide. Stripping them leaves the outgoing slide's static Skia
+    content to crossfade normally; the incoming slide keeps its own live embeds."""
+    if isinstance(node, dict):
+        kids = node.get("children")
+        if isinstance(kids, list):
+            node["children"] = [_strip_customs(c) for c in kids
+                                 if not (isinstance(c, dict) and c.get("type") == "custom")]
+        return node
+    if isinstance(node, list):
+        return [_strip_customs(c) for c in node
+                if not (isinstance(c, dict) and c.get("type") == "custom")]
+    return node
+
+
 def header(slide: dict, width: int, height: int, index: int, profiles: int | None = None) -> dict:
     h = {
         "width": width,
@@ -870,9 +1019,10 @@ def _finalize(doc: dict) -> dict:
 
 
 def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-              index: int, debug: bool, total: int = 0) -> dict:
+              index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
     counter = [0]
-    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter)
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter,
+                            scroll=scroll)
     return _finalize({
         "header": header(slide, width, height, index),
         "root": with_chrome(root, theme, index, total, width, height, debug, slide_type(slide)),
@@ -880,13 +1030,14 @@ def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height:
 
 
 def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
-                         index: int, debug: bool, total: int = 0) -> dict:
+                         index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
     """A StateLayout that crossfades from the previous slide (state 0) to the current
     slide (state 1); the index auto-advances on load via animTime."""
     counter = [0]
     prev_root = (blank_root(theme, width, height, debug) if prev is None
-                 else build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter, animate=False))
-    cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter)
+                 else _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter, animate=False)))
+    cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter,
+                                scroll=scroll)
     state = {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
              "children": [prev_root, cur_root]}
     return _finalize({
@@ -906,7 +1057,7 @@ PUSH_EASE_EXPR = "1.0 - (1.0 - $__pp) * (1.0 - $__pp) * (1.0 - $__pp)"
 
 def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
                    index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1,
-                   duration: float = PUSH_DURATION) -> dict:
+                   duration: float = PUSH_DURATION, scroll: dict | None = None) -> dict:
     """A push/slide transition: the previous slide slides out while the new one slides
     in from the opposite side, driven by an eased progress variable. No StateLayout —
     both roots are offset by expressions, so it animates in the current player.
@@ -943,11 +1094,11 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
     if shared_bg is not None:
         children.append(shared_bg)
     if prev is not None:
-        prev_root = build_slide_root(prev[0], _no_web(prev[1]), theme, width, height,
-                                     index - 1, debug, counter, bg=root_bg, animate=False)
+        prev_root = _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), theme, width, height,
+                                                    index - 1, debug, counter, bg=root_bg, animate=False))
         children.append(wrap(prev_root, prev_off))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug,
-                                counter, bg=root_bg)
+                                counter, bg=root_bg, scroll=scroll)
     children.append(wrap(cur_root, cur_off))
 
     stage = {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": children}
@@ -994,20 +1145,44 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
 
 
 def build_same_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: int,
-                   index: int, debug: bool, total: int = 0) -> dict:
+                   index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
     """A `:: same` shared-element transition (lerp backend).
 
     The current slide is rendered normally so matched, unchanged content stays put
     (and text keeps proper wrapping); a matched graph morphs in place; content that
     appears fades/slides in. Matching lives in ``samematch`` and the animation is
     driven by the eased progress variable ``$__st`` — this whole function is the single
-    swap point for a future StateLayout+animationId backend.
-    """
+    swap point for a future StateLayout+animationId backend. ``scroll`` (a ``scroll_spec``)
+    additionally clips the content to a window and scrolls it between same-slides — driven
+    by the same ``$__st`` so the diff and the scroll animate together."""
     from .samematch import diff_slides
     slide, blocks = cur
     same_ctx = diff_slides(prev[1], blocks)
     counter = [0]
-    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter, same_ctx)
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter,
+                            same_ctx, scroll=scroll)
+    root = with_transition_shader(root, theme, width, height, "$__sp", debug)
+    p_expr, ease_expr = _same_exprs(theme)
+    return _finalize({
+        "header": header(slide, width, height, index),
+        "root": [
+            {"type": "variable", "name": "__sp", "vtype": "float", "value": p_expr},
+            {"type": "variable", "name": "__st", "vtype": "float", "value": ease_expr},
+            with_chrome(root, theme, index, total, width, height, debug, slide_type(slide)),
+        ],
+    })
+
+
+def build_scroll_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
+                     index: int, debug: bool, total: int, prev_off: float, cur_off: float,
+                     viewport: float) -> dict:
+    """A scroll *step*: the slide's full-size content clipped to a fixed window that animates
+    from ``prev_off`` to ``cur_off`` pixels on load (reusing the `:: same` progress var), so
+    pressing next scrolls the content up. Auto-generated by ``scroll = N`` and by scroll-aware
+    `:: same`. The title and chrome stay fixed; only the content window moves."""
+    counter = [0]
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter,
+                            scroll=scroll_spec(prev_off, cur_off, viewport))
     root = with_transition_shader(root, theme, width, height, "$__sp", debug)
     p_expr, ease_expr = _same_exprs(theme)
     return _finalize({

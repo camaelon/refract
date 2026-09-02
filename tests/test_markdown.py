@@ -62,6 +62,17 @@ class ParseSlide(unittest.TestCase):
         self.assertEqual(kinds, ["text", "pane_break", "include"])
         self.assertEqual(s["blocks"][2]["name"], "pic.png")
 
+    def test_include_with_options(self):
+        s = md.parse_slide("<video1 | crop=0.28,0,0.72,1 fit=fill>")
+        b = s["blocks"][0]
+        self.assertEqual(b["kind"], "include")
+        self.assertEqual(b["name"], "video1")               # name trimmed, no options
+        self.assertEqual(b["opts"], {"crop": "0.28,0,0.72,1", "fit": "fill"})
+
+    def test_include_without_options_has_no_opts(self):
+        s = md.parse_slide("<pic.png>")
+        self.assertNotIn("opts", s["blocks"][0])
+
     def test_metadata_line(self):
         s = md.parse_slide(":: section : hi\n# Head")
         self.assertEqual(s["meta"]["type"], "section")

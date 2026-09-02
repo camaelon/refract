@@ -107,13 +107,25 @@ digraph G { rankdir=LR; A -> B -> C }
 | chart         | fenced ```` ```chart-bar ```` / `chart-line` / `chart-pie` with `label: value` lines |
 | image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc` |
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
-| video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide |
+| video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide. `crop` trims the frame (e.g. black bars). |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — a prebuilt RemoteCompose doc embedded **live** in the slide: spliced flat if a sibling `.json` exists, else painted as a nested sub-document (its own id space, animates on its own, and receives mouse drags — e.g. rotate a 3D plot). A lone `.rc` (no title) is a whole-slide passthrough. Scaling via `[embed] fit`. The asset is copied to `out/media/` (not listed as a slide). |
 | web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box |
 
 Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
 finds `logo.png`). Speaker accent comes from `[speakers]` (below).
+
+**Per-include options** go after a `|`: `<name | key=value …>` (space-separated). For video
+and rc/json embeds:
+- `crop=l,t,r,b` — a source rectangle as fractions 0–1 (default full); shows only that region,
+  scaled to fill the box. Handy to remove black bars around a portrait recording, e.g.
+  `<phone.mp4 | crop=0.28,0,0.72,1>`, or to zoom into part of an embedded doc.
+- `fit=fit|fill|native` — override the `[embed] fit` for this embed.
+
+A `crop`/`fit` on a **`.json` or `.rc` include** *frames* it: instead of splicing it flat
+into the slide (which re-lays-it-out to fill), refract embeds it as a nested document at its
+own design size — so the crop rectangle and scale are well-defined (a `.json` is compiled to
+`out/media/<name>.rc` for this). Without `crop`/`fit`, includes splice flat as before.
 
 ### Panes
 
@@ -206,6 +218,51 @@ step after the first animates just the newly-revealed bullet in (via the `:: sam
 - first
 - second
 - third
+```
+
+### Overflowing content — autosize & scroll
+
+When a slide's text is taller than the content area, there are three ways to handle it:
+
+**1. Autosize (default).** The body font shrinks just enough that the content fits — never
+enlarges, so slides that already fit are untouched. It applies per content column (including
+each side of a `:: split` and each pane), and it won't shrink past a floor (default 0.5×;
+content that still overflows wants scrolling instead). Tune or disable it:
+
+```toml
+[layout]
+autosize     = true    # deck-wide on/off
+autosize_min = 0.5     # smallest allowed fraction of the base body size
+```
+
+```markdown
+:: content autosize=false    # opt a single slide out
+```
+
+**2. Scroll pages (`scroll = N` / `scroll = auto`).** Instead of shrinking, keep the text
+full-size and split it across generated slides that scroll the content window. Pressing next
+scrolls down (animated). `auto` makes as many pages as needed; an explicit count spreads the
+content evenly across exactly that many pages. On a `:: split` slide it scrolls the **first**
+column (the text) while the other column stays fixed.
+
+```markdown
+:: content scroll=auto
+# Long API reference
+… lots of text …
+```
+
+**3. Scroll-aware `:: same`.** Tag several `:: same` slides with a manual `scroll=` offset (in
+viewport fractions — `1` = one screenful down) to step through overflowing content yourself,
+so the content scrolls between slides while the shared-element diff animates.
+
+```markdown
+:: same scroll=0
+# Spec walk-through
+… long content …
+---
+:: same scroll=1        # same content, scrolled one screen down
+# Spec walk-through
+… long content …
 ```
 
 ## settings.toml

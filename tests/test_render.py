@@ -259,12 +259,16 @@ class RenderBlock(unittest.TestCase):
     def test_json_include_splices(self):
         p = _json_doc({"type": "text", "value": "X"})
         out = self.rb({"kind": "json_include", "path": p})
-        self.assertEqual(out, [{"type": "text", "value": "X"}])
+        # spliced content is wrapped in a clip frame so its draw ops can't spill out
+        self.assertEqual(out[0]["type"], "box")
+        self.assertIn({"clip": 0.0}, out[0]["modifiers"])
+        self.assertEqual(out[0]["children"], [{"type": "text", "value": "X"}])
 
     def test_rc_include_with_json_splices(self):
         p = _json_doc({"type": "box"})
         out = self.rb({"kind": "rc_include", "name": "w", "json": p})
-        self.assertEqual(out, [{"type": "box"}])
+        self.assertEqual(out[0]["children"], [{"type": "box"}])   # inside the clip frame
+        self.assertIn({"clip": 0.0}, out[0]["modifiers"])
 
     def test_rc_include_without_json_embeds_as_custom(self):
         # No .json sibling → embed the prebuilt .rc live as a custom component.
@@ -278,7 +282,22 @@ class RenderBlock(unittest.TestCase):
         out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
                                    "src": "widget.rc", "json": None},
                                   40.0, theme, False, 800, 400, [0])
-        self.assertEqual(out[0]["config"], "rc:widget.rc#fill")
+        self.assertEqual(out[0]["config"], "rc:widget.rc#fit=fill")
+
+    def test_video_encodes_crop(self):
+        out = self.rb({"kind": "video", "src": "v.mp4", "path": "v.mp4",
+                       "crop": [0.28, 0.0, 0.72, 1.0]})
+        self.assertEqual(out[0]["config"], "video:v.mp4#crop=0.28,0.0,0.72,1.0")
+
+    def test_rc_embed_encodes_fit_and_crop(self):
+        from dataclasses import replace
+        theme = replace(THEME, embed_fit="fill")
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/w.rc",
+                                   "src": "media/w.rc", "json": None, "fit": "native",
+                                   "crop": [0.1, 0.1, 0.9, 0.9]},
+                                  40.0, theme, False, 800, 400, [0])
+        # per-include fit override wins over the theme default; crop follows
+        self.assertEqual(out[0]["config"], "rc:media/w.rc#fit=native&crop=0.1,0.1,0.9,0.9")
 
     def test_missing_placeholder(self):
         out = self.rb({"kind": "missing", "name": "gone"})
@@ -330,12 +349,28 @@ class SplitLayout(unittest.TestCase):
         rw = next(m["width"] for m in cols[1]["modifiers"] if isinstance(m, dict) and "width" in m)
         self.assertAlmostEqual(lw / rw, 3.0, places=1)       # 3:1 widths
 
-    def test_split_without_panes_falls_back_to_content(self):
-        # A split slide with no `+++` degrades to a normal (column-first) content layout.
+    def test_split_single_column_uses_tall_right(self):
+        # A split slide with no `+++` still uses the split layout: the lone content goes in
+        # the full-height right column and the left column holds just the title.
         slide = {"title": "T", "meta": {"type": "split"}}
         root = render.build_slide_root(slide, [{"kind": "text", "text": "x"}],
                                        THEME, 1600, 900, 0, False, [0])
-        # no two-column row wrapping title + content
+        row = _find_type(root, "row")
+        self.assertIsNotNone(row)
+        cols = [c for c in row["children"] if c.get("type") == "column"]
+        self.assertEqual(len(cols), 2)
+        left, right = cols
+        # title on the left, content on the right full-height column
+        self.assertIn("T", _texts_all(left))
+        self.assertIn("fillMaxHeight", right["modifiers"])
+        self.assertIn("x", _texts_all(right))
+        self.assertNotIn("x", _texts_all(left))
+
+    def test_split_title_only_falls_back_to_content(self):
+        # A split slide with no content at all (title only) has nothing for the right
+        # column, so it degrades to a normal content layout (no two-column row).
+        slide = {"title": "T", "meta": {"type": "split"}}
+        root = render.build_slide_root(slide, [], THEME, 1600, 900, 0, False, [0])
         row = _find_type(root, "row")
         self.assertTrue(row is None or
                         len([c for c in row["children"] if c.get("type") == "column"]) < 2)
@@ -646,12 +681,97 @@ class Docs(unittest.TestCase):
         vids = _custom_configs(doc, "video:")
         self.assertEqual(vids, ["video:b.mp4"])         # only the incoming clip
 
+    def test_transition_strips_previous_rc_embed(self):
+        # A custom component (op 93) is painted by its native host every frame regardless of
+        # the active StateLayout branch, so an embed baked into the outgoing (previous) state
+        # would leak through and linger. It must be stripped from the previous slide; the
+        # incoming slide keeps its own.
+        prev = ({"title": "A"}, [{"kind": "rc_include", "name": "p", "path": "/x/p.rc",
+                                  "src": "media/p.rc", "json": None}])
+        cur = ({"title": "B"}, [{"kind": "rc_include", "name": "c", "path": "/x/c.rc",
+                                 "src": "media/c.rc", "json": None}])
+        doc = render.build_transition_doc(prev, cur, THEME, 1600, 900, 1, False)
+        embeds = _custom_configs(doc, "rc:")
+        self.assertEqual(embeds, ["rc:media/c.rc"])     # only the incoming embed
+
     def test_graph_transition_two_vars(self):
         prev = ({"title": "G"}, [{"kind": "graph", "engine": "dot", "dot": "digraph{A->B}"}])
         cur = ({"title": "G"}, [{"kind": "graph", "engine": "dot", "dot": "digraph{A->B->C}"}])
         doc = render.build_graph_transition_doc(prev, cur, THEME, 1600, 900, 1, False)
         vars_ = [n for n in doc["root"] if isinstance(n, dict) and n.get("type") == "variable"]
         self.assertEqual({v["name"] for v in vars_}, {"__gp", "__gt"})
+
+
+class Scroll(unittest.TestCase):
+    def _long(self):
+        return [{"kind": "text", "text": "a long wrapping paragraph of body text here."}
+                for _ in range(40)]
+
+    def _find_clip_box(self, node):
+        # A scroll viewport is a box with a fixed height + clip whose child column is offset.
+        if isinstance(node, dict):
+            if node.get("type") == "box":
+                mods = node.get("modifiers", [])
+                has_clip = any(isinstance(m, dict) and "clip" in m for m in mods)
+                has_h = any(isinstance(m, dict) and "height" in m for m in mods)
+                if has_clip and has_h:
+                    for c in node.get("children", []):
+                        offs = [m for m in c.get("modifiers", []) if isinstance(m, dict) and "offset" in m]
+                        if offs:
+                            return node, offs[0]["offset"]["y"]
+            for v in node.values():
+                r = self._find_clip_box(v)
+                if r:
+                    return r
+        elif isinstance(node, list):
+            for v in node:
+                r = self._find_clip_box(v)
+                if r:
+                    return r
+        return None
+
+    def test_scroll_spec_static_and_animated(self):
+        self.assertEqual(render.scroll_spec(0, 0, 560)["y"], 0.0)          # no move → static
+        y = render.scroll_spec(100, 500, 560)["y"]
+        self.assertIsInstance(y, str)
+        self.assertIn(render.SAME_VAR, y)                                  # animates on $__st
+
+    def test_build_scroll_doc_clips_and_offsets(self):
+        slide = {"title": "T", "meta": {"type": "content"}}
+        doc = render.build_scroll_doc(slide, self._long(), THEME, 1600, 900, 2, False, 5,
+                                      100.0, 500.0, 560.0)
+        found = self._find_clip_box(doc["root"])
+        self.assertIsNotNone(found, "expected a clipped scroll viewport")
+        _, y = found
+        self.assertIn(render.SAME_VAR, y)                                  # scroll animates
+        names = {n["name"] for n in doc["root"] if isinstance(n, dict) and n.get("type") == "variable"}
+        self.assertEqual(names, {"__sp", "__st"})
+
+    def test_scroll_page_suppresses_autosize(self):
+        # A scroll page renders full-size (no shrink) even when content overflows.
+        slide = {"title": "T", "meta": {"type": "content"}}
+        root = render.build_slide_root(slide, self._long(), THEME, 1600, 900, 0, False, [0],
+                                       scroll={"viewport": 560.0, "y": 0.0})
+        base = THEME.body_size("content")
+        sizes = []
+        def collect(n):
+            if isinstance(n, dict):
+                if n.get("type") == "text" and "fontSize" in n:
+                    sizes.append(n["fontSize"])
+                for v in n.values():
+                    collect(v)
+            elif isinstance(n, list):
+                for v in n:
+                    collect(v)
+        collect(root)
+        self.assertNotIn(True, [s < base for s in sizes])                  # nothing shrunk
+
+    def test_same_doc_accepts_scroll(self):
+        prev = ({"title": "T", "meta": {"type": "same"}}, self._long())
+        cur = ({"title": "T", "meta": {"type": "same"}}, self._long())
+        doc = render.build_same_doc(prev, cur, THEME, 1600, 900, 1, False,
+                                    scroll=render.scroll_spec(0, 560, 560))
+        self.assertIsNotNone(self._find_clip_box(doc["root"]))
 
 
 if __name__ == "__main__":

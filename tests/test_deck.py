@@ -64,6 +64,34 @@ class ResolveBlocks(unittest.TestCase):
         self.assertEqual(out[0]["kind"], "image")
         self.assertEqual(out[1]["kind"], "text")
 
+    def test_include_opts_apply_crop_and_fit(self):
+        d = tempfile.mkdtemp()
+        inc = os.path.join(d, "includes")
+        os.makedirs(inc)
+        open(os.path.join(inc, "v.mp4"), "wb").close()
+        slide = {"base_dir": d, "blocks": [
+            {"kind": "include", "name": "v.mp4",
+             "opts": {"crop": "0.28,0,0.72,1", "fit": "fill"}},
+        ]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["kind"], "video")
+        self.assertEqual(out[0]["crop"], [0.28, 0.0, 0.72, 1.0])
+        self.assertEqual(out[0]["fit"], "fill")
+
+
+class ParseCrop(unittest.TestCase):
+    def test_valid(self):
+        self.assertEqual(deck.parse_crop("0.28,0,0.72,1"), [0.28, 0.0, 0.72, 1.0])
+
+    def test_clamped_to_unit_square(self):
+        self.assertEqual(deck.parse_crop("-0.1,0,2,1"), [0.0, 0.0, 1.0, 1.0])
+
+    def test_rejects_bad_shapes(self):
+        self.assertIsNone(deck.parse_crop(""))
+        self.assertIsNone(deck.parse_crop("0,0,1"))          # only 3 numbers
+        self.assertIsNone(deck.parse_crop("0.5,0,0.5,1"))    # zero width
+        self.assertIsNone(deck.parse_crop("a,b,c,d"))        # non-numeric
+
 
 class LoadDeck(unittest.TestCase):
     def _deck(self, text):

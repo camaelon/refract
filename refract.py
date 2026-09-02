@@ -28,9 +28,11 @@ import time
 from dataclasses import replace
 
 from refractkit.deck import load_deck, resolve_blocks
+from refractkit.measure import content_height
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
-                               build_same_doc, build_transition_doc, is_graph_slide,
-                               slide_type, PUSH_DURATION)
+                               build_same_doc, build_scroll_doc, build_transition_doc,
+                               content_metrics, is_graph_slide, scroll_spec, slide_type,
+                               split_left_metrics, split_panes, PUSH_DURATION)
 from refractkit.settings import load_settings
 from refractkit.theme import build_theme
 
@@ -92,6 +94,14 @@ def apply_agenda(slides: list) -> list:
 
 def slide_meta_type(slide: dict) -> str:
     return ((slide.get("meta") or {}).get("type") or "").lower()
+
+
+def intermediate_jsons(pairs: list, json_dir: str) -> list:
+    """The json inputs from ``pairs`` that are refract-generated intermediates safe to delete —
+    ONLY those living inside ``json_dir``. A source include compiled straight from
+    ``includes/`` is never returned, so cleanup can never delete a user's source file."""
+    jd = os.path.abspath(json_dir)
+    return [jp for jp, _ in pairs if os.path.dirname(os.path.abspath(jp)) == jd]
 
 
 def slide_accent(slide: dict, theme, speakers: dict) -> str | None:
@@ -169,6 +179,96 @@ def expand_fragments(slides: list, steps_default: bool = False) -> list:
     return out
 
 
+SCROLL_OVERLAP = 0.12          # fraction of the viewport that consecutive pages share
+
+
+def _scroll_plan(raw: str, content_h: float, viewport: float) -> tuple:
+    """Given the ``scroll`` request (an int or "auto"), the estimated content height and the
+    viewport height, return (page_count, [offset per page]). Returns (1, [0.0]) when the
+    content already fits or the request is unusable.
+
+    - ``auto``: as many pages as needed, each advancing a fixed step of one viewport (minus a
+      small overlap), so per-page motion stays correct even if the height estimate is off.
+    - explicit ``N``: exactly N pages, offsets spread evenly across the scrollable range so N
+      pages cover the whole content (the author chose the page count deliberately)."""
+    import math
+    max_off = max(0.0, content_h - viewport)
+    if max_off <= 1.0:
+        return 1, [0.0]
+    if str(raw).strip().lower() == "auto":
+        step = max(1.0, viewport * (1.0 - SCROLL_OVERLAP))
+        n = int(math.ceil(max_off / step)) + 1
+        offs, last = [], None
+        for k in range(n):
+            off = round(min(k * step, max_off), 2)
+            if off == last:
+                break
+            offs.append(off)
+            last = off
+        return len(offs), offs
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        return 1, [0.0]
+    if n <= 1:
+        return 1, [0.0]
+    return n, [round(max_off * k / (n - 1), 2) for k in range(n)]
+
+
+def expand_scroll(slides: list, theme, width: int, height: int) -> list:
+    """Expand ``scroll = N`` / ``scroll = auto`` slides into one .rc per scroll page. Each
+    page carries a ``scroll_page`` meta ({index, count, offset, prev_offset, viewport}); the
+    renderer clips the content to the viewport and animates it from ``prev_offset`` to
+    ``offset`` on load, so pressing next scrolls the content. Only single-column content
+    layouts scroll (split/centered slides are left untouched)."""
+    out = []
+    for slide in slides:
+        meta = slide.get("meta") or {}
+        raw = (meta.get("overrides") or {}).get("scroll")
+        # `:: same` slides carry a *manual* scroll offset (feature handled in the main loop),
+        # not an auto-paginated one — leave them for build_same_doc.
+        if raw is None or meta.get("type", "").lower() == "same" or meta.get("reveal_step"):
+            out.append(slide)
+            continue
+        stype = slide_type(slide)
+        blocks = resolve_blocks(slide)
+        if stype in ("title", "section"):
+            out.append(slide)          # nothing scrollable on a centred slide
+            continue
+        panes = split_panes(blocks)
+        if stype == "split" and len(panes) > 1:
+            # Scroll the first (text) column; the other column stays put.
+            col_blocks = [b for pane in panes[:-1] for b in pane]
+            col_w, avail_h = split_left_metrics(slide, theme, width, height)
+            content_h = content_height(col_blocks, theme.body_size(stype), theme, col_w)
+        else:
+            col_w, avail_h, _ = content_metrics(slide, theme, width, height)
+            content_h = content_height(blocks, theme.body_size(stype), theme, col_w)
+        n, offs = _scroll_plan(raw, content_h, avail_h)
+        if n <= 1:
+            out.append(slide)
+            continue
+        vp = round(avail_h, 2)
+        for k in range(n):
+            pmeta = {**meta, "scroll_page": {
+                "index": k, "count": n, "offset": offs[k],
+                "prev_offset": (offs[k - 1] if k > 0 else None), "viewport": vp}}
+            out.append({**slide, "meta": pmeta})
+    return out
+
+
+def _same_scroll_frac(meta: dict) -> float:
+    """The manual scroll offset a `:: same` slide requests, in *viewport fractions* (``scroll=1``
+    = one screenful down, ``0.5`` = half). 0 when absent or unparseable."""
+    raw = (meta.get("overrides") or {}).get("scroll")
+    if raw is None:
+        return 0.0
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except ValueError:
+        return 0.0
+
+
 def theme_overrides(overrides: dict, theme) -> dict:
     """Map per-slide ``key=value`` metadata to Theme field changes."""
     changes = {}
@@ -184,6 +284,8 @@ def theme_overrides(overrides: dict, theme) -> dict:
         val = overrides["shader"]
         # shader=none disables the background shader on this slide.
         changes["shaders"] = {} if val in ("none", "off", "false") else theme.shaders
+    if "autosize" in overrides:
+        changes["autosize"] = str(overrides["autosize"]).lower() not in ("off", "false", "no", "0")
     return changes
 
 
@@ -285,7 +387,11 @@ def run_once(args) -> int:
 
     # Fresh output: remove previously generated files so renamed or deleted slides
     # don't leave stale .rc/.json/asset behind (the player would keep showing them).
-    for d, exts in ((out_dir, (".rc",)), (json_dir, (".json",)), (media_dir, (".rc",))):
+    # Videos live in out/ (lone-video slides) and out/media/ (embedded); clear both so a
+    # renamed clip doesn't linger as an orphan slide/page.
+    vid_exts = (".mp4", ".mov", ".m4v", ".webm")
+    for d, exts in ((out_dir, (".rc",) + vid_exts), (json_dir, (".json",)),
+                    (media_dir, (".rc",) + vid_exts)):
         for fname in os.listdir(d):
             if fname.endswith(exts):
                 os.remove(os.path.join(d, fname))
@@ -295,6 +401,10 @@ def run_once(args) -> int:
     width = args.width if args.width is not None else slide_cfg.get("width", 1600)
     height = args.height if args.height is not None else slide_cfg.get("height", 900)
     transitions = args.transitions or bool(trans_cfg.get("enabled", False))
+
+    # Expand `scroll = N` / `scroll = auto` slides into one page per scroll window (needs the
+    # final width/height to measure overflow against the real content area).
+    slides = expand_scroll(slides, theme, width, height)
 
     speakers = settings.get("speakers", {})
     # Section spans for the progress bar (marks + per-section speaker colours). Deck-wide,
@@ -322,12 +432,14 @@ def run_once(args) -> int:
             print(f"copy {dst}  [video]")
             prev = None
             continue
-        # Embedded videos: copy each next to the slides; the custom component references
-        # it by file name (the viewer resolves it relative to the slide directory).
+        # Embedded videos: copy each into out/media/ (NOT the top-level out/, where a bare
+        # .mp4 would be picked up as its own standalone slide/PDF page). The custom component
+        # references it as media/<name>; the video host resolves that relative to the slide
+        # directory, same as the embedded-rc host.
         for v in videos:
             base = os.path.basename(v["path"])
-            copies.append((v["path"], os.path.join(out_dir, base)))
-            v["src"] = base
+            copies.append((v["path"], os.path.join(out_dir, "media", base)))
+            v["src"] = f"media/{base}"
 
         # Lone prebuilt .rc (no title / other content): whole-slide passthrough.
         if (not slide.get("title") and len(blocks) == 1
@@ -337,14 +449,31 @@ def run_once(args) -> int:
             prev = None
             continue
 
-        # Embedded prebuilt .rc (no .json sibling): copy each into out/media/ so the
-        # rc-document host can load it by name — a subdirectory, so the viewer doesn't list
-        # the asset as a navigable slide (out/*.rc is the deck; out/media/*.rc are assets).
+        # Media embedded as a nested document (out/media/<name>.rc, so the rc-document host
+        # loads it by name and the viewer doesn't list it as a slide). Three cases:
+        #   • rc_include with no .json  → copy the binary .rc as-is.
+        #   • rc/json with a crop/fit   → *frame* it (crop/scale need a fixed-size document, so
+        #     we embed rather than splice flat): copy the .rc, or compile the .json via json2rc.
         for b in blocks:
+            framed = b.get("crop") or b.get("fit")
             if b["kind"] == "rc_include" and not b.get("json"):
                 base = os.path.basename(b["path"])
                 copies.append((b["path"], os.path.join(out_dir, "media", base)))
                 b["src"] = f"media/{base}"
+            elif framed and b["kind"] == "rc_include" and b.get("json"):
+                base = os.path.basename(b["path"])                 # the prebuilt .rc binary
+                copies.append((b["path"], os.path.join(out_dir, "media", base)))
+                b.update(json=None, src=f"media/{base}")           # → render_rc_embed
+            elif framed and b["kind"] == "json_include":
+                # Compile a COPY placed in json_dir (an intermediate that gets cleaned up),
+                # never the source in includes/ — passing the source to `pairs` would let the
+                # cleanup delete it.
+                stem = os.path.splitext(os.path.basename(b["path"]))[0]
+                media_rc = os.path.join(out_dir, "media", stem + ".rc")
+                interm = os.path.join(json_dir, f"embed_{stem}.json")
+                copies.append((b["path"], interm))                 # source → intermediate copy
+                pairs.append((interm, media_rc))                   # compile the copy → .rc
+                b.update(kind="rc_include", json=None, src=f"media/{stem}.rc")
 
         # Per-slide theme: speaker accent + author attribution + inline overrides.
         meta = slide.get("meta") or {}
@@ -389,25 +518,48 @@ def run_once(args) -> int:
         # `:: same`, or a stepped-reveal step (both animate only the changed content in
         # place, independent of --transitions).
         is_same = meta.get("type", "").lower() == "same" or bool(meta.get("reveal_step"))
-        if is_same and prev is not None:
-            doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
+        # Scroll page: a later page animates its content scroll from the previous page; the
+        # first page (prev_offset None) is a normal slide whose content is clipped to the
+        # viewport (scroll_static), so overflow past the first window stays hidden.
+        sp = meta.get("scroll_page")
+        scroll_static = {"viewport": sp["viewport"], "y": 0.0} if sp else None
+        if sp and sp.get("prev_offset") is not None:
+            doc = build_scroll_doc(slide, blocks, stheme, width, height, i, args.debug, total,
+                                   sp["prev_offset"], sp["offset"], sp["viewport"])
+            tag = f"scroll {sp['index'] + 1}/{sp['count']}"
+        elif is_same and prev is not None:
+            # Scroll-aware `:: same`: a manual per-slide offset (viewport fractions) that
+            # scrolls the (overflowing) content from the previous same-slide's offset. The
+            # scroll animates on the same $__st progress as the content diff. Presence of the
+            # `scroll` key on either slide (even `scroll=0`) opts the content into clipping.
+            prev_meta = prev[0].get("meta") or {}
+            has_scroll = ("scroll" in (meta.get("overrides") or {})
+                          or "scroll" in (prev_meta.get("overrides") or {}))
+            same_scroll = None
+            if has_scroll:
+                _, vp, _ = content_metrics(slide, stheme, width, height)
+                same_scroll = scroll_spec(_same_scroll_frac(prev_meta) * vp,
+                                          _same_scroll_frac(meta) * vp, vp)
+            doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total,
+                                 scroll=same_scroll)
             tag = "step" if meta.get("reveal_step") else "same"
         elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
             doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
             tag = "graph-morph"
         elif transitions and prev is not None and style in ("push", "slide", "slide-left"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur)
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur, scroll=scroll_static)
             tag = "push"
         elif transitions and prev is not None and style in ("slide-up", "push-up"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur)
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur, scroll=scroll_static)
             tag = "push-up"
         elif transitions and prev is not None:
-            doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
+            doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, scroll=scroll_static)
             tag = "transition"
         else:
             # No previous slide (e.g. the title): render statically — the first slide
             # has nothing to transition in from; its "out" is animated by the next slide.
-            doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total)
+            doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total,
+                            scroll=scroll_static)
             tag = slide_type(slide)
         json_path = os.path.join(json_dir, name + ".json")
         with open(json_path, "w") as f:
@@ -447,7 +599,7 @@ def run_once(args) -> int:
 
     # The JSON is just an intermediate for json2rc; discard it unless asked to keep.
     if not keep_json:
-        for json_path, _ in pairs:
+        for json_path in intermediate_jsons(pairs, json_dir):
             try:
                 os.remove(json_path)
             except OSError:

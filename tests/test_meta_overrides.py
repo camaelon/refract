@@ -84,6 +84,93 @@ class Fragments(unittest.TestCase):
         self.assertEqual(len(refract.expand_fragments([off2], steps_default=True)), 1)
 
 
+class ScrollPlan(unittest.TestCase):
+    def test_fits_no_pages(self):
+        self.assertEqual(refract._scroll_plan("auto", 400, 560), (1, [0.0]))
+        self.assertEqual(refract._scroll_plan("3", 400, 560), (1, [0.0]))
+
+    def test_auto_uses_fixed_viewport_step(self):
+        n, offs = refract._scroll_plan("auto", 2000, 560)
+        self.assertGreater(n, 1)
+        self.assertEqual(offs[0], 0.0)
+        step = 560 * (1 - refract.SCROLL_OVERLAP)
+        self.assertAlmostEqual(offs[1], round(step, 2), places=1)   # one viewport minus overlap
+        self.assertLessEqual(offs[-1], 2000 - 560 + 0.5)            # last page clamped to bottom
+
+    def test_explicit_n_spreads_evenly(self):
+        n, offs = refract._scroll_plan("4", 2000, 560)
+        self.assertEqual(n, 4)
+        self.assertEqual(offs[0], 0.0)
+        self.assertAlmostEqual(offs[-1], 2000 - 560, places=1)      # last lands at the bottom
+        gaps = [round(offs[i + 1] - offs[i], 1) for i in range(3)]
+        self.assertEqual(len(set(gaps)), 1)                         # evenly spaced
+
+
+class ExpandScroll(unittest.TestCase):
+    def _slide(self, overrides, n_paras=24, stype="content"):
+        blocks = [{"kind": "text", "text": "word " * 30} for _ in range(n_paras)]
+        return {"base_dir": "/tmp", "meta": {"type": stype, "overrides": overrides},
+                "blocks": blocks, "title": "T"}
+
+    def _theme(self):
+        from refractkit.theme import build_theme
+        return build_theme({})
+
+    def test_overflowing_content_expands(self):
+        out = refract.expand_scroll([self._slide({"scroll": "auto"})], self._theme(), 1600, 900)
+        self.assertGreater(len(out), 1)
+        self.assertEqual(out[0]["meta"]["scroll_page"]["index"], 0)
+        self.assertIsNone(out[0]["meta"]["scroll_page"]["prev_offset"])
+        self.assertIsNotNone(out[1]["meta"]["scroll_page"]["prev_offset"])
+
+    def test_explicit_count(self):
+        out = refract.expand_scroll([self._slide({"scroll": "3"})], self._theme(), 1600, 900)
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[-1]["meta"]["scroll_page"]["count"], 3)
+
+    def test_no_scroll_passthrough(self):
+        s = self._slide({})
+        self.assertEqual(refract.expand_scroll([s], self._theme(), 1600, 900), [s])
+
+    def test_same_slide_not_paginated(self):
+        # `:: same scroll=1` is a manual offset, handled in the main loop — not expanded here.
+        s = self._slide({"scroll": "1"}, stype="same")
+        self.assertEqual(refract.expand_scroll([s], self._theme(), 1600, 900), [s])
+
+    def test_fitting_content_passthrough(self):
+        s = self._slide({"scroll": "auto"}, n_paras=1)
+        self.assertEqual(len(refract.expand_scroll([s], self._theme(), 1600, 900)), 1)
+
+    def _split_slide(self, overrides, n_paras=20):
+        # A split slide: overflowing left column + a pane break + a right block.
+        left = [{"kind": "text", "text": "word " * 30} for _ in range(n_paras)]
+        blocks = left + [{"kind": "pane_break"}, {"kind": "text", "text": "right"}]
+        return {"base_dir": "/tmp", "meta": {"type": "split", "overrides": overrides},
+                "blocks": blocks, "title": "T"}
+
+    def test_split_scrolls_first_column(self):
+        # scroll on a multi-column split paginates the first (overflowing) column.
+        out = refract.expand_scroll([self._split_slide({"scroll": "auto"})],
+                                    self._theme(), 1600, 900)
+        self.assertGreater(len(out), 1)
+        self.assertEqual(out[0]["meta"]["scroll_page"]["index"], 0)
+
+    def test_split_fitting_passthrough(self):
+        s = self._split_slide({"scroll": "auto"}, n_paras=1)
+        self.assertEqual(len(refract.expand_scroll([s], self._theme(), 1600, 900)), 1)
+
+
+class SameScrollFrac(unittest.TestCase):
+    def test_reads_fraction(self):
+        self.assertEqual(refract._same_scroll_frac({"overrides": {"scroll": "1.5"}}), 1.5)
+
+    def test_absent_is_zero(self):
+        self.assertEqual(refract._same_scroll_frac({"overrides": {}}), 0.0)
+
+    def test_bad_value_is_zero(self):
+        self.assertEqual(refract._same_scroll_frac({"overrides": {"scroll": "auto"}}), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -104,6 +191,17 @@ class Agenda(unittest.TestCase):
         items = out[0]["blocks"][0]["items"]
         self.assertEqual(len(items), 2)
         self.assertIn("Intro", items[0]["text"])
+
+    def test_cleanup_never_deletes_source_includes(self):
+        # Only intermediates under json_dir are removable; a source compiled from includes/
+        # must never be returned (regression: we once deleted user source files).
+        json_dir = "/deck/out/json"
+        pairs = [
+            ("/deck/out/json/01_slide.json", "/deck/out/01_slide.rc"),          # intermediate
+            ("/deck/includes/demo/aliens.json", "/deck/out/media/aliens.rc"),   # SOURCE — keep!
+        ]
+        self.assertEqual(refract.intermediate_jsons(pairs, json_dir),
+                         ["/deck/out/json/01_slide.json"])
 
     def test_compute_sections_colors_by_expected_speaker(self):
         from refractkit.theme import build_theme
