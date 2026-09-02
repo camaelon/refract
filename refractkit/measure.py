@@ -80,7 +80,20 @@ def block_height(block: dict, body_size: float, theme, width: float) -> float:
     if kind == "table":
         rows = block.get("rows", [])
         return max(1, len(rows)) * body_size * 1.9    # padded table rows
+    if kind == "outline":
+        n = len(block.get("items", []))
+        size = _outline_size(theme, body_size)
+        return n * size * 1.3 + max(0, n - 1) * size * 0.55   # rows + inter-item gaps
     return 0.0
+
+
+def _outline_size(theme, body_size: float) -> float:
+    """The outline's heading size scaled by the current autosize factor (``body_size`` vs the
+    base content body), so measuring and rendering stay in step."""
+    fonts = getattr(theme, "fonts", {}) or {}
+    base = fonts.get("content_body", 40.0)
+    heading = fonts.get("heading", 44.0)
+    return heading * (body_size / base if base else 1.0)
 
 
 def content_height(blocks: list, body_size: float, theme, width: float) -> float:

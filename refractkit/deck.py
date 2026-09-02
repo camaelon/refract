@@ -116,6 +116,10 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         block["fit"] = opts["fit"].lower()
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
+    # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):
+    # "shown" | "fade" | "hidden" — the renderer alpha-gates the embed accordingly.
+    if opts.get("_reveal") and block["kind"] in _CAPTIONABLE:
+        block["_reveal"] = opts["_reveal"]
     return block
 
 

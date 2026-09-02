@@ -56,10 +56,22 @@ class Chrome(unittest.TestCase):
     def test_progress_fraction(self):
         theme = build_theme({"chrome": {"progress": True}})
         doc = render.build_doc({"title": "T"}, [], theme, 1000, 900, 1, False, total=4)
-        # filled width = width * (index+1)/total = 1000 * 2/4 = 500
-        bar = _find(doc["root"], lambda n: any(
-            isinstance(m, dict) and m.get("width") == 500.0 for m in n.get("modifiers", [])))
-        self.assertIsNotNone(bar)
+        # The connecting line is split at the progress point: fx = 1000 * 2/4 = 500. A line
+        # segment (drawrect) should end (or start) exactly there.
+        edges = []
+        def walk(n):
+            if isinstance(n, dict):
+                if n.get("type") == "canvas":
+                    for c in n.get("commands", []):
+                        if isinstance(c, dict) and c.get("type") == "drawrect":
+                            edges.extend([c.get("left"), c.get("right")])
+                for v in n.values():
+                    walk(v)
+            elif isinstance(n, list):
+                for v in n:
+                    walk(v)
+        walk(doc["root"])
+        self.assertIn(500.0, edges)
 
     def test_bottom_anchored(self):
         theme = build_theme({"chrome": {"page": True}})

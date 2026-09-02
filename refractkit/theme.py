@@ -88,6 +88,9 @@ class Theme:
     body_weight: float = 400.0
     code_font_family: str = "monospace"   # code blocks & spans
     title_gap: float = 44.0             # vertical gap between the title and content
+    # Per-slide padding deltas (left, top, right, bottom), added to the slide type's base
+    # margin — set via `pad_left=` / `pad=` overrides to nudge one slide's content inward.
+    pad_extra: tuple = (0.0, 0.0, 0.0, 0.0)
     # Slide chrome (page number / footer / progress bar). Rendered in the theme's own
     # colours (body / accent) and made translucent via chrome_alpha, so it reads as a
     # soft glassy overlay rather than a flat grey.
@@ -101,6 +104,7 @@ class Theme:
     # expected speaker.
     chrome_progress_marks: bool = False
     chrome_progress_color: str = "current"   # "current" | "section"
+    progress_mark_at: str = "speaker"        # "speaker" (at each speaker change) | "section"
     progress_mark_shape: str = "circle"      # circle | square | four | diamond
     progress_mark_filled: bool = True
     # Bullet-point marker shape/fill, plus optional overrides for sub-levels (level >= 1):
@@ -115,6 +119,10 @@ class Theme:
     # Deck-wide section spans for the progress bar, filled in by the deck builder:
     # [{"start": <0-based slide index>, "color": "#AARRGGBB"}], in order.
     chrome_sections: list = field(default_factory=list)
+    # Deck-wide per-speaker colour runs for the progress bar: contiguous slides sharing a
+    # speaker/author colour → [{"start", "end", "color"}]. Colours the bar by *who's speaking*
+    # (which changes at include boundaries), independent of where the section marks fall.
+    chrome_speaker_spans: list = field(default_factory=list)
     # Content reveal: how bullets/content blocks appear when a slide loads.
     content_reveal: str = "immediate"   # immediate (appear at once) | stagger (cascade in)
     reveal_delay: float = 0.0           # seconds before the first item animates
@@ -261,6 +269,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.chrome_color = chrome.get("color", t.chrome_color)
     t.chrome_alpha = float(chrome.get("alpha", t.chrome_alpha))
     t.chrome_progress_marks = bool(chrome.get("section_marks", t.chrome_progress_marks))
+    t.progress_mark_at = str(chrome.get("mark_at", t.progress_mark_at)).lower()
     t.chrome_progress_color = str(chrome.get("progress_color", t.chrome_progress_color)).lower()
     t.progress_mark_shape = str(chrome.get("mark_shape", t.progress_mark_shape)).lower()
     t.progress_mark_filled = bool(chrome.get("mark_filled", t.progress_mark_filled))

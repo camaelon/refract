@@ -31,6 +31,14 @@ def _pad_sides(pad) -> tuple[float, float, float, float]:
     return (float(pad), float(pad), float(pad), float(pad))
 
 
+def _pad_for(spec: dict, theme) -> tuple[float, float, float, float]:
+    """The slide's effective padding (left, top, right, bottom): its type's base margin plus
+    any per-slide ``pad_extra`` delta (from ``pad_left=`` / ``pad=`` overrides)."""
+    base = _pad_sides(spec.get("padding", PADDING))
+    extra = getattr(theme, "pad_extra", (0.0, 0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0, 0.0)
+    return tuple(b + e for b, e in zip(base, extra))  # type: ignore[return-value]
+
+
 def _chrome_reserve(theme: "Theme", stype: str, pad: float) -> float:
     """Vertical space to keep free at the bottom for the chrome, so content (especially a
     native webview/video overlay) doesn't sit under it. Zero unless the chrome is shown
@@ -497,6 +505,28 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     return _with_caption(box, block, theme, debug, avail_h)
 
 
+# A staggered embed fades in over this window (seconds) on the step that reveals it.
+STAGGER_FADE_EXPR = "min(1.0, max(0.0, (animTime - 0.05) / 0.4))"
+
+
+def _apply_reveal(nodes: list, block: dict) -> list:
+    """Gate an embed for a `stagger` step (see ``expand_embed_stagger``). ``hidden`` → replace
+    the embed with an empty box of the same footprint: nothing is drawn (custom hosts like the
+    video host ignore ``alpha=0``) yet the layout is preserved so revealed embeds don't shift.
+    ``fade`` → animate the embed in on load. ``shown``/absent → unchanged."""
+    state = block.get("_reveal")
+    if not state or state == "shown" or not nodes:
+        return nodes
+    if state == "hidden":
+        size = [m for m in nodes[0].get("modifiers", [])
+                if m == "fillMaxWidth" or (isinstance(m, dict) and ("height" in m or "width" in m))]
+        return [{"type": "box", "modifiers": size, "children": []}]
+    head = dict(nodes[0])
+    head["modifiers"] = list(head.get("modifiers", [])) + \
+        [{"graphicsLayer": {"alpha": STAGGER_FADE_EXPR}}]
+    return [head, *nodes[1:]]
+
+
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list,
                  same_ctx: dict | None = None, align: str = "start") -> list[dict]:
@@ -543,7 +573,8 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     elif kind == "video":
         out = render_video(block, theme, debug, avail_w, avail_h)
     elif kind == "outline":
-        out = render_outline(block, theme, debug)
+        from .measure import _outline_size
+        out = render_outline(block, theme, debug, _outline_size(theme, body_size))
     else:
         out = None
 
@@ -551,17 +582,17 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         # A whole non-bullet block that only appears on the current slide animates in.
         if same_ctx and same_ctx["key"](block) in same_ctx["blocks_new"]:
             out = [_apply_enter(c, theme) for c in out]
-        return out
+        return _apply_reveal(out, block)
 
     if kind == "json_include":
-        return _clipped_splice(block["path"], theme, debug, avail_h, block)
+        return _apply_reveal(_clipped_splice(block["path"], theme, debug, avail_h, block), block)
 
     if kind == "rc_include":
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
         # the prebuilt .rc live as a nested document via the rc-document host.
         if block.get("json"):
-            return _clipped_splice(block["json"], theme, debug, avail_h, block)
-        return render_rc_embed(block, theme, debug, avail_w, avail_h)
+            return _apply_reveal(_clipped_splice(block["json"], theme, debug, avail_h, block), block)
+        return _apply_reveal(render_rc_embed(block, theme, debug, avail_w, avail_h), block)
 
     if kind == "missing":
         return [text(f"<{block['name']} missing>", body_size, theme.body_color, debug)]
@@ -573,7 +604,7 @@ def _split_geometry(slide: dict, theme: Theme, width: int, height: int) -> tuple
     """The split layout's key measurements — (left_w, right_w, content_h) — shared by the
     renderer and ``split_left_metrics`` so overflow is measured against the real column."""
     spec = SLIDE_TYPES["split"]
-    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
     content_h = height - pad_t - pad_b - _chrome_reserve(theme, "split", pad_b)
     ratio = (slide.get("meta") or {}).get("ratio")
@@ -652,9 +683,13 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
 def _autosize_body(blocks: list[dict], theme: Theme, width: float, avail_h: float,
                    base_size: float, same_ctx: dict | None = None) -> float:
     """Shrink-only autosize: the body size at which ``blocks`` fit ``avail_h``, or the base
-    size unchanged when autosizing is off, the content already fits, or a `:: same` diff is
-    animating (its height changes over the transition, so a static estimate would be wrong)."""
-    if not getattr(theme, "autosize", True) or same_ctx is not None:
+    size unchanged when autosizing is off or the content already fits. A stepped-reveal diff
+    (bullets appearing across steps) disables it so matched content keeps one size step-to-step;
+    an explicit `:: same` (``autosize_ok``) keeps it on so the slide matches the base it
+    continues (which autosized) instead of overflowing."""
+    if not getattr(theme, "autosize", True):
+        return base_size
+    if same_ctx is not None and not same_ctx.get("autosize_ok"):
         return base_size
     return fit_body_size(blocks, base_size, theme, width, avail_h,
                          min_scale=getattr(theme, "autosize_min", 0.5))
@@ -666,7 +701,7 @@ def content_metrics(slide: dict, theme: Theme, width: int, height: int) -> tuple
     pass so it measures overflow against the exact area the renderer will lay out into."""
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
-    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
     centered = stype in ("title", "section")
     _, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
@@ -722,7 +757,7 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
         and same_ctx is None
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
-    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     title_size = theme.title_size(stype)
     body_size = theme.body_size(stype)
     content_w = width - pad_l - pad_r
@@ -731,8 +766,10 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
     # ``split``: row-first two-column layout (see _build_split_root). With two `+++` panes
     # the last is the full-height right column and the rest stack in the left column; with a
     # single pane (no `+++`) that lone content still goes in the tall right column and the
-    # left column holds just the title.
-    if stype == "split" and split_panes(blocks)[-1]:
+    # left column holds just the title. Dispatch on *any* pane having content (not just the
+    # last), so a split whose right pane is still empty — e.g. the base of a `:: same` reveal —
+    # lays out the same way as the follow-up that fills it, rather than falling back to content.
+    if stype == "split" and any(split_panes(blocks)):
         return _build_split_root(slide, blocks, theme, width, height, index, debug,
                                  counter, same_ctx, bg, do_stagger, scroll)
 
@@ -818,7 +855,7 @@ def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
     shared background behind both sliding slides instead of one per slide."""
     shader = None if bg == "none" else theme.shader_for(stype)
     bg_mods = [] if (shader or bg == "none") else [{"background": theme.background}]
-    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     pad_mod = ({"padding": float(pad_l)} if pad_l == pad_t == pad_r == pad_b
                else {"padding": [pad_l, pad_t, pad_r, pad_b]})
     col = {
@@ -837,27 +874,33 @@ def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
     return col
 
 
-def render_outline(block: dict, theme: Theme, debug: bool) -> list[dict]:
+def render_outline(block: dict, theme: Theme, debug: bool, size: float | None = None) -> list[dict]:
     """A synthesized deck outline: one row per numbered section, the number in the deck's
     primary colour, the section title beside it. Built from the sections collected in
-    ``apply_agenda`` (an ``:: outline`` slide)."""
+    ``apply_agenda`` (an ``:: outline`` slide). ``size`` (from autosize) overrides the heading
+    size so a long outline shrinks to fit."""
     items = block.get("items", [])
-    size = float(theme.fonts.get("heading", 44.0))
+    size = float(theme.fonts.get("heading", 44.0)) if size is None else float(size)
+    gap = round(size * 0.55, 1)
+    # One node per section — returned as a flat list (not wrapped in a column) so the slide's
+    # content-reveal staggers each item in turn instead of fading the whole outline at once.
+    # The inter-item gap rides on each row's top padding.
     rows: list[dict] = []
     for i, it in enumerate(items):
-        if i:
-            rows.append(vspacer(size * 0.55))
         num = text(f"{it['num']}.", round(size * 1.05, 1), theme.primary, debug,
                    family=theme.title_font, weight=theme.title_weight)
         ttl = text(str(it["title"]), size, theme.body_color, debug,
                    family=theme.body_font, weight=theme.body_weight)
+        mods: list = ["fillMaxWidth"]
+        if i:
+            mods = [{"padding": [0.0, gap, 0.0, 0.0]}, "fillMaxWidth"]
         rows.append({
             "type": "row", "verticalAlignment": "center",
-            "modifiers": dbg(["fillMaxWidth"], debug),
+            "modifiers": dbg(mods, debug),
             "children": [num, {"type": "box", "modifiers": [{"width": round(size * 0.6, 1)}],
                                "children": []}, ttl],
         })
-    return [{"type": "column", "modifiers": dbg(["fillMaxWidth"], debug), "children": rows}]
+    return rows
 
 
 def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
@@ -877,19 +920,79 @@ def blank_root(theme: Theme, width: int, height: int, debug: bool) -> dict:
     }
 
 
-def _progress_spans(secs: list, total: int, theme: Theme) -> list:
-    """(start_frac, end_frac, colour) spans tiling the progress bar: a neutral pre-section
-    lead-in (title/outline slides), then one span per section in its speaker's colour."""
-    tf = float(total)
-    spans = []
-    first = secs[0]["start"] / tf
-    if first > 0:
-        spans.append((0.0, first, theme.primary))
-    for i, sec in enumerate(secs):
-        s = sec["start"] / tf
-        e = secs[i + 1]["start"] / tf if i + 1 < len(secs) else 1.0
-        spans.append((s, e, sec["color"]))
-    return spans
+def _progress_bar_canvas(theme: Theme, index: int, total: int, width: int, debug: bool) -> dict:
+    """The bottom progress bar as a single canvas: a thin connecting line coloured by the
+    *speaker* at each point (bright up to the current slide, faint beyond), with the section
+    marks sitting **on** the line — the line leaving a gap around each mark so it reads as a
+    connect-the-dots rail rather than a bar with floating marks."""
+    cr = 6.0                                   # mark radius
+    line_h = 3.0                               # connecting-line thickness
+    canvas_h = round(2 * cr + 8.0, 2)          # a little vertical breathing room
+    cy = round(canvas_h / 2, 2)
+    fx = (index + 1) / total * width           # progress: line is "filled" up to here
+    track = theme.table_bg                     # faint colour for the not-yet-reached line
+
+    # Colour: "section" mode follows who's speaking (spans that change at include boundaries,
+    # not only at `:: section` marks); "current" mode paints the whole line in the current
+    # slide's accent.
+    by_section = getattr(theme, "chrome_progress_color", "current") == "section"
+    spans = getattr(theme, "chrome_speaker_spans", None) or []
+    if by_section and spans:
+        span_px = [(sp["start"] / total * width, sp["end"] / total * width, sp["color"]) for sp in spans]
+    else:
+        span_px = [(0.0, float(width), theme.accent)]
+
+    def color_at(x):
+        for x0, x1, c in span_px:
+            if x0 <= x < x1:
+                return c
+        return span_px[-1][2]
+
+    # Mark positions: at each *speaker change* (default — the dots then delimit the coloured
+    # segments) or at each `:: section` start (``mark_at = section``).
+    marks = []
+    if getattr(theme, "chrome_progress_marks", False):
+        if getattr(theme, "progress_mark_at", "speaker") == "section":
+            starts = [sec["start"] for sec in (getattr(theme, "chrome_sections", None) or [])]
+        else:
+            # Speaker changes = each span start after the first (the deck start isn't a change).
+            starts = [sp["start"] for sp in (getattr(theme, "chrome_speaker_spans", None) or [])[1:]]
+        for s in starts:
+            marks.append(max(cr, min(s / total * width, width - cr)))
+    half_gap = cr + 4.0
+    gaps = [(mx - half_gap, mx + half_gap) for mx in marks]
+
+    def in_gap(x):
+        return any(a <= x <= b for a, b in gaps)
+
+    # Cut the line wherever its colour or fill-state can change, then draw each non-gap piece.
+    cuts = {0.0, float(width), fx}
+    for x0, x1, _ in span_px:
+        cuts.update((x0, x1))
+    for a, b in gaps:
+        cuts.update((a, b))
+    cuts = sorted(c for c in cuts if 0.0 <= c <= width)
+
+    cmds = []
+    top, bot = round(cy - line_h / 2, 2), round(cy + line_h / 2, 2)
+    for i in range(len(cuts) - 1):
+        x0, x1 = cuts[i], cuts[i + 1]
+        if x1 - x0 < 0.5 or in_gap((x0 + x1) / 2):
+            continue
+        col = color_at((x0 + x1) / 2) if (x0 + x1) / 2 < fx else track
+        cmds.append({"type": "paint", "ops": [{"color": col}, {"style": "fill"}]})
+        cmds.append({"type": "drawrect", "left": round(x0, 2), "top": top,
+                     "right": round(x1, 2), "bottom": bot})
+
+    # Marks on the line, always in the speaker colour at that point — so the whole rail (and
+    # who speaks where) stays legible; the line's fill alone shows how far we are.
+    shape = getattr(theme, "progress_mark_shape", "circle")
+    filled = getattr(theme, "progress_mark_filled", True)
+    for i, mx in enumerate(marks):
+        cmds += marker_commands(shape, round(mx, 2), cy, cr, color_at(mx), filled, uid=f"pm{i}")
+
+    return {"type": "canvas",
+            "modifiers": dbg(["fillMaxWidth", {"height": canvas_h}], debug), "commands": cmds}
 
 
 def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: int, debug: bool):
@@ -923,43 +1026,7 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
                      "children": line})
 
     if theme.chrome_progress and total:
-        bar_h, cr, gap = 6.0, 6.0, 5.0
-        frac = round((index + 1) / total, 4)
-        secs = getattr(theme, "chrome_sections", None) or []
-        by_section = getattr(theme, "chrome_progress_color", "current") == "section"
-
-        # Filled bar over a faint track: one accent block (current-speaker mode) or per-
-        # section coloured segments (section mode). Translucent via the overlay layer.
-        if by_section and secs:
-            fill = []
-            for s0, s1, col in _progress_spans(secs, total, theme):
-                fe = min(s1, frac)
-                if fe > s0:
-                    fill.append({"type": "box", "modifiers": [
-                        {"width": round((fe - s0) * width, 2)}, {"height": bar_h},
-                        {"background": col}, {"offset": {"x": round(s0 * width, 2), "y": 0.0}}],
-                        "children": []})
-        else:
-            fill = [{"type": "box", "modifiers": [{"width": round(width * frac, 2)},
-                     {"height": bar_h}, {"background": theme.accent}], "children": []}]
-        bar = {"type": "box", "modifiers": ["fillMaxWidth", {"height": bar_h},
-               {"background": theme.table_bg}], "children": fill}
-
-        # Optional shape marks at each section start, a little above the bar. All marks are
-        # drawn into one full-width canvas at their section fraction.
-        if getattr(theme, "chrome_progress_marks", False) and secs:
-            shape = getattr(theme, "progress_mark_shape", "circle")
-            filled = getattr(theme, "progress_mark_filled", True)
-            cmds = []
-            for i, sec in enumerate(secs):
-                cx = max(cr, min(sec["start"] / total * width, width - cr))
-                col = sec["color"] if by_section else theme.accent
-                cmds += marker_commands(shape, cx, cr, cr, col, filled, uid=f"pm{i}")
-            rows.append({"type": "canvas",
-                         "modifiers": dbg(["fillMaxWidth", {"height": 2 * cr}], debug),
-                         "commands": cmds})
-            rows.append(vspacer(gap))
-        rows.append(bar)
+        rows.append(_progress_bar_canvas(theme, index, total, width, debug))
 
     # Anchor the chrome column to the bottom of the slide, translucent as a whole.
     return {"type": "box", "horizontalAlignment": "start", "verticalAlignment": "bottom",
@@ -1062,10 +1129,11 @@ def _finalize(doc: dict) -> dict:
 
 
 def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
-              index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
+              index: int, debug: bool, total: int = 0, scroll: dict | None = None,
+              animate: bool | None = None) -> dict:
     counter = [0]
     root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter,
-                            scroll=scroll)
+                            scroll=scroll, animate=animate)
     return _finalize({
         "header": header(slide, width, height, index),
         "root": with_chrome(root, theme, index, total, width, height, debug, slide_type(slide)),
@@ -1073,12 +1141,15 @@ def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height:
 
 
 def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
-                         index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
+                         index: int, debug: bool, total: int = 0, scroll: dict | None = None,
+                         prev_theme: Theme | None = None) -> dict:
     """A StateLayout that crossfades from the previous slide (state 0) to the current
-    slide (state 1); the index auto-advances on load via animTime."""
+    slide (state 1); the index auto-advances on load via animTime. ``prev_theme`` renders the
+    outgoing slide with its *own* theme (padding/colour overrides) so it matches how it just
+    looked, rather than inheriting the incoming slide's."""
     counter = [0]
     prev_root = (blank_root(theme, width, height, debug) if prev is None
-                 else _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), theme, width, height, index - 1, debug, counter, animate=False)))
+                 else _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), prev_theme or theme, width, height, index - 1, debug, counter, animate=False)))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug, counter,
                                 scroll=scroll)
     state = {"type": "stateLayout", "indexId": "$__t", "modifiers": ["fillMaxSize"],
@@ -1100,7 +1171,8 @@ PUSH_EASE_EXPR = "1.0 - (1.0 - $__pp) * (1.0 - $__pp) * (1.0 - $__pp)"
 
 def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
                    index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1,
-                   duration: float = PUSH_DURATION, scroll: dict | None = None) -> dict:
+                   duration: float = PUSH_DURATION, scroll: dict | None = None,
+                   prev_theme: Theme | None = None) -> dict:
     """A push/slide transition: the previous slide slides out while the new one slides
     in from the opposite side, driven by an eased progress variable. No StateLayout —
     both roots are offset by expressions, so it animates in the current player.
@@ -1137,7 +1209,7 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
     if shared_bg is not None:
         children.append(shared_bg)
     if prev is not None:
-        prev_root = _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), theme, width, height,
+        prev_root = _strip_customs(build_slide_root(prev[0], _no_web(prev[1]), prev_theme or theme, width, height,
                                                     index - 1, debug, counter, bg=root_bg, animate=False))
         children.append(wrap(prev_root, prev_off))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug,
@@ -1164,7 +1236,7 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     slide, blocks = cur
     stype = slide_type(slide)
     spec = SLIDE_TYPES[stype]
-    pad_l, pad_t, pad_r, pad_b = _pad_sides(spec.get("padding", PADDING))
+    pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
 
     children = []
@@ -1188,7 +1260,8 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
 
 
 def build_same_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: int,
-                   index: int, debug: bool, total: int = 0, scroll: dict | None = None) -> dict:
+                   index: int, debug: bool, total: int = 0, scroll: dict | None = None,
+                   autosize_ok: bool = False) -> dict:
     """A `:: same` shared-element transition (lerp backend).
 
     The current slide is rendered normally so matched, unchanged content stays put
@@ -1201,6 +1274,7 @@ def build_same_doc(prev: tuple, cur: tuple, theme: Theme, width: int, height: in
     from .samematch import diff_slides
     slide, blocks = cur
     same_ctx = diff_slides(prev[1], blocks)
+    same_ctx["autosize_ok"] = autosize_ok   # explicit `:: same` keeps autosize (matches its base)
     counter = [0]
     root = build_slide_root(slide, blocks, theme, width, height, index, debug, counter,
                             same_ctx, scroll=scroll)

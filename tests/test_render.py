@@ -271,6 +271,34 @@ class RenderBlock(unittest.TestCase):
                                   40.0, THEME, False, 800, 400, [0])
         self.assertEqual(out[0]["type"], "custom")             # no column wrapper
 
+    def _alpha(self, node):
+        for m in node.get("modifiers", []):
+            if isinstance(m, dict) and "graphicsLayer" in m:
+                return m["graphicsLayer"].get("alpha")
+        return None
+
+    def test_stagger_hidden_embed_is_empty_box(self):
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None, "_reveal": "hidden"},
+                                  40.0, THEME, False, 800, 400, [0])
+        self.assertEqual(out[0]["type"], "box")                # not a custom → nothing drawn
+        self.assertNotIn("config", out[0])
+        self.assertEqual(out[0]["children"], [])
+        self.assertIn("fillMaxWidth", out[0]["modifiers"])     # keeps the footprint
+
+    def test_stagger_fade_embed_animates(self):
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None, "_reveal": "fade"},
+                                  40.0, THEME, False, 800, 400, [0])
+        self.assertEqual(out[0]["type"], "custom")             # embed present, fading in
+        self.assertEqual(self._alpha(out[0]), render.STAGGER_FADE_EXPR)
+
+    def test_stagger_shown_embed_unchanged(self):
+        out = render.render_block({"kind": "rc_include", "name": "w", "path": "/x/widget.rc",
+                                   "src": "media/widget.rc", "json": None, "_reveal": "shown"},
+                                  40.0, THEME, False, 800, 400, [0])
+        self.assertIsNone(self._alpha(out[0]))                 # no alpha gate
+
     def test_weblink_custom_component(self):
         # A web link is a native custom component the viewer embeds as a live WKWebView.
         out = self.rb({"kind": "weblink", "url": "https://demo.dev", "label": "Live"})
@@ -548,18 +576,23 @@ class Outline(unittest.TestCase):
         self.assertEqual(theme.primary, "#FFABCDEF")
 
 
-def _mark_colors(node):
-    """Paint colours of the shapes drawn in the progress-mark canvas (one paint per mark)."""
+def _canvas_draws(node):
+    """[(draw_type, colour)] for each draw op in the chrome's progress canvas, tracking the
+    paint colour set before each — so marks (drawcircle/…) and the line (drawrect) can be told
+    apart."""
     out = []
     def walk(n):
         if isinstance(n, dict):
             if n.get("type") == "canvas":
+                cur = None
                 for c in n.get("commands", []):
-                    if isinstance(c, dict) and c.get("type") == "paint":
-                        col = next((o["color"] for o in c.get("ops", [])
-                                    if isinstance(o, dict) and "color" in o), None)
-                        if col:
-                            out.append(col)
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "paint":
+                        cur = next((o["color"] for o in c.get("ops", [])
+                                    if isinstance(o, dict) and "color" in o), cur)
+                    elif str(c.get("type", "")).startswith("draw"):
+                        out.append((c["type"], cur))
             for v in n.values():
                 walk(v)
         elif isinstance(n, list):
@@ -569,67 +602,74 @@ def _mark_colors(node):
     return out
 
 
+def _mark_colors(node):
+    """Colours of the drawn progress *marks* (circles), in order."""
+    return [c for t, c in _canvas_draws(node) if t == "drawcircle"]
+
+
+def _line_colors(node):
+    """Colours of the connecting-line segments (rects), in order."""
+    return [c for t, c in _canvas_draws(node) if t == "drawrect"]
+
+
 class ProgressChrome(unittest.TestCase):
     def _theme(self, **kw):
         from dataclasses import replace
+        # Marks at section starts (slides 2 & 6 of 10); speaker colours: first half green,
+        # second half red (a speaker change at slide 5, which need not align with a mark).
         base = dict(chrome_progress=True, accent="#FFACC0FF", primary="#FF111111",
                     chrome_sections=[{"start": 2, "color": "#FF00FF00"},
-                                     {"start": 6, "color": "#FFFF0000"}])
+                                     {"start": 6, "color": "#FFFF0000"}],
+                    chrome_speaker_spans=[{"start": 0, "end": 5, "color": "#FF00FF00"},
+                                          {"start": 5, "end": 10, "color": "#FFFF0000"}])
         base.update(kw)
         return replace(THEME, **base)
 
-    def test_section_marks_circles_colored_per_section(self):
-        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="section")
+    def test_section_marks_colored_by_speaker(self):
+        # mark_at=section: a mark per `:: section` start (slides 2 & 6), each in the speaker
+        # colour where it sits (green span, then red span).
+        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="section",
+                            progress_mark_at="section")
         ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
-        self.assertEqual(_mark_colors(ov), ["#FF00FF00", "#FFFF0000"])  # one circle per section
+        self.assertEqual(_mark_colors(ov), ["#FF00FF00", "#FFFF0000"])
+
+    def test_speaker_marks_at_each_change(self):
+        # mark_at=speaker (default): one mark per speaker change (the boundary at slide 5),
+        # coloured by the new speaker (red).
+        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="section",
+                            progress_mark_at="speaker")
+        ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
+        self.assertEqual(_mark_colors(ov), ["#FFFF0000"])
 
     def test_marks_use_current_accent_in_current_mode(self):
-        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="current")
+        theme = self._theme(chrome_progress_marks=True, chrome_progress_color="current",
+                            progress_mark_at="section")
         ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
         self.assertEqual(_mark_colors(ov), ["#FFACC0FF", "#FFACC0FF"])  # both current accent
 
-    def test_no_circles_when_marks_off(self):
+    def test_no_marks_when_off(self):
         theme = self._theme(chrome_progress_marks=False, chrome_progress_color="section")
         ov = render._chrome_overlay(theme, 8, 10, 1600, 900, False)
         self.assertEqual(_mark_colors(ov), [])
 
-    def test_section_mode_fill_uses_section_colors(self):
+    def test_section_mode_line_uses_speaker_colors(self):
         theme = self._theme(chrome_progress_color="section")
         ov = render._chrome_overlay(theme, 9, 10, 1600, 900, False)  # last slide → fully filled
-        bgs = []
-        def walk(n):
-            if isinstance(n, dict):
-                for m in n.get("modifiers", []) if isinstance(n.get("modifiers"), list) else []:
-                    if isinstance(m, dict) and "background" in m:
-                        bgs.append(m["background"])
-                for v in n.values():
-                    walk(v)
-            elif isinstance(n, list):
-                for v in n:
-                    walk(v)
-        walk(ov)
-        # both section colours appear in the segmented fill
-        self.assertIn("#FF00FF00", bgs)
-        self.assertIn("#FFFF0000", bgs)
+        line = _line_colors(ov)
+        self.assertIn("#FF00FF00", line)                # first speaker
+        self.assertIn("#FFFF0000", line)                # second speaker
 
-    def test_current_mode_single_accent_fill(self):
+    def test_current_mode_single_accent_line(self):
         theme = self._theme(chrome_progress_color="current")
         ov = render._chrome_overlay(theme, 9, 10, 1600, 900, False)
-        bgs = []
-        def walk(n):
-            if isinstance(n, dict):
-                for m in n.get("modifiers", []) if isinstance(n.get("modifiers"), list) else []:
-                    if isinstance(m, dict) and "background" in m:
-                        bgs.append(m["background"])
-                for v in n.values():
-                    walk(v)
-            elif isinstance(n, list):
-                for v in n:
-                    walk(v)
-        walk(ov)
-        # the section colours are NOT used for the fill in current mode
-        self.assertNotIn("#FF00FF00", bgs)
-        self.assertIn("#FFACC0FF", bgs)   # current accent fill
+        line = _line_colors(ov)
+        self.assertNotIn("#FF00FF00", line)             # speaker colours not used
+        self.assertIn("#FFACC0FF", line)                # current accent line
+
+    def test_unreached_line_is_faint_track(self):
+        theme = self._theme(chrome_progress_color="section")
+        ov = render._chrome_overlay(theme, 0, 10, 1600, 900, False)  # early → mostly unfilled
+        self.assertIn(THEME.table_bg, _line_colors(ov))  # the not-yet-reached track colour
 
 
 class Docs(unittest.TestCase):
@@ -664,6 +704,26 @@ class Docs(unittest.TestCase):
         self.assertIsInstance(doc["root"], list)
         sl = [n for n in doc["root"] if isinstance(n, dict) and n.get("type") == "stateLayout"][0]
         self.assertEqual(len(sl["children"]), 2)
+
+    def test_outgoing_slide_uses_its_own_theme_padding(self):
+        # The previous slide (state 0) must be rendered with its own padding overrides, not
+        # the incoming slide's — else its outgoing copy jumps layout during the transition.
+        from dataclasses import replace
+        prev_theme = replace(THEME, pad_extra=(200.0, 0.0, 0.0, 0.0))
+        doc = render.build_transition_doc(({"title": "A", "meta": {"type": "content"}}, []),
+                                          ({"title": "B", "meta": {"type": "content"}}, []),
+                                          THEME, 1600, 900, 1, False, prev_theme=prev_theme)
+        sl = [n for n in doc["root"] if isinstance(n, dict) and n.get("type") == "stateLayout"][0]
+        prev_root, cur_root = sl["children"]
+
+        def left_pad(node):
+            for m in node.get("modifiers", []):
+                if isinstance(m, dict) and "padding" in m:
+                    p = m["padding"]
+                    return p[0] if isinstance(p, list) else p
+            return None
+        self.assertEqual(left_pad(prev_root), 280.0)   # 80 base + 200 override
+        self.assertEqual(left_pad(cur_root), 80.0)     # incoming slide: base only
 
     def test_transition_overlay_only_in_transition_docs(self):
         theme = build_theme({"shader": {"transition": {"source": "half4 main(){return half4(0);}"}}})

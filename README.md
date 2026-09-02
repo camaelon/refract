@@ -130,6 +130,10 @@ and rc/json embeds:
 - `title=…` — a centred caption drawn below the embed (the embed shrinks to make room). Quote
   it for multiple words: `<widget.rc | fit=fit title="Launcher Widget">`. Works on video,
   rc/json embeds and images.
+- `stagger` — reveal this embed on its own step. A slide with N `stagger` embeds expands into
+  N+1 generated slides: the first shows none of them, each later slide reveals one more (the
+  newest fades in) while already-revealed embeds stay put and not-yet-revealed ones sit
+  invisible so the layout never shifts. Great for building up a grid of demos one at a time.
 
 A `crop`/`fit` on a **`.json` or `.rc` include** *frames* it: instead of splicing it flat
 into the slide (which re-lays-it-out to fill), refract embeds it as a nested document at its
@@ -166,6 +170,11 @@ previous one on load. Styles (`[transition] style` or per-slide `transition=`):
 - **magic move** (automatic between two consecutive graph slides) — nodes matched by
   their dot identifier glide/resize to their new positions (snappy ease-out), edges
   morph along (resampled so their splines interpolate), and unmatched elements fade.
+
+**`:: same`** continues the previous slide: it inherits that slide's **type/layout** and
+renders it again with only the *changed* content animated (new blocks fade/slide in, removed
+ones collapse out, matched content stays put) — so a `:: same` after a `:: split` lays out as
+the same split, letting you add an element to one panel while everything else holds still.
 
 The first slide has **no in-transition** (nothing to come from) — it renders
 statically and its *out* is animated by the next slide. So `:: section transition=slide-up`
@@ -296,12 +305,17 @@ table_header_bg = "#22FFFFFF"
 [chrome]                        # optional slide chrome (never shown on the title slide)
 page     = true                 # "n / total" page number
 footer   = "RemoteCompose · 2026"
-progress = true                 # bottom progress bar
-section_marks  = true           # mark above the bar at each section start
+progress = true                 # bottom progress bar: a connect-the-dots rail — a thin line
+                                # (filled up to the current slide, faint beyond) with marks
+                                # sitting ON it, the line leaving a gap around each mark
+section_marks  = true           # draw the marks
+mark_at        = "speaker"      # "speaker" = a mark at each speaker change (default);
+                                # "section" = a mark at each `:: section` start
 mark_shape     = "circle"       # circle | square | four | quad | diamond | asanoha | hline | vline
 mark_filled    = true           # filled shape, or false for an outline
-progress_color = "current"      # "current" = current speaker's accent (default);
-                                # "section" = each section coloured by its expected speaker
+progress_color = "current"      # "current" = whole line in the current slide's accent;
+                                # "section" = coloured by who's speaking (changes at include
+                                # boundaries, so each speaker's stretch reads in their colour)
 color    = "#66FFFFFF"
 
 [bullet]                        # bullet-point marker
@@ -397,7 +411,9 @@ steps    = false                # also split bullet slides into one .rc per step
 
 Precedence: **CLI flag > settings.toml > built-in default**. Any theme colour /
 shader / accent can also be overridden per slide via `key=value` metadata
-(e.g. `:: content bg=#FF101820 accent=#FFE8955A shader=none`).
+(e.g. `:: content bg=#FF101820 accent=#FFE8955A shader=none`). Nudge one slide's margins
+with `pad_left=` / `pad_top=` / `pad_right=` / `pad_bottom=` (px, added to the slide type's
+base margin), or `pad=` for all four — e.g. `:: outline pad_left=160` to indent an outline.
 
 ### Background shaders
 

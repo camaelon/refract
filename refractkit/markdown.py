@@ -18,18 +18,22 @@ import re
 GRAPH_ENGINES = {"dot", "neato", "fdp", "sfdp", "twopi", "circo", "graphviz"}
 
 
-_OPT_RE = re.compile(r'([\w-]+)=("[^"]*"|\'[^\']*\'|\S+)')
+_OPT_RE = re.compile(r'([\w-]+)=("[^"]*"|\'[^\']*\'|\S+)|([\w-]+)')
 
 
 def _parse_include_opts(opts: str) -> dict:
-    """Parse space-separated ``key=value`` include options into a dict, e.g.
-    ``crop=0.28,0,0.72,1 fit=fill`` → ``{"crop": "0.28,0,0.72,1", "fit": "fill"}``. Values may
-    be quoted to include spaces, e.g. ``title="Widgets 1"`` → ``{"title": "Widgets 1"}``."""
+    """Parse space-separated include options into a dict. ``key=value`` pairs map as expected
+    (``crop=0.28,0,0.72,1 fit=fill`` → ``{"crop": …, "fit": "fill"}``); values may be quoted to
+    include spaces (``title="Widgets 1"``); and a bare word is a boolean flag (``stagger`` →
+    ``{"stagger": True}``)."""
     out = {}
-    for k, v in _OPT_RE.findall(opts):
-        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-            v = v[1:-1]
-        out[k] = v
+    for key, val, flag in _OPT_RE.findall(opts):
+        if key:
+            if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+                val = val[1:-1]
+            out[key] = val
+        elif flag:
+            out[flag] = True
     return out
 
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")

@@ -131,6 +131,23 @@ def compute_sections(slides: list, theme, speakers: dict) -> list:
     return sections
 
 
+def compute_speaker_spans(slides: list, theme, speakers: dict) -> list:
+    """Contiguous runs of slides sharing a speaker/author colour, for the progress bar's
+    colouring — so each speaker's stretch reads in their colour (changing at include
+    boundaries), regardless of where the `:: section` marks fall. Unattributed slides take the
+    deck primary."""
+    colors = [slide_accent(s, theme, speakers) or theme.primary for s in slides]
+    spans = []
+    i, n = 0, len(colors)
+    while i < n:
+        j = i
+        while j < n and colors[j] == colors[i]:
+            j += 1
+        spans.append({"start": i, "end": j, "color": colors[i]})
+        i = j
+    return spans
+
+
 def _wants_steps(meta: dict, steps_default: bool) -> bool:
     """Whether a slide should be split into multiple .rc files (stepped reveal). Per-slide
     `fragment`/`steps` flags force on; `nosteps`/`nofragment` or `steps=off` force off; else
@@ -143,6 +160,64 @@ def _wants_steps(meta: dict, steps_default: bool) -> bool:
     if "fragment" in flags or "steps" in flags:
         return True
     return steps_default
+
+
+def _is_stagger_include(block: dict) -> bool:
+    """True if a raw include block requested the ``stagger`` option (``<name | stagger>``)."""
+    if block.get("kind") != "include":
+        return False
+    val = (block.get("opts") or {}).get("stagger")
+    return val is True or (isinstance(val, str) and val.lower() not in ("off", "false", "no", "0"))
+
+
+def expand_embed_stagger(slides: list) -> list:
+    """Expand slides whose embeds carry ``stagger`` into one step per embed: the staggered
+    embeds are revealed one at a time across generated slides. A slide with N staggered embeds
+    becomes N+1 steps — step 0 shows none of them, each later step reveals one more (the newest
+    fades in) while already-revealed ones stay and not-yet-revealed ones are omitted (an empty
+    box holds their space so the layout never shifts). Steps after the first are ``stagger_step``
+    so they render statically (no whole-slide transition) with the identical surrounding content
+    — only the new embed animates in."""
+    out = []
+    for slide in slides:
+        idxs = [i for i, b in enumerate(slide.get("blocks", [])) if _is_stagger_include(b)]
+        if not idxs:
+            out.append(slide)
+            continue
+        n = len(idxs)
+        for step in range(n + 1):
+            new_blocks = [dict(b) for b in slide["blocks"]]
+            for order, i in enumerate(idxs):
+                state = ("fade" if order == step - 1
+                         else "shown" if order < step - 1 else "hidden")
+                opts = dict(new_blocks[i].get("opts") or {})
+                opts["_reveal"] = state
+                new_blocks[i]["opts"] = opts
+            meta = {**(slide.get("meta") or {})}
+            if step >= 1:
+                meta["stagger_step"] = True
+            out.append({**slide, "meta": meta, "blocks": new_blocks})
+    return out
+
+
+def resolve_same_types(slides: list) -> list:
+    """``:: same`` means "same layout as the previous slide, animate the diff". Resolve each
+    such slide's *type* to the previous (non-same) slide's type — so a `:: same` following a
+    `:: split` lays out as a split — while flagging it ``_same`` so the build still animates the
+    diff. Without this, `:: same` would fall back to the plain ``content`` layout and no longer
+    match the slide it's meant to continue."""
+    out = []
+    prev_type = "content"
+    for slide in slides:
+        meta = dict(slide.get("meta") or {})
+        if (meta.get("type") or "").lower() == "same":
+            meta["_same"] = True
+            meta["type"] = prev_type
+            slide = {**slide, "meta": meta}
+        else:
+            prev_type = (meta.get("type") or "content").lower() or "content"
+        out.append(slide)
+    return out
 
 
 def is_skipped(slide: dict) -> bool:
@@ -297,6 +372,16 @@ def theme_overrides(overrides: dict, theme) -> dict:
         changes["shaders"] = {} if val in ("none", "off", "false") else theme.shaders
     if "autosize" in overrides:
         changes["autosize"] = str(overrides["autosize"]).lower() not in ("off", "false", "no", "0")
+    # Per-slide padding nudges (px), added to the slide type's base margin: `pad_left=` etc.,
+    # or `pad=` for all four sides. Handy to indent one slide's content (e.g. an outline).
+    def _num(v):
+        try: return float(v)
+        except (TypeError, ValueError): return 0.0
+    allpad = _num(overrides["pad"]) if "pad" in overrides else 0.0
+    delta = tuple(allpad + _num(overrides.get(k, 0)) for k in
+                  ("pad_left", "pad_top", "pad_right", "pad_bottom"))
+    if any(delta):
+        changes["pad_extra"] = delta
     return changes
 
 
@@ -386,7 +471,8 @@ def run_once(args) -> int:
         return 1
     # Drop slides marked `skip` before anything numbers or expands them.
     slides = [s for s in slides if not is_skipped(s)]
-    slides = apply_agenda(expand_fragments(slides, theme.reveal_steps))
+    slides = resolve_same_types(slides)
+    slides = apply_agenda(expand_embed_stagger(expand_fragments(slides, theme.reveal_steps)))
     if not slides:
         print("no slides found", file=sys.stderr)
         return 1
@@ -423,11 +509,13 @@ def run_once(args) -> int:
     # Section spans for the progress bar (marks + per-section speaker colours). Deck-wide,
     # so attach to the base theme; per-slide themes are replace()-copies that inherit it.
     theme.chrome_sections = compute_sections(slides, theme, speakers)
+    theme.chrome_speaker_spans = compute_speaker_spans(slides, theme, speakers)
 
     pairs = []       # (json_path, rc_path) to convert
     copies = []      # (src, dst) whole-slide passthroughs (rc / video)
     notes = []       # (index, title, notes) speaker notes
     prev = None      # (slide, blocks) of the previous non-passthrough slide
+    prev_theme = None  # its per-slide theme, so a transition renders it with its own overrides
     for i, slide in enumerate(slides):
         blocks = resolve_blocks(slide)
         name = slug(slide, i)
@@ -443,7 +531,7 @@ def run_once(args) -> int:
             dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
             copies.append((v["path"], dst))
             print(f"copy {dst}  [video]")
-            prev = None
+            prev = None; prev_theme = None
             continue
         # Embedded videos: copy each into out/media/ (NOT the top-level out/, where a bare
         # .mp4 would be picked up as its own standalone slide/PDF page). The custom component
@@ -459,7 +547,7 @@ def run_once(args) -> int:
                 and blocks[0]["kind"] == "rc_include" and not blocks[0].get("json")):
             copies.append((blocks[0]["path"], rc_path))
             print(f"copy {rc_path}  [rc passthrough]")
-            prev = None
+            prev = None; prev_theme = None
             continue
 
         # Media embedded as a nested document (out/media/<name>.rc, so the rc-document host
@@ -528,15 +616,24 @@ def run_once(args) -> int:
         # Push/slide duration (seconds); larger = slower.
         push_dur = float(meta.get("overrides", {}).get("transition_duration",
                          type_trans.get("duration", trans_cfg.get("duration", PUSH_DURATION))))
-        # `:: same`, or a stepped-reveal step (both animate only the changed content in
-        # place, independent of --transitions).
-        is_same = meta.get("type", "").lower() == "same" or bool(meta.get("reveal_step"))
+        # `:: same` (now type-resolved, flagged `_same`), or a stepped-reveal step — both
+        # animate only the changed content in place, independent of --transitions.
+        is_same = bool(meta.get("_same")) or bool(meta.get("reveal_step"))
         # Scroll page: a later page animates its content scroll from the previous page; the
         # first page (prev_offset None) is a normal slide whose content is clipped to the
         # viewport (scroll_static), so overflow past the first window stays hidden.
         sp = meta.get("scroll_page")
         scroll_static = {"viewport": sp["viewport"], "y": 0.0} if sp else None
-        if sp and sp.get("prev_offset") is not None:
+        if meta.get("stagger_step"):
+            # A stagger reveal step renders statically (no whole-slide transition) so the
+            # unchanged surrounding content is identical to the prior step; the newly-revealed
+            # embed fades in on its own (see _apply_reveal). animate=False suppresses the
+            # content-reveal entrance so the carried-over elements appear already present
+            # rather than fading in again.
+            doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total,
+                            animate=False)
+            tag = "stagger"
+        elif sp and sp.get("prev_offset") is not None:
             doc = build_scroll_doc(slide, blocks, stheme, width, height, i, args.debug, total,
                                    sp["prev_offset"], sp["offset"], sp["viewport"])
             tag = f"scroll {sp['index'] + 1}/{sp['count']}"
@@ -553,20 +650,22 @@ def run_once(args) -> int:
                 _, vp, _ = content_metrics(slide, stheme, width, height)
                 same_scroll = scroll_spec(_same_scroll_frac(prev_meta) * vp,
                                           _same_scroll_frac(meta) * vp, vp)
+            # An explicit `:: same` keeps autosize so it matches the (autosized) base slide it
+            # continues; a stepped-reveal keeps it off so bullets don't resize between steps.
             doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total,
-                                 scroll=same_scroll)
+                                 scroll=same_scroll, autosize_ok=not meta.get("reveal_step"))
             tag = "step" if meta.get("reveal_step") else "same"
         elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
             doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
             tag = "graph-morph"
         elif transitions and prev is not None and style in ("push", "slide", "slide-left"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur, scroll=scroll_static)
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
             tag = "push"
         elif transitions and prev is not None and style in ("slide-up", "push-up"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur, scroll=scroll_static)
+            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
             tag = "push-up"
         elif transitions and prev is not None:
-            doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, scroll=scroll_static)
+            doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, scroll=scroll_static, prev_theme=prev_theme)
             tag = "transition"
         else:
             # No previous slide (e.g. the title): render statically — the first slide
@@ -584,6 +683,7 @@ def run_once(args) -> int:
                 nf.write(slide["notes"])
         print(f"wrote {json_path}  [{tag}]")
         prev = (slide, blocks)
+        prev_theme = stheme
 
     for src, dst in copies:
         shutil.copyfile(src, dst)

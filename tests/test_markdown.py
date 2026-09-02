@@ -79,6 +79,11 @@ class ParseSlide(unittest.TestCase):
         self.assertEqual(s["blocks"][0]["opts"],
                          {"fit": "fit", "title": "Launcher Widget"})
 
+    def test_include_bare_flag_option(self):
+        # A bare word is a boolean flag (mixed with key=value options).
+        s = md.parse_slide("<widget.rc | fit=fit stagger>")
+        self.assertEqual(s["blocks"][0]["opts"], {"fit": "fit", "stagger": True})
+
     def test_notes_equals_marker(self):
         s = md.parse_slide("# Title\n- a bullet\n===\nPresenter note here.")
         self.assertEqual(s["notes"], "Presenter note here.")

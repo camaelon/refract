@@ -35,6 +35,25 @@ class WrapAndHeight(unittest.TestCase):
         self.assertEqual(measure.block_height(
             {"kind": "video", "src": "v.mp4"}, 40, THEME, 1200), 0.0)
 
+    def test_outline_block_measured_and_scales(self):
+        block = {"kind": "outline", "items": [{"num": i, "title": f"S{i}"} for i in range(8)]}
+        h = measure.block_height(block, 40, THEME, 1200)
+        self.assertGreater(h, 0.0)                              # outline drives autosize now
+        self.assertLess(measure.block_height(block, 20, THEME, 1200), h)   # scales with size
+
+    def test_long_outline_autosizes(self):
+        block = {"kind": "outline", "items": [{"num": i, "title": f"Section {i}"}
+                                              for i in range(1, 13)]}
+        self.assertLess(measure.fit_body_size([block], 40, THEME, 1400, 500), 40)
+
+    def test_outline_renders_flat_for_stagger(self):
+        # One node per section (not wrapped in a column) so the reveal staggers each item.
+        rows = render.render_outline({"items": [{"num": 1, "title": "A"},
+                                                {"num": 2, "title": "B"},
+                                                {"num": 3, "title": "C"}]}, THEME, False)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["type"] == "row" for r in rows))
+
 
 class FitBodySize(unittest.TestCase):
     def test_fits_returns_base_size(self):

@@ -43,6 +43,20 @@ class ThemeOverrides(unittest.TestCase):
         self.assertEqual(ch["background"], "#FF101010")
         self.assertEqual(ch["shaders"], {})
 
+    def test_pad_left_override(self):
+        from refractkit.theme import build_theme
+        ch = refract.theme_overrides({"pad_left": "120"}, build_theme({}))
+        self.assertEqual(ch["pad_extra"], (120.0, 0.0, 0.0, 0.0))
+
+    def test_pad_all_sides(self):
+        from refractkit.theme import build_theme
+        ch = refract.theme_overrides({"pad": "30", "pad_top": "10"}, build_theme({}))
+        self.assertEqual(ch["pad_extra"], (30.0, 40.0, 30.0, 30.0))   # pad + per-side
+
+    def test_no_pad_override(self):
+        from refractkit.theme import build_theme
+        self.assertNotIn("pad_extra", refract.theme_overrides({}, build_theme({})))
+
 
 class Skip(unittest.TestCase):
     def _slide(self, flags=None, overrides=None):
@@ -64,6 +78,63 @@ class Skip(unittest.TestCase):
 
     def test_skip_false_stays(self):
         self.assertFalse(refract.is_skipped(self._slide(overrides={"skip": "false"})))
+
+
+class SameType(unittest.TestCase):
+    def test_same_inherits_previous_type(self):
+        slides = [{"meta": {"type": "split"}, "blocks": []},
+                  {"meta": {"type": "same"}, "blocks": []}]
+        out = refract.resolve_same_types(slides)
+        self.assertEqual(out[1]["meta"]["type"], "split")   # inherited
+        self.assertTrue(out[1]["meta"]["_same"])            # still animates the diff
+
+    def test_consecutive_sames_inherit_base(self):
+        slides = [{"meta": {"type": "split"}, "blocks": []},
+                  {"meta": {"type": "same"}, "blocks": []},
+                  {"meta": {"type": "same"}, "blocks": []}]
+        out = refract.resolve_same_types(slides)
+        self.assertEqual([s["meta"]["type"] for s in out], ["split", "split", "split"])
+
+    def test_non_same_untouched(self):
+        s = {"meta": {"type": "content"}, "blocks": []}
+        out = refract.resolve_same_types([s])
+        self.assertEqual(out[0]["meta"]["type"], "content")
+        self.assertNotIn("_same", out[0]["meta"])
+
+
+class EmbedStagger(unittest.TestCase):
+    def _slide(self, n_stagger, plain=1):
+        blocks = [{"kind": "text", "text": "x"} for _ in range(plain)]
+        blocks += [{"kind": "include", "name": f"e{i}", "opts": {"stagger": True}}
+                   for i in range(n_stagger)]
+        return {"meta": {"type": "content"}, "blocks": blocks}
+
+    def _reveals(self, slide):
+        return [b["opts"]["_reveal"] for b in slide["blocks"] if b["kind"] == "include"]
+
+    def test_no_stagger_passthrough(self):
+        s = {"meta": {}, "blocks": [{"kind": "include", "name": "e", "opts": {}}]}
+        self.assertEqual(refract.expand_embed_stagger([s]), [s])
+
+    def test_one_embed_two_steps(self):
+        out = refract.expand_embed_stagger([self._slide(1)])
+        self.assertEqual(len(out), 2)                       # N+1 steps
+        self.assertEqual(self._reveals(out[0]), ["hidden"])
+        self.assertEqual(self._reveals(out[1]), ["fade"])
+        self.assertFalse(out[0]["meta"].get("stagger_step"))
+        self.assertTrue(out[1]["meta"]["stagger_step"])     # later steps render statically
+
+    def test_two_embeds_three_steps(self):
+        out = refract.expand_embed_stagger([self._slide(2)])
+        self.assertEqual(len(out), 3)
+        self.assertEqual(self._reveals(out[0]), ["hidden", "hidden"])
+        self.assertEqual(self._reveals(out[1]), ["fade", "hidden"])   # first reveals
+        self.assertEqual(self._reveals(out[2]), ["shown", "fade"])    # second reveals, first stays
+
+    def test_does_not_mutate_source(self):
+        s = self._slide(1)
+        refract.expand_embed_stagger([s])
+        self.assertNotIn("_reveal", s["blocks"][-1]["opts"])          # source opts untouched
 
 
 class Fragments(unittest.TestCase):
