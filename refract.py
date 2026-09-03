@@ -393,8 +393,15 @@ def theme_overrides(overrides: dict, theme) -> dict:
 
 
 def find_viewer(repo_root: str) -> str | None:
-    cand = os.path.join(repo_root, "prebuilt", "rcviewer")
-    return cand if os.path.isfile(cand) else None
+    """The player used to export. ``refractplayer`` first — it does both exports and is the
+    app the deck is presented with, so a deck exports through exactly what plays it.
+    ``rcviewer`` is the fallback for a checkout whose player has not been built yet; the two
+    share the export code, so either produces the same output."""
+    for name in ("refractplayer", "rcviewer"):
+        cand = os.path.join(repo_root, "prebuilt", name)
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 
 def find_rc2image(repo_root: str) -> str | None:
@@ -418,13 +425,23 @@ def wants_freeze(meta: dict) -> bool:
 
 def export_deck(viewer: str, out_dir: str, width: int, height: int,
                 pdf: str | None, images: str | None) -> None:
-    """Export the generated deck to a PDF and/or a directory of PNGs via the viewer."""
+    """Export the generated deck to a PDF and/or a directory of PNGs via the player.
+
+    The two players take the same work in different argument shapes: refractplayer reads the
+    deck as its positional argument with the destination on a flag, rcviewer takes both
+    positionally after the mode flag."""
+    refractplayer = os.path.basename(viewer) == "refractplayer"
+    size = [str(width), str(height)]
     if pdf:
-        subprocess.run([viewer, "--pdf", out_dir, pdf, str(width), str(height)])
+        cmd = ([viewer, out_dir, "--pdf", pdf] + size if refractplayer
+               else [viewer, "--pdf", out_dir, pdf] + size)
+        subprocess.run(cmd)
         print(f"exported {pdf}")
     if images:
         os.makedirs(images, exist_ok=True)
-        subprocess.run([viewer, "--screenshot-dir", out_dir, images, str(width), str(height)])
+        cmd = ([viewer, out_dir, "--images", images] + size if refractplayer
+               else [viewer, "--screenshot-dir", out_dir, images] + size)
+        subprocess.run(cmd)
         print(f"exported images to {images}")
 
 
@@ -540,6 +557,7 @@ def run_once(args) -> int:
     pairs = []       # (json_path, rc_path) to convert
     copies = []      # (src, dst) whole-slide passthroughs (rc / video)
     notes = []       # (index, title, notes) speaker notes
+    manifest = []    # per-slide records for out/deck.json (the player's deck outline)
     freeze_jobs = [] # slides whose opening transition shows a frozen snapshot (rebuilt later)
     prev = None      # (slide, blocks) of the previous non-passthrough slide
     prev_theme = None  # its per-slide theme, so a transition renders it with its own overrides
@@ -549,6 +567,24 @@ def run_once(args) -> int:
         rc_path = os.path.join(out_dir, name + ".rc")
         if slide.get("notes"):
             notes.append((i + 1, slide.get("title") or f"Slide {i + 1}", slide["notes"]))
+        # One manifest record per slide, in deck order. The player reads out/deck.json to
+        # show titles, jump to sections and pull up notes; `file` is filled in below by
+        # whichever branch actually writes the slide (a passthrough video is not a .rc).
+        record = {
+            "index": i,
+            "file": os.path.basename(rc_path),
+            "type": slide_type(slide),
+            "title": slide.get("title") or "",
+            "notes": bool(slide.get("notes")),
+        }
+        if slide.get("section_number"):
+            record["section"] = slide["section_number"]
+        smeta = slide.get("meta") or {}
+        if smeta.get("author"):
+            record["author"] = smeta["author"]
+        if smeta.get("params"):
+            record["speaker"] = smeta["params"]
+        manifest.append(record)
 
         # A lone video (no title, nothing else) is a whole-slide passthrough the viewer
         # plays directly. Otherwise videos are embedded in the page (custom component).
@@ -557,6 +593,7 @@ def run_once(args) -> int:
             v = videos[0]
             dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
             copies.append((v["path"], dst))
+            record["file"] = os.path.basename(dst)
             print(f"copy {dst}  [video]")
             prev = None; prev_theme = None
             continue
@@ -724,6 +761,20 @@ def run_once(args) -> int:
     for src, dst in copies:
         shutil.copyfile(src, dst)
 
+    # Deck outline → out/deck.json. The C++ player uses it for slide titles, section
+    # jumps and the presenter view; without it a player can still play the directory,
+    # it just has nothing but filenames to show.
+    deck_json = {
+        "version": 1,
+        "deck": os.path.basename(os.path.abspath(deck_dir)),
+        "width": width,
+        "height": height,
+        "slides": manifest,
+    }
+    with open(os.path.join(out_dir, "deck.json"), "w") as f:
+        json.dump(deck_json, f, indent=2)
+    print(f"wrote {os.path.join(out_dir, 'deck.json')}  [{len(manifest)} slides]")
+
     # Speaker notes → a presenter markdown file.
     if notes:
         notes_path = os.path.join(out_dir, "notes.md")
@@ -806,7 +857,8 @@ def run_once(args) -> int:
     if args.pdf is not None or args.images is not None:
         viewer = find_viewer(repo_root)
         if not viewer:
-            print("rcviewer not found in prebuilt/ — cannot export.", file=sys.stderr)
+            print("no player in prebuilt/ (refractplayer or rcviewer) — cannot export.",
+                  file=sys.stderr)
         else:
             pdf = None
             if args.pdf is not None:

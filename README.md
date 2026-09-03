@@ -20,11 +20,18 @@ the RemoteCompose engine via components, not pixel math.
 
 ```sh
 python3 refract.py examples/deck               # writes examples/deck/out/*.rc
-prebuilt/rcviewer examples/deck/out 1600 900   # play it (N/P to step, R to reload)
+prebuilt/refractplayer examples/deck/out       # present it (→ steps, Tab jumps, H for keys)
 ```
 
 Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
-`prebuilt/` ships ready-to-run `json2rc`, `rcviewer` and `rc2image`.
+`prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
+
+`refractplayer` is the deck player — a presenter window with the clock, the notes and the
+next slide, a navigator to jump to a section, a talk timer — and it exports the deck to a
+PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
+[player/README.md](player/README.md). `rcviewer` is the plain RemoteCompose viewer; it
+shares the same playback and export code, and adds `--screenshot` / `--frames` for
+single-file headless capture.
 
 ## Deck layout on disk
 
@@ -35,6 +42,8 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
   shader.sksl        # optional background shader referenced from settings.toml
   includes/          # images, sub-decks, .rc / .json resources
   out/               # generated .rc files          (created)
+  out/deck.json      # deck outline for the player   (created)
+  out/notes.md       # speaker notes                 (when the deck has any)
   out/json/          # generated .json documents     (only with --json)
 ```
 
@@ -78,9 +87,12 @@ digraph G { rankdir=LR; A -> B -> C }
   **baseline** across mixed styles.
 - Author names from `[authors]` are tinted with their colour wherever they appear in
   body text (e.g. the title-slide byline).
-- A `===` (or `???`) line starts **speaker notes** — everything after it, to the slide's end,
-  is presenter notes. They're written to `out/notes.md` and, in the exported PDF, laid out in a
-  panel **below** the slide (the page grows taller so notes never overlap the slide).
+- A `???` line starts **speaker notes** — everything after it, to the slide's end, is
+  presenter notes (`??? text` puts the first line on the marker itself). They're written to
+  `out/notes.md` and to a per-slide `out/<slide>.rc.notes` sidecar, which the player shows in
+  the presenter window and the PDF export lays out in a panel **below** the slide (the page
+  grows taller so notes never overlap the slide).
+- A `===` line **stacks** the slide — see [Stacked sections](#stacked-sections).
 - Everything else is content **blocks**, in order.
 
 ### Slide types (`<type>`)
@@ -157,6 +169,30 @@ column runs full-height past the title, and the title is confined to the left co
 fun rightColumn() { }
 ```
 ```
+
+### Stacked sections
+
+`+++` splits a slide across; **`===`** (three or more `=`) splits it **down**. Each stacked
+section is parsed like a mini-slide — its own `::` type line, its own `# title`, its own
+content — and they render one above the next:
+
+```markdown
+:: content
+# Before and after
+
+- the old way, and what it cost us
+
+===
+
+<before.png>
++++
+<after.png>
+```
+
+Heights are not shared evenly. A **text** section takes its natural height; the **media**
+sections (panes, images, embeds, graphs, charts, videos) divide whatever is left. So a couple
+of bullets above two full-height image columns give the images the rest of the slide, not half
+of it.
 
 ## Transitions & "magic move"
 
@@ -508,14 +544,23 @@ python3 refract.py <deck> [options]
   --json2rc PATH         explicit json2rc launcher (default: auto-detect prebuilt)
 ```
 
-Speaker notes (`===` or `???` blocks) are written to `<deck>/out/notes.md`, and in the PDF
-export they appear in a panel below each slide (the page grows to fit them).
+Speaker notes (everything after a `???` line) are written to `<deck>/out/notes.md` and to a
+per-slide `<deck>/out/<slide>.rc.notes` sidecar. `refractplayer` shows them in the presenter
+window; the PDF export puts them in a panel below each slide (the page grows to fit them).
 
 ## Prebuilt tools
 
 - `prebuilt/json2rc` — JSON → `.rc` converter (built from the local androidx checkout;
   adds an `image` component that embeds a file inline)
-- `prebuilt/rcviewer` — interactive C++ viewer (also `--pdf` / `--screenshot`).
+- `prebuilt/refractplayer` — the deck player: presenter window (clock, notes, next slide),
+  navigator, talk timer, blanking, fullscreen, and export to PDF (`--pdf talk.pdf`) or PNGs
+  (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
+  on top of the `rcplayer` library in the RemoteCompose `players/cpp` tree — playback,
+  export and the custom-component hosts are shared with `rcviewer`, not forked.
+  `player/build.sh` rebuilds it. See [player/README.md](player/README.md).
+- `prebuilt/rcviewer` — interactive C++ viewer, and the fallback exporter when the player
+  has not been built (`--pdf` / `--screenshot-dir` are the same code refractplayer runs;
+  `--screenshot` / `--frames` are its own).
   Keys: **←/→** step, **Space** pause, **R** reload, **D** debug, **S** screenshot,
   **Q/Esc** quit. Embedded web pages are live in the slide; click to interact, **Esc**
   returns keyboard focus to the deck. Slides are laid out at their design size and
