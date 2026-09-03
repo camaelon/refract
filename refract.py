@@ -30,9 +30,10 @@ from dataclasses import replace
 from refractkit.deck import load_deck, resolve_blocks
 from refractkit.measure import content_height
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
-                               build_same_doc, build_scroll_doc, build_transition_doc,
-                               content_metrics, is_graph_slide, scroll_spec, slide_type,
-                               split_left_metrics, split_panes, PUSH_DURATION)
+                               build_same_doc, build_scroll_doc, build_snapshot_doc,
+                               build_transition_doc, content_metrics, is_graph_slide,
+                               scroll_spec, slide_type, split_left_metrics, split_panes,
+                               PUSH_DELAY, PUSH_DURATION)
 from refractkit.settings import load_settings
 from refractkit.theme import build_theme
 
@@ -392,6 +393,25 @@ def find_viewer(repo_root: str) -> str | None:
     return cand if os.path.isfile(cand) else None
 
 
+def find_rc2image(repo_root: str) -> str | None:
+    for rel in ("prebuilt/rc2image",
+                "../remotecompose-experiments/players/cpp/build/tools/rc2image/rc2image"):
+        cand = os.path.join(repo_root, rel)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def wants_freeze(meta: dict) -> bool:
+    """True if a slide opts into a frozen-snapshot opening transition — via a ``freeze`` flag/
+    type or a ``freeze=`` override. Its expensive live embeds are gated off during the push and
+    a static snapshot is shown, then dissolves to the real content."""
+    if "freeze" in (meta.get("flags") or []) or str(meta.get("type", "")).lower() == "freeze":
+        return True
+    v = (meta.get("overrides") or {}).get("freeze")
+    return v is not None and str(v).lower() not in ("off", "false", "no", "0")
+
+
 def export_deck(viewer: str, out_dir: str, width: int, height: int,
                 pdf: str | None, images: str | None) -> None:
     """Export the generated deck to a PDF and/or a directory of PNGs via the viewer."""
@@ -516,6 +536,7 @@ def run_once(args) -> int:
     pairs = []       # (json_path, rc_path) to convert
     copies = []      # (src, dst) whole-slide passthroughs (rc / video)
     notes = []       # (index, title, notes) speaker notes
+    freeze_jobs = [] # slides whose opening transition shows a frozen snapshot (rebuilt later)
     prev = None      # (slide, blocks) of the previous non-passthrough slide
     prev_theme = None  # its per-slide theme, so a transition renders it with its own overrides
     for i, slide in enumerate(slides):
@@ -675,6 +696,15 @@ def run_once(args) -> int:
             doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total,
                             scroll=scroll_static)
             tag = slide_type(slide)
+        # A `freeze` slide records its context so a second pass (after media is copied) can
+        # render a frozen snapshot and rebuild its transition around it. The normal doc is still
+        # written now, so the slide is valid even if the snapshot pass is skipped.
+        if transitions and prev is not None and tag in ("push", "push-up") and wants_freeze(meta):
+            freeze_jobs.append({"i": i, "slide": slide, "blocks": blocks, "theme": stheme,
+                                "prev": prev, "prev_theme": prev_theme, "push_dur": push_dur,
+                                "axis": "y" if tag == "push-up" else "x",
+                                "scroll": scroll_static, "name": name, "rc_path": rc_path,
+                                "total": total})
         json_path = os.path.join(json_dir, name + ".json")
         with open(json_path, "w") as f:
             json.dump(doc, f, indent=2)
@@ -715,6 +745,46 @@ def run_once(args) -> int:
         for json_path, rc_path in pairs:
             cmd += [json_path, rc_path]
         rc = subprocess.run(cmd).returncode
+
+    # Frozen-transition pass: now that every media embed is copied, render each `freeze` slide's
+    # live content to a PNG, then rebuild its .rc with the embeds gated off during the push and
+    # the snapshot fading over them — a smooth frozen intro that dissolves to the real content.
+    if freeze_jobs:
+        rc2image = find_rc2image(repo_root)
+        if not rc2image:
+            print("rc2image not found in prebuilt/ — skipping freeze snapshots.", file=sys.stderr)
+        for job in (freeze_jobs if rc2image else []):
+            nm = job["name"]
+            snap_json = os.path.join(json_dir, nm + "_snap.json")
+            snap_rc = os.path.join(out_dir, nm + "_snap.rc")
+            png = os.path.join(out_dir, "media", nm + "_frozen.png")
+            snap = build_snapshot_doc(job["slide"], job["blocks"], job["theme"],
+                                      width, height, job["i"], args.debug)
+            with open(snap_json, "w") as f:
+                json.dump(snap, f)
+            env = {**os.environ, "RC_FRAMES": "2"}   # 2 paints so Impulse-driven embeds settle
+            if (subprocess.run([json2rc, snap_json, snap_rc]).returncode == 0
+                    and subprocess.run([rc2image, snap_rc, png, str(width), str(height),
+                                        "--anim", "3.0"], env=env).returncode == 0):
+                freeze = {"png": os.path.abspath(png),
+                          "gate": round(PUSH_DELAY + job["push_dur"], 3), "fade": 0.4}
+                final = build_push_doc(job["prev"], (job["slide"], job["blocks"]), job["theme"],
+                                       width, height, job["i"], args.debug, job["total"],
+                                       axis=job["axis"], duration=job["push_dur"],
+                                       scroll=job["scroll"], prev_theme=job["prev_theme"],
+                                       freeze=freeze)
+                fj = os.path.join(json_dir, nm + ".json")
+                with open(fj, "w") as f:
+                    json.dump(final, f)
+                if subprocess.run([json2rc, fj, job["rc_path"]]).returncode == 0:
+                    print(f"froze {nm}  [snapshot transition]")
+            else:
+                print(f"  freeze: snapshot failed for {nm}", file=sys.stderr)
+            for p in (snap_json, snap_rc):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     # The JSON is just an intermediate for json2rc; discard it unless asked to keep.
     if not keep_json:

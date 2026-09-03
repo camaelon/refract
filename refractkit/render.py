@@ -1317,6 +1317,14 @@ def build_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height:
     })
 
 
+def build_snapshot_doc(slide: dict, blocks: list[dict], theme: Theme, width: int, height: int,
+                       index: int, debug: bool = False) -> dict:
+    """A plain settled render of a slide's content + background (NO chrome, NO transition, no
+    stagger) — rendered to a PNG to seed a `freeze` slide's frozen-transition snapshot."""
+    root = build_slide_root(slide, blocks, theme, width, height, index, debug, [0], animate=False)
+    return _finalize({"header": header(slide, width, height, index), "root": [root]})
+
+
 def build_transition_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
                          index: int, debug: bool, total: int = 0, scroll: dict | None = None,
                          prev_theme: Theme | None = None) -> dict:
@@ -1346,10 +1354,47 @@ PUSH_DURATION = 0.45
 PUSH_EASE_EXPR = "1.0 - (1.0 - $__pp) * (1.0 - $__pp) * (1.0 - $__pp)"
 
 
+def _gate_customs(node, gate: float) -> None:
+    """Append ``&gate=<sec>`` to every custom-component config in a built root so its native
+    host skips painting until animTime passes the gate — the live embeds stay dormant behind
+    the frozen snapshot for the length of the opening transition."""
+    if isinstance(node, dict):
+        if node.get("type") == "custom" and isinstance(node.get("config"), str):
+            cfg = node["config"]
+            node["config"] = f"{cfg}{'&' if '#' in cfg else '#'}gate={round(gate, 3)}"
+        for v in node.values():
+            _gate_customs(v, gate)
+    elif isinstance(node, list):
+        for v in node:
+            _gate_customs(v, gate)
+
+
+def _frozen_overlay(png: str, gate: float, fade: float, width: int, height: int,
+                    debug: bool) -> dict:
+    """A full-slide snapshot image, opaque through the transition (animTime < gate) then fading
+    out over ``fade`` seconds — dissolving to reveal the now-live content beneath it."""
+    a = f"min(1.0, max(0.0, ({round(gate + fade, 3)} - animTime) / {round(fade, 3)}))"
+    return {"type": "canvas",
+            "modifiers": dbg(["fillMaxSize", {"graphicsLayer": {"alpha": a}}], debug),
+            "commands": [
+                {"type": "addbitmap", "image": png, "varName": "__frozen"},
+                {"type": "drawbitmap", "image": "$__frozen", "left": 0.0, "top": 0.0,
+                 "right": float(width), "bottom": float(height)}]}
+
+
+def _apply_freeze(root: dict, freeze: dict, width: int, height: int, debug: bool) -> dict:
+    """Gate the slide's live embeds and lay a fading snapshot over them, so the opening
+    transition shows a cheap frozen picture that dissolves to the real content. ``freeze`` is
+    {"png": path, "gate": seconds, "fade": seconds}."""
+    _gate_customs(root, freeze["gate"])
+    overlay = _frozen_overlay(freeze["png"], freeze["gate"], freeze["fade"], width, height, debug)
+    return {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": [root, overlay]}
+
+
 def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, height: int,
                    index: int, debug: bool, total: int = 0, axis: str = "x", sign: int = 1,
                    duration: float = PUSH_DURATION, scroll: dict | None = None,
-                   prev_theme: Theme | None = None) -> dict:
+                   prev_theme: Theme | None = None, freeze: dict | None = None) -> dict:
     """A push/slide transition: the previous slide slides out while the new one slides
     in from the opposite side, driven by an eased progress variable. No StateLayout —
     both roots are offset by expressions, so it animates in the current player.
@@ -1391,6 +1436,8 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
         children.append(wrap(prev_root, prev_off))
     cur_root = build_slide_root(cur[0], cur[1], theme, width, height, index, debug,
                                 counter, bg=root_bg, scroll=scroll)
+    if freeze:
+        cur_root = _apply_freeze(cur_root, freeze, width, height, debug)
     children.append(wrap(cur_root, cur_off))
 
     stage = {"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": children}
