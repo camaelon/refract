@@ -242,8 +242,10 @@ def _parse_section(lines: list[str]) -> dict | None:
             flush_bullets()
             inner = mi.group(1).strip()
             # A URL becomes an interactive web page embedded in the slide (a custom
-            # component); optional label after "|": <https://demo.dev | Live demo>.
-            if re.match(r"https?://", inner, re.I):
+            # component); optional label after "|": <https://demo.dev | Live demo>. A
+            # ``file://`` URL loads a local HTML file (the viewer grants it read access to
+            # its own directory, so linked CSS/JS/images resolve).
+            if re.match(r"(https?|file)://", inner, re.I):
                 url, _, label = inner.partition("|")
                 blocks.append({"kind": "weblink", "url": url.strip(),
                                "label": label.strip()})

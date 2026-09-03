@@ -111,6 +111,7 @@ class Theme:
     chrome_page: bool = False
     chrome_footer: str = ""
     chrome_progress: bool = False
+    chrome_hidden: bool = False          # per-slide `chrome=off`: no bottom chrome, content expands
     chrome_color: str = "#66FFFFFF"     # deprecated (kept for back-compat); use chrome_alpha
     chrome_alpha: float = 0.55          # translucency of the whole chrome overlay
     # Progress bar: mark section starts with a small circle above the bar, and colour the

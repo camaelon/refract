@@ -375,6 +375,10 @@ def theme_overrides(overrides: dict, theme) -> dict:
         changes["shaders"] = {} if val in ("none", "off", "false") else theme.shaders
     if "autosize" in overrides:
         changes["autosize"] = str(overrides["autosize"]).lower() not in ("off", "false", "no", "0")
+    # `chrome=off` drops this slide's bottom chrome (footer / page number / progress bar) and
+    # lets the content expand into the freed space.
+    if "chrome" in overrides:
+        changes["chrome_hidden"] = str(overrides["chrome"]).lower() in ("off", "false", "no", "0", "hidden", "none")
     # Per-slide padding nudges (px), added to the slide type's base margin: `pad_left=` etc.,
     # or `pad=` for all four sides. Handy to indent one slide's content (e.g. an outline).
     def _num(v):

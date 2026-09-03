@@ -43,7 +43,7 @@ def _chrome_reserve(theme: "Theme", stype: str, pad: float) -> float:
     """Vertical space to keep free at the bottom for the chrome, so content (especially a
     native webview/video overlay) doesn't sit under it. Zero unless the chrome is shown
     and the slide's margin is smaller than the chrome band. The title slide has no chrome."""
-    if stype == "title":
+    if stype == "title" or getattr(theme, "chrome_hidden", False):
         return 0.0
     shown = (theme.chrome_page or theme.chrome_footer or theme.chrome_progress
              or bool(getattr(theme, "slide_author", "")))
@@ -1218,7 +1218,7 @@ def with_chrome(content: dict, theme: Theme, index: int, total: int,
                 width: int, height: int, debug: bool, stype: str = "content") -> dict:
     """Layer the chrome overlay on top of a slide's content node. Title and section
     slides are clean covers — they never carry footer / page number / progress chrome."""
-    if stype in ("title", "section"):
+    if stype in ("title", "section") or getattr(theme, "chrome_hidden", False):
         return content
     overlay = _chrome_overlay(theme, index, total, width, height, debug)
     if overlay is None:
