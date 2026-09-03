@@ -13,6 +13,8 @@
 // Press H for the key card.
 
 #include "App.h"
+#include "AudioPlayer.h"
+#include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
 #include "Thumbs.h"
@@ -58,6 +60,13 @@ namespace {
 
 refract::App app;
 std::unique_ptr<refract::PresenterWindow> presenter;
+std::unique_ptr<refract::AudioRecorder> recorder;
+std::unique_ptr<refract::AudioPlayer> voice;   // null when --no-sound, or off this platform
+bool voicePlaying = false;                     // a slide's narration is running
+// Set for the one slide change that follows a narration running out, so the outgoing audio
+// is left to finish under the incoming one instead of being cut.
+bool overlapNextVoice = false;
+std::string tracePath;   // where --record will write, once the talk starts
 
 // Where the window sat before it went fullscreen, so F can put it back.
 struct WindowedGeometry { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
@@ -65,6 +74,12 @@ WindowedGeometry savedGeometry;
 
 int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherever it lands
 bool wantPresenter = false;
+
+void noteSlideShown();
+void startRunIfArmed();
+void toggleTalkClock();
+void playSlideAudio();
+double voicelessDwell();
 
 // ── Deck navigation ──────────────────────────────────────────────────
 
@@ -84,13 +99,83 @@ void goToSlide(int index) {
     g.timeSinceSwitch = 0.0;
     app.slideEnteredAt = app.clock.elapsed;
     app.sinceSlideChange = 0.0;
+    playSlideAudio();
     loadCurrentFile();
+    noteSlideShown();
 
     // Start the next slide's still now. It is built a little at a time over the following
     // frames, so by the time you press the key again it is already there.
     if (presenter && g.currentIndex + 1 < app.deck.size()) {
         refract::requestThumb(app.deck.at(g.currentIndex + 1).entry, 640, 360);
     }
+}
+
+// Everything that has to happen when a slide comes up in a recorded run: the trace gets the
+// time it appeared, and the microphone moves to that slide's wav. Called after the slide is
+// loaded, so the file name is the one being shown.
+void noteSlideShown() {
+    if (app.deck.empty() || !app.timing.recording()) return;
+    const auto& slide = app.deck.at(g.currentIndex);
+
+    app.timing.mark(slide.file, app.clock.elapsed);
+
+    if (recorder) {
+        // Straight to where playback will look for it, so a recorded talk replays with
+        // --auto-voice and no renaming in between.
+        fs::path wav = voicePathFor(slide.entry);
+        if (wav.empty()) {
+            std::cerr << "audio: " << slide.file << " has no leading number to key a wav by\n";
+            recorder->stop();
+        } else {
+            recorder->start(wav.string());
+        }
+    }
+}
+
+// Start this slide's narration, then open the *next* slide's file so the following change
+// costs nothing. Opening a file and readying the output device takes long enough to hear as a
+// gap at a slide boundary — which is exactly where a recorded narration runs continuously and
+// must not be broken — so it is paid for in advance, on a slide already being talked over.
+//
+// Called before the slide itself is loaded: the picture can afford the couple of
+// milliseconds, the audio cannot.
+void playSlideAudio() {
+    if (!voice || app.deck.empty()) return;
+    voicePlaying = false;
+
+    const bool overlap = overlapNextVoice;
+    overlapNextVoice = false;
+
+    const fs::path wav = voicePathFor(app.deck.at(g.currentIndex).entry);
+    if (!wav.empty()) voicePlaying = voice->play(wav.string(), overlap);
+    else if (!overlap) voice->stop();
+
+    if (g.currentIndex + 1 < app.deck.size()) {
+        const fs::path next = voicePathFor(app.deck.at(g.currentIndex + 1).entry);
+        if (!next.empty()) voice->preload(next.string());
+    }
+}
+
+// The talk starts when the clock does — pressing T, or advancing off the opening slide.
+// Recording waits for that moment rather than for launch, which also gives the microphone
+// permission prompt time to be answered before anything is being captured.
+// Start or pause the talk — the T key and the presenter's button are the same action, so
+// they stay in step. An explicit press is a decision, so the auto-start stops second-guessing
+// it from then on.
+void toggleTalkClock() {
+    app.clock.toggle();
+    app.autoStartClock = false;
+    // The microphone follows the talk: a pause is a break, and a break belongs in neither
+    // the slide's wav nor its recorded duration.
+    if (recorder) recorder->setPaused(!app.clock.running);
+    if (voice) voice->setPaused(!app.clock.running);
+}
+
+void startRunIfArmed() {
+    if (!app.recordArmed || !app.clock.running) return;
+    app.recordArmed = false;
+    app.timing.beginRecording(tracePath);
+    noteSlideShown();
 }
 
 void step(int delta) { goToSlide(g.currentIndex + delta); }
@@ -161,6 +246,7 @@ void openPresenter() {
     if (presenter) return;
     presenter = refract::PresenterWindow::Create(1100, 760);
     if (!presenter) return;
+    presenter->setOnToggleClock(toggleTalkClock);
     // Both windows take the same keys: you should be able to drive the talk from whichever
     // one has focus, and which one that is depends on where you last clicked.
     glfwSetKeyCallback(presenter->window(), playerKeyCallback);
@@ -272,9 +358,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
                 app.slideEnteredAt = 0.0;
                 app.autoStartClock = true;
             } else {
-                app.clock.toggle();
-                // An explicit start or stop is a decision; stop second-guessing it.
-                app.autoStartClock = false;
+                toggleTalkClock();
             }
             break;
 
@@ -319,6 +403,20 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
     }
 }
 
+// How long --auto-voice holds a slide that has neither a voice-over nor an entry in the
+// trace. Without this the deck stops dead on the first such slide with nothing said about
+// why, which is the opposite of what "advance on its own" was asked for. --auto's interval
+// wins when one was given, since that is an explicit statement of pace.
+double voicelessDwell() {
+    static bool explained = false;
+    if (!explained) {
+        explained = true;
+        std::cerr << "auto-voice: slides with no voice-over and no recorded time hold for "
+                  << (g.autoAdvanceSec > 0 ? g.autoAdvanceSec : 5.0) << "s\n";
+    }
+    return g.autoAdvanceSec > 0 ? g.autoAdvanceSec : 5.0;
+}
+
 // ── Frame capture for the presenter ──────────────────────────────────
 
 // A raster copy of what the slide window just painted. The presenter draws on the CPU, and
@@ -348,7 +446,15 @@ void usage() {
         "  --duration <t>     planned talk length for the timer, e.g. 25m, 45, 1h30m\n"
         "  --cpu | --metal    rendering backend (default: Metal on macOS)\n"
         "  --auto <sec>       advance every N seconds\n"
-        "  --auto-voice       advance when a slide's voice-over finishes\n"
+        "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
+        "                     wavs a --record-audio run captured)\n"
+        "  --no-sound         never play a slide's voice-over, even where one exists\n"
+        "\n"
+        "Rehearsing:\n"
+        "  --record           time the run: writes timing.json beside the slides, so a\n"
+        "                     later run can show whether it is ahead or behind\n"
+        "  --record-audio     also record narration, one wav per slide, into the deck's\n"
+        "                     voice dir (implies --record; disables voice-over playback)\n"
         "\n"
         "Export:\n"
         "  --pdf <out.pdf>    write the deck to a PDF and exit (one page per slide;\n"
@@ -392,6 +498,7 @@ int main(int argc, char* argv[]) {
     std::string pdfOutput;
     std::string imagesOutput;
     double exportDelay = 2.0;
+    bool record = false;
     std::string input;
     std::vector<std::string> positional;
 
@@ -415,8 +522,11 @@ int main(int argc, char* argv[]) {
             if (g.autoAdvanceSec <= 0) g.autoAdvanceSec = 5.0;
         }
         else if (arg == "--auto-voice") g.autoAdvanceOnVoice = true;
+        else if (arg == "--no-sound") g.voiceOverEnabled = false;
         else if (arg == "--pdf") pdfOutput = next("--pdf");
         else if (arg == "--images") imagesOutput = next("--images");
+        else if (arg == "--record") record = true;
+        else if (arg == "--record-audio") { record = true; app.recordAudio = true; }
         else if (arg == "--export-delay" || arg == "--pdf-delay")
             exportDelay = std::atof(next(arg.c_str()).c_str());
         else if (arg == "--help" || arg == "-h") { usage(); return 0; }
@@ -478,10 +588,47 @@ int main(int argc, char* argv[]) {
     }
 
     app.deck.build(g.files, input);
+
+    // Voice-over is played here rather than by the library: its afplay-per-slide path cannot
+    // preload, and the spawn latency is audible at every boundary. Switching the library's
+    // off also stops it being played twice.
+    if (g.voiceOverEnabled) {
+        voice = refract::AudioPlayer::Create();
+        if (voice) g.voiceOverEnabled = false;
+    }
     std::cerr << "refractplayer: " << app.deck.size() << " slides, "
               << app.deck.sections().size() << " sections"
               << (app.deck.hasManifest() ? " (deck.json)" : " (no deck.json — filenames only)")
               << "\n";
+
+    // ── Rehearsal ────────────────────────────────────────────────────
+    if (record) {
+        fs::path tracePathFor = refract::deckSidecarPath(input, "timing.json");
+        if (tracePathFor.empty()) {
+            std::cerr << "refractplayer: cannot record a trace for a zip bundle\n";
+            return 1;
+        }
+        app.timing.setDeckName(app.deck.name());
+        tracePath = tracePathFor.string();
+        app.recordArmed = true;
+        std::cerr << "refractplayer: armed — recording starts when the talk does "
+                     "(press T, or advance off the first slide)\n";
+
+        if (app.recordAudio) {
+            // Created now, so the microphone permission prompt is answered while you are
+            // still setting up rather than in the first seconds of the talk. Nothing is
+            // captured until startRunIfArmed() opens the first slide's wav.
+            recorder = refract::AudioRecorder::Create();
+            if (!recorder) std::cerr << "refractplayer: continuing without audio\n";
+            // Playing the previous take back through the speakers while recording the next
+            // one puts it straight into the new wav. Both playback paths go: the library's
+            // and the one this player just took over.
+            g.voiceOverEnabled = false;
+            voice.reset();
+        }
+    } else if (app.timing.loadForDeck(input)) {
+        // A trace from an earlier run: the presenter shows the pace against it.
+    }
 
     // ── Window ───────────────────────────────────────────────────────
     if (!glfwInit()) {
@@ -551,6 +698,8 @@ int main(int argc, char* argv[]) {
 
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
+    playSlideAudio();
+    noteSlideShown();
 
     // ── Loop ─────────────────────────────────────────────────────────
     auto startTime = std::chrono::steady_clock::now();
@@ -591,17 +740,35 @@ int main(int argc, char* argv[]) {
                     step(1);
                 }
             }
-            if (g.autoAdvanceOnVoice && g.audioPid > 0) {
-                int status = 0;
-                pid_t finished = ::waitpid(g.audioPid, &status, WNOHANG);
-                if (finished == g.audioPid) {
-                    g.audioPid = 0;
+            if (g.autoAdvanceOnVoice && voicePlaying && voice) {
+                // Hand over a moment *before* the narration ends rather than after it has.
+                // Waiting for the file to stop means noticing a frame late, and a frame of
+                // silence at every slide boundary is the seam this is trying to remove. The
+                // outgoing audio finishes underneath the incoming one, so the join is
+                // continuous rather than merely short.
+                constexpr double kHandoverLead = 0.05;
+                const bool ending = !voice->isPlaying() || voice->remaining() <= kHandoverLead;
+                if (ending) {
+                    overlapNextVoice = voice->isPlaying();
+                    voicePlaying = false;
                     step(1);
                 }
+            } else if (g.autoAdvanceOnVoice && !voicePlaying && !app.deck.empty()) {
+                // A slide with no wav would otherwise hold the deck forever — and a
+                // recording always has gaps, if only the slide that was up while the
+                // microphone permission was still being granted. With a trace loaded, fall
+                // back to the time that run spent on the slide, so a recorded talk replays
+                // end to end whether or not every slide got audio.
+                const auto* entry = app.timing.find(app.deck.at(g.currentIndex).file);
+                double dwell = (entry && entry->duration > 0.0) ? entry->duration
+                                                                : voicelessDwell();
+                if (app.sinceSlideChange >= dwell) step(1);
             }
         }
         app.clock.tick(dt);
         app.sinceSlideChange += dt;
+        startRunIfArmed();
+        app.timing.tick(app.clock.elapsed);
 
         // A document can ask for the next frame two ways: on a schedule (getRepaintDelay)
         // and, for animations the schedule knows nothing about — a fling in flight — by
@@ -658,6 +825,14 @@ int main(int argc, char* argv[]) {
             if (presenter->shouldClose()) {
                 presenter.reset();
             } else if (elapsed - lastPresenterDraw >= kPresenterInterval) {
+                // Sampled here rather than inside the window: the recorder belongs to the
+                // app, and the level is only wanted at the rate the meter is drawn.
+                if (recorder) {
+                    recorder->updateLevels();
+                    presenter->pushAudioLevel(recorder->averageLevel(), recorder->peakLevel());
+                } else {
+                    presenter->pushAudioLevel(-1.0f, -1.0f);
+                }
                 presenter->render(app, liveFrame);
                 lastPresenterDraw = elapsed;
             }
@@ -677,6 +852,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (app.timing.recording()) app.timing.finish(app.clock.elapsed);
+    if (recorder) recorder->stop();
+    recorder.reset();
+    if (voice) voice->stop();
+    voice.reset();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

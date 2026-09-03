@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Deck.h"
+#include "Timing.h"
 
 #include <string>
 
@@ -32,6 +33,13 @@ struct TalkClock {
 struct App {
     Deck      deck;
     TalkClock clock;
+    // The rehearsal trace: being recorded this run, loaded from a previous one, or empty.
+    Timing    timing;
+    bool      recordAudio = false;
+    // --record was given and the talk has not started yet. Nothing is written and the
+    // microphone stays idle until it does — a trace should not include the minutes spent
+    // getting the projector working, and neither should the narration.
+    bool      recordArmed = false;
 
     // The timer starts itself when you leave the title slide — the moment a talk actually
     // begins — so there is nothing to remember to press. Explicitly starting or stopping it

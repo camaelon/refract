@@ -27,8 +27,8 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 `prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
 
 `refractplayer` is the deck player — a presenter window with the clock, the notes and the
-next slide, a navigator to jump to a section, a talk timer — and it exports the deck to a
-PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
+next slide, a navigator to jump to a section, a talk timer, rehearsal recording — and it
+exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
 [player/README.md](player/README.md). `rcviewer` is the plain RemoteCompose viewer; it
 shares the same playback and export code, and adds `--screenshot` / `--frames` for
 single-file headless capture.
@@ -44,7 +44,9 @@ single-file headless capture.
   out/               # generated .rc files          (created)
   out/deck.json      # deck outline for the player   (created)
   out/notes.md       # speaker notes                 (when the deck has any)
+  out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
+  voice/             # one NN.wav per slide          (refractplayer --record-audio)
 ```
 
 ## Markdown grammar
@@ -553,8 +555,9 @@ window; the PDF export puts them in a panel below each slide (the page grows to 
 - `prebuilt/json2rc` — JSON → `.rc` converter (built from the local androidx checkout;
   adds an `image` component that embeds a file inline)
 - `prebuilt/refractplayer` — the deck player: presenter window (clock, notes, next slide),
-  navigator, talk timer, blanking, fullscreen, and export to PDF (`--pdf talk.pdf`) or PNGs
-  (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
+  navigator, talk timer, blanking, fullscreen, rehearsal recording (`--record` /
+  `--record-audio`, replayed with `--auto-voice`), and export to PDF (`--pdf talk.pdf`) or
+  PNGs (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
   on top of the `rcplayer` library in the RemoteCompose `players/cpp` tree — playback,
   export and the custom-component hosts are shared with `rcviewer`, not forked.
   `player/build.sh` rebuilds it. See [player/README.md](player/README.md).

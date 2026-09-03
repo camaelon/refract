@@ -11,6 +11,7 @@
 #include "include/core/SkImage.h"
 #include "include/core/SkRefCnt.h"
 
+#include <functional>
 #include <memory>
 
 struct GLFWwindow;
@@ -26,6 +27,13 @@ public:
 
     GLFWwindow* window() const { return mWindow; }
     bool shouldClose() const;
+
+    // What the play/pause button does. Set once, after Create.
+    void setOnToggleClock(std::function<void()> action);
+
+    // Feed the current microphone level (0..1) for the recording meter, or -1 when not
+    // recording. Sampled by the caller because the recorder is the app's, not the window's.
+    void pushAudioLevel(float average, float peak);
 
     // Draw one frame and swap. `live` is the last frame the slide window painted (null
     // until there is one); it is what the "current" pane shows, so the presenter sees the

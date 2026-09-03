@@ -25,6 +25,7 @@ constexpr SkColor kDim    = 0xFF868D9C;
 constexpr SkColor kAccent = 0xFF6EA8FF;
 constexpr SkColor kWarn   = 0xFFFFC65C;
 constexpr SkColor kOver   = 0xFFFF6B6B;
+constexpr SkColor kAhead  = 0xFF6FCF97;   // ahead of the rehearsal — the one good green
 constexpr SkColor kScrim  = 0xD8090A0D;  // navigator backdrop over the live slide
 }  // namespace ui
 

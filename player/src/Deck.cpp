@@ -34,16 +34,35 @@ std::string titleFromFilename(const std::string& file) {
     return stem;
 }
 
-// Where deck.json lives for the thing the user pointed us at. For a zip we read the entry
-// out of the archive instead; that is handled by the caller.
-fs::path manifestPathFor(const std::string& source) {
+}  // namespace
+
+fs::path deckSidecarPath(const std::string& source, const std::string& name) {
+    if (rcplayer::g.zip) return {};
     fs::path p(source);
-    if (fs::is_directory(p)) return p / "deck.json";
-    if (fs::is_regular_file(p)) return p.parent_path() / "deck.json";
+    if (fs::is_directory(p)) return p / name;
+    if (fs::is_regular_file(p)) return p.parent_path() / name;
     return {};
 }
 
-}  // namespace
+bool readDeckSidecar(const std::string& source, const std::string& name, std::string* out) {
+    out->clear();
+    if (rcplayer::g.zip) {
+        // A bundle may have been zipped from the deck root or from out/, so try both.
+        for (const std::string candidate : {name, "out/" + name}) {
+            std::vector<uint8_t> bytes;
+            if (rcplayer::g.zip->read(candidate, bytes)) {
+                out->assign(bytes.begin(), bytes.end());
+                return true;
+            }
+        }
+        return false;
+    }
+    fs::path path = deckSidecarPath(source, name);
+    if (path.empty() || !fs::exists(path)) return false;
+    std::ifstream in(path, std::ios::binary);
+    out->assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
+}
 
 int Deck::clamp(int i) const {
     if (mSlides.empty()) return 0;
@@ -74,21 +93,7 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
 
     // ── Manifest ─────────────────────────────────────────────────────
     std::string text;
-    if (rcplayer::g.zip) {
-        for (const char* candidate : {"deck.json", "out/deck.json"}) {
-            std::vector<uint8_t> bytes;
-            if (rcplayer::g.zip->read(candidate, bytes)) {
-                text.assign(bytes.begin(), bytes.end());
-                break;
-            }
-        }
-    } else {
-        fs::path mp = manifestPathFor(source);
-        if (!mp.empty() && fs::exists(mp)) {
-            std::ifstream in(mp, std::ios::binary);
-            text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        }
-    }
+    readDeckSidecar(source, "deck.json", &text);
 
     if (!text.empty()) {
         auto doc = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
@@ -157,6 +162,13 @@ const std::string& Deck::notesFor(int i) {
     while (!slide.notes.empty() && std::isspace(static_cast<unsigned char>(slide.notes.back())))
         slide.notes.pop_back();
     return slide.notes;
+}
+
+int Deck::indexOfFile(const std::string& file) const {
+    for (const auto& slide : mSlides) {
+        if (slide.file == file) return slide.index;
+    }
+    return -1;
 }
 
 int Deck::sectionIndexOf(int slide) const {

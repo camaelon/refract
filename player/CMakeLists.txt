@@ -11,6 +11,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(RefractPlayer VERSION 0.1.0 LANGUAGES C CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)   # the audio recorder is AVFoundation
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -62,15 +66,29 @@ FetchContent_Declare(nlohmann_json
 FetchContent_MakeAvailable(nlohmann_json)
 
 # ── The player ────────────────────────────────────────────────────────
-add_executable(refractplayer
+set(REFRACTPLAYER_SOURCES
     src/App.cpp
     src/Deck.cpp
     src/Navigator.cpp
     src/Presenter.cpp
     src/Thumbs.cpp
+    src/Timing.cpp
     src/Ui.cpp
     src/main.cpp
 )
+
+if(APPLE)
+    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm)
+else()
+    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp)
+endif()
+
+add_executable(refractplayer ${REFRACTPLAYER_SOURCES})
+
+if(APPLE)
+    set_source_files_properties(src/AudioPlayer.mm src/AudioRecorder.mm
+                                PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
 
 target_link_libraries(refractplayer PRIVATE rcplayer nlohmann_json::nlohmann_json)
 target_include_directories(refractplayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

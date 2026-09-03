@@ -7,10 +7,19 @@
 // "A graph", and every slide is its own jump target. Nothing here is required for playback.
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace refract {
+
+// Read a file that sits beside the slides — "deck.json", "timing.json". Handles all three
+// things a deck can be: a directory, a single slide file, or a zip bundle. False when it is
+// not there.
+bool readDeckSidecar(const std::string& source, const std::string& name, std::string* out);
+
+// Where such a file would be *written*. Empty for a zip bundle, which cannot be written into.
+std::filesystem::path deckSidecarPath(const std::string& source, const std::string& name);
 
 struct Slide {
     int index = 0;             // position in the deck, 0-based
@@ -47,6 +56,10 @@ public:
 
     const Slide& at(int i) const { return mSlides[clamp(i)]; }
     int clamp(int i) const;
+
+    // Position of the slide with this basename, or -1. Traces key by name for the same
+    // reason the manifest does: it survives a deck being renumbered around it.
+    int indexOfFile(const std::string& file) const;
 
     // The speaker notes for a slide, read from its "<entry>.notes" sidecar the first time
     // it is asked for. Empty when the slide has none.
