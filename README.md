@@ -47,6 +47,8 @@ single-file headless capture.
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
   voice/             # one NN.wav per slide          (refractplayer --record-audio)
+  voice/NN.txt       # its transcript                (refractplayer --transcribe)
+  voice/NN.words.json# per-word caption timings      (refractplayer --transcribe)
 ```
 
 ## Markdown grammar
@@ -549,6 +551,33 @@ python3 refract.py <deck> [options]
 Speaker notes (everything after a `???` line) are written to `<deck>/out/notes.md` and to a
 per-slide `<deck>/out/<slide>.rc.notes` sidecar. `refractplayer` shows them in the presenter
 window; the PDF export puts them in a panel below each slide (the page grows to fit them).
+
+### Captions from a recorded talk
+
+`refractplayer --record-audio` records one wav per slide, `--transcribe` turns those into
+per-word caption timings, and `--captions` shows them as a close-caption window with each
+word lit as it is spoken (or press `C`). All three are the player's — none of it has anything
+to say about turning markdown into slides.
+
+```sh
+prebuilt/refractplayer mytalk/out --record-audio     # record
+prebuilt/refractplayer mytalk/out --transcribe       # transcribe + align
+prebuilt/refractplayer mytalk/out --captions         # play back with captions
+```
+
+Two steps, each with its own optional dependency — the same split
+[Echo](https://github.com/camaelon/Echo)'s scripts make, because forced alignment against a
+known transcript is far more accurate than a transcriber's own word timings:
+
+```sh
+pip install openai-whisper     # transcription (or: pip install faster-whisper)
+pip install whisperx           # forced alignment
+```
+
+The work itself is Python's — whisper and whisperx live there — so `--transcribe` runs
+[`player/tools/captions.py`](player/tools/captions.py), which also stands alone. The
+transcript lands in `voice/NN.txt`, so a misheard word can be corrected there and
+`--transcribe` re-run: only the alignment is redone, against the text you supplied.
 
 ## Prebuilt tools
 

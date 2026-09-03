@@ -14,6 +14,8 @@
 
 #include "App.h"
 #include "AudioPlayer.h"
+#include "CaptionWindow.h"
+#include "Captions.h"
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
@@ -48,10 +50,15 @@
 #include <cstring>
 #include <filesystem>
 #include <sys/wait.h>
+#include <unistd.h>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace rcplayer;
@@ -66,6 +73,9 @@ bool voicePlaying = false;                     // a slide's narration is running
 // Set for the one slide change that follows a narration running out, so the outgoing audio
 // is left to finish under the incoming one instead of being cut.
 bool overlapNextVoice = false;
+
+std::unique_ptr<refract::CaptionWindow> captionWindow;
+refract::Captions captions;      // timings for the slide on screen
 std::string tracePath;   // where --record will write, once the talk starts
 
 // Where the window sat before it went fullscreen, so F can put it back.
@@ -79,7 +89,66 @@ void noteSlideShown();
 void startRunIfArmed();
 void toggleTalkClock();
 void playSlideAudio();
+void openCaptions();
 double voicelessDwell();
+
+// ── Caption processing ───────────────────────────────────────────────
+// Transcription and forced alignment are Python's — whisper and whisperx live there — so
+// this runs the script that does it. The player supplies the one thing the script cannot
+// work out on its own: which directory the narration was recorded into.
+
+fs::path executableDir() {
+#if defined(__APPLE__)
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        std::error_code ec;
+        fs::path resolved = fs::weakly_canonical(fs::path(buf), ec);
+        if (!ec) return resolved.parent_path();
+    }
+#endif
+    return {};
+}
+
+// The script sits in the repo beside the player's sources. Both places the binary normally
+// lives — prebuilt/ and player/build/ — are a fixed distance from it.
+fs::path findCaptionsScript() {
+    if (const char* override = std::getenv("REFRACT_CAPTIONS_SCRIPT")) {
+        if (fs::exists(override)) return override;
+    }
+    const fs::path dir = executableDir();
+    if (dir.empty()) return {};
+    for (const char* rel : {"../player/tools/captions.py",   // prebuilt/refractplayer
+                            "../tools/captions.py",          // player/build/refractplayer
+                            "tools/captions.py"}) {
+        std::error_code ec;
+        fs::path candidate = fs::weakly_canonical(dir / rel, ec);
+        if (!ec && fs::exists(candidate)) return candidate;
+    }
+    return {};
+}
+
+int runCaptions(const fs::path& voiceDir, const std::string& model,
+                const std::string& language) {
+    const fs::path script = findCaptionsScript();
+    if (script.empty()) {
+        std::cerr << "refractplayer: cannot find tools/captions.py — set "
+                     "REFRACT_CAPTIONS_SCRIPT to its path\n";
+        return 1;
+    }
+
+    pid_t pid = ::fork();
+    if (pid < 0) return 1;
+    if (pid == 0) {
+        ::execlp("python3", "python3", script.c_str(), voiceDir.c_str(),
+                 "--model", model.c_str(), "--language", language.c_str(), (char*)nullptr);
+        std::cerr << "refractplayer: python3 not found\n";
+        ::_exit(127);
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
 
 // ── Deck navigation ──────────────────────────────────────────────────
 
@@ -142,6 +211,8 @@ void noteSlideShown() {
 void playSlideAudio() {
     if (!voice || app.deck.empty()) return;
     voicePlaying = false;
+
+    captions.loadFor(app.deck.at(g.currentIndex).entry);
 
     const bool overlap = overlapNextVoice;
     overlapNextVoice = false;
@@ -258,6 +329,18 @@ void openPresenter() {
     }
 }
 
+void openCaptions() {
+    if (captionWindow) return;
+    captionWindow = refract::CaptionWindow::Create(900, 420);
+    if (!captionWindow) return;
+    glfwSetKeyCallback(captionWindow->window(), playerKeyCallback);
+}
+
+void toggleCaptions() {
+    if (captionWindow) captionWindow.reset();
+    else openCaptions();
+}
+
 void togglePresenter() {
     if (presenter) presenter.reset();
     else openPresenter();
@@ -367,6 +450,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_W: app.blank = (app.blank == 2) ? 0 : 2; break;
         case GLFW_KEY_F: setFullscreen(window, glfwGetWindowMonitor(window) == nullptr); break;
         case GLFW_KEY_P: togglePresenter(); break;
+        case GLFW_KEY_C: toggleCaptions(); break;
 
         // ── Playback ─────────────────────────────────────────────────
         case GLFW_KEY_A:
@@ -449,6 +533,14 @@ void usage() {
         "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
         "                     wavs a --record-audio run captured)\n"
         "  --no-sound         never play a slide's voice-over, even where one exists\n"
+        "  --captions         open the close-caption window (needs timings from\n"
+        "                     --transcribe)\n"
+        "\n"
+        "Captions:\n"
+        "  --transcribe       transcribe the recorded narration and align it into\n"
+        "                     per-word caption timings, then exit\n"
+        "  --caption-model N  whisper model for transcription (default: base)\n"
+        "  --caption-lang L   language of the narration (default: en)\n"
         "\n"
         "Rehearsing:\n"
         "  --record           time the run: writes timing.json beside the slides, so a\n"
@@ -499,6 +591,10 @@ int main(int argc, char* argv[]) {
     std::string imagesOutput;
     double exportDelay = 2.0;
     bool record = false;
+    bool wantCaptions = false;
+    bool transcribe = false;
+    std::string captionModel = "base";
+    std::string captionLanguage = "en";
     std::string input;
     std::vector<std::string> positional;
 
@@ -525,6 +621,10 @@ int main(int argc, char* argv[]) {
         else if (arg == "--no-sound") g.voiceOverEnabled = false;
         else if (arg == "--pdf") pdfOutput = next("--pdf");
         else if (arg == "--images") imagesOutput = next("--images");
+        else if (arg == "--captions") wantCaptions = true;
+        else if (arg == "--transcribe") transcribe = true;
+        else if (arg == "--caption-model") captionModel = next("--caption-model");
+        else if (arg == "--caption-lang") captionLanguage = next("--caption-lang");
         else if (arg == "--record") record = true;
         else if (arg == "--record-audio") { record = true; app.recordAudio = true; }
         else if (arg == "--export-delay" || arg == "--pdf-delay")
@@ -585,6 +685,19 @@ int main(int argc, char* argv[]) {
     if (g.files.empty()) {
         std::cerr << "refractplayer: no playable slides in " << input << "\n";
         return 1;
+    }
+
+    // ── Transcription ────────────────────────────────────────────────
+    // Needs the playlist — that is what says where the narration was recorded — but no
+    // window, so it runs before one is opened and exits.
+    if (transcribe) {
+        const fs::path wav = voicePathFor(g.files.front());
+        if (wav.empty()) {
+            std::cerr << "refractplayer: slides are not numbered, so there are no voice "
+                         "files to transcribe\n";
+            return 1;
+        }
+        return runCaptions(wav.parent_path(), captionModel, captionLanguage);
     }
 
     app.deck.build(g.files, input);
@@ -695,6 +808,7 @@ int main(int argc, char* argv[]) {
         ensureSurface(winW, winH);
     }
     if (wantPresenter) openPresenter();
+    if (wantCaptions) openCaptions();
 
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
@@ -707,6 +821,9 @@ int main(int argc, char* argv[]) {
     double lastCapture = -1.0;
     int lastCapturedSlide = -1;
     double lastPresenterDraw = -1.0;
+    double lastCaptionDraw = -1.0;
+    // Fast enough that a word lights on the syllable, cheap enough to be free.
+    constexpr double kCaptionInterval = 1.0 / 30.0;
     sk_sp<SkImage> liveFrame;
     // The presenter shows a clock, a timer and two stills. Drawing it at the slide window's
     // frame rate costs several milliseconds a frame to show the same pixels; 20 Hz is past
@@ -838,6 +955,18 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (captionWindow) {
+            if (captionWindow->shouldClose()) {
+                captionWindow.reset();
+            } else if (elapsed - lastCaptionDraw >= kCaptionInterval) {
+                // The audio clock, not the frame clock: the highlight has to sit on the word
+                // coming out of the speakers, and the two drift.
+                const double at = voice ? voice->currentTime() : 0.0;
+                captionWindow->render(app, captions, at, voice && voice->isPlaying());
+                lastCaptionDraw = elapsed;
+            }
+        }
+
         // Build pending stills a slice at a time. The budget is what keeps a heavy slide
         // from stalling the deck: without it one still is a second of frozen window,
         // landing exactly when a key was pressed.
@@ -857,6 +986,7 @@ int main(int argc, char* argv[]) {
     recorder.reset();
     if (voice) voice->stop();
     voice.reset();
+    captionWindow.reset();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

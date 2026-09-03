@@ -91,6 +91,11 @@ void AudioPlayer::stop() {
     mImpl->current = nil;
 }
 
+double AudioPlayer::currentTime() const {
+    if (!mImpl->current) return 0.0;
+    return mImpl->current.currentTime;
+}
+
 double AudioPlayer::remaining() const {
     if (!mImpl->current || ![mImpl->current isPlaying]) return 0.0;
     return std::max(0.0, mImpl->current.duration - mImpl->current.currentTime);

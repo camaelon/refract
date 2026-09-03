@@ -34,6 +34,11 @@ public:
     // the presenter asked for wants the opposite — the narration should stop at once.
     bool play(const std::string& path, bool letPreviousFinish = false);
 
+    // How far into the current file playback has reached, or 0 when nothing is playing.
+    // This is what drives caption highlighting, so it has to be the audio clock rather than
+    // anything counted on the main thread.
+    double currentTime() const;
+
     // Seconds left of what is playing, or 0 when nothing is.
     double remaining() const;
 

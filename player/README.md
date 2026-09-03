@@ -67,6 +67,7 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | digits then `Enter` | jump to a slide number |
 | `Tab` `G` | navigator |
 | `P` | presenter window |
+| `C` | caption window |
 | `T` / `Shift`+`T` | start-pause the timer / reset it |
 | `B` `W` | blank the screen to black / white |
 | `F` | fullscreen |
@@ -101,6 +102,11 @@ refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]
   --auto-voice       advance when a slide's voice-over finishes (plays the wavs
                      a --record-audio run captured)
   --no-sound         never play a slide's voice-over, even where one exists
+  --captions         open the close-caption window
+
+  --transcribe       transcribe + align the recorded narration, then exit
+  --caption-model N  whisper model for transcription (default: base)
+  --caption-lang L   language of the narration (default: en)
 
   --record           time the run into timing.json beside the slides
   --record-audio     also record narration, one wav per slide (implies --record)
@@ -200,6 +206,50 @@ is granted — which means the opening slide of that first run is usually missed
 to grant, then record for real. If access was refused, the player says so and carries on
 recording timings without audio.
 
+## Captions
+
+A recorded narration can be transcribed and aligned into per-word timings, and then read
+back as a close-caption window with each word lit as it is spoken:
+
+```sh
+prebuilt/refractplayer mytalk/out --record-audio     # record the narration
+prebuilt/refractplayer mytalk/out --transcribe       # transcribe + align it
+prebuilt/refractplayer mytalk/out --captions         # play it back with captions (or press C)
+```
+
+`--transcribe` needs two Python packages, one per step:
+
+```sh
+pip install openai-whisper     # transcription (or: pip install faster-whisper)
+pip install whisperx           # forced alignment
+```
+
+The work is Python's, so the player runs [`tools/captions.py`](tools/captions.py) — passing
+it the voice directory, the one thing the script cannot work out for itself. That script also
+stands alone (`python3 tools/captions.py <voice-dir>`), and `REFRACT_CAPTIONS_SCRIPT` points
+the player at it if the binary has been moved away from the repo.
+
+It writes two files beside each wav:
+
+| File | |
+|---|---|
+| `NN.txt` | the transcript, as plain text |
+| `NN.words.json` | `{"words": [{"w": …, "start": …, "end": …}, …]}` |
+
+The transcript is written out rather than kept in memory so it can be **corrected**: fix a
+misheard word in `NN.txt`, re-run `--transcribe`, and only the alignment is redone against the
+text you supplied. That is also why alignment is a step of its own — forced alignment against
+a known transcript is far more accurate than trusting a transcriber's own word timings.
+
+The window highlights from the **audio clock**, not the frame clock, so the lit word is the
+one actually coming out of the speakers. Words already spoken stay bright, the current one is
+lit, and what is still to come is dim; a long narration scrolls to keep the spoken line in
+view. With no audio playing it shows the slide's transcript unlit, which makes it a
+serviceable teleprompter for a talk being delivered live.
+
+A slide with no narration, or narration that has not been processed, simply says so —
+captions are an addition to a deck, never a requirement of one.
+
 ## Exporting
 
 ```sh
@@ -271,3 +321,6 @@ the archives it downloaded rather than pulling a second copy.
 | `src/Thumbs.{h,cpp}` | off-screen slide stills, cached |
 | `src/Ui.{h,cpp}` | text, boxes and images for the chrome |
 | `src/App.h` | presenter state: talk clock, blanking, overlay state |
+| `src/Captions.{h,cpp}`, `CaptionWindow.{h,cpp}` | caption timings and the window that lights them |
+| `src/Audio*.{h,mm}` | narration capture and gapless playback |
+| `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
