@@ -32,7 +32,9 @@ public:
     // handover happens a moment before the outgoing file ends, and letting its last few
     // milliseconds play out underneath leaves no silence at the join at all. A slide change
     // the presenter asked for wants the opposite — the narration should stop at once.
-    bool play(const std::string& path, bool letPreviousFinish = false);
+    // `startAt` begins playback that many seconds in, for picking up near a correction
+    // rather than at the top of the file.
+    bool play(const std::string& path, bool letPreviousFinish = false, double startAt = 0.0);
 
     // How far into the current file playback has reached, or 0 when nothing is playing.
     // This is what drives caption highlighting, so it has to be the audio clock rather than

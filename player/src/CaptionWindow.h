@@ -10,6 +10,7 @@
 #include "App.h"
 #include "Captions.h"
 
+#include <functional>
 #include <memory>
 
 struct GLFWwindow;
@@ -28,7 +29,28 @@ public:
 
     // `playbackTime` is where the narration has reached; `playing` says whether it is
     // actually running, which is the difference between lighting words and just showing them.
-    void render(const App& app, const Captions& captions, double playbackTime, bool playing);
+    void render(const App& app, Captions& captions, double playbackTime, bool playing);
+
+    // ── Correcting the transcript ────────────────────────────────────
+    // A transcriber mishears words, and the place you notice is here, watching them go by.
+    // So they can be fixed here: click Edit, click a word, type the right one.
+
+    bool isEditing() const;
+
+    // Leave edit mode, keeping the word in progress. Used on the way out, so quitting
+    // mid-correction is not the one way to lose one.
+    void finishEditing();
+
+    // Called when edit mode is entered or left. The narration should stop while the words
+    // are being changed — the highlight would be moving under the cursor — and start again
+    // from the beginning of the slide afterwards, so the correction can be heard in place.
+    void setOnEditingChanged(std::function<void(bool editing)> action);
+
+    // Keyboard while editing. Returns true when the key was consumed, in which case the
+    // player's own bindings must not also see it: typing "b" into a word should not blank
+    // the projector.
+    bool handleKey(int key, int action, int mods);
+    void handleChar(unsigned int codepoint);
 
 private:
     CaptionWindow() = default;

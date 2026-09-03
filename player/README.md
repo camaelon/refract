@@ -68,6 +68,7 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | `Tab` `G` | navigator |
 | `P` | presenter window |
 | `C` | caption window |
+| `E` | correct the transcript (in the caption window) |
 | `T` / `Shift`+`T` | start-pause the timer / reset it |
 | `B` `W` | blank the screen to black / white |
 | `F` | fullscreen |
@@ -249,6 +250,50 @@ serviceable teleprompter for a talk being delivered live.
 
 A slide with no narration, or narration that has not been processed, simply says so —
 captions are an addition to a deck, never a requirement of one.
+
+### Correcting what it heard
+
+A transcriber mishears words, and the place you notice is here, watching them go past. So
+they can be fixed here: click **Edit** (or press `E`), click the wrong word, type the right
+one.
+
+| | |
+|---|---|
+| click a word | start retyping it |
+| shift-click another | take in the span between them |
+| `Shift`+`←` / `→` | grow or shrink the span |
+| `Enter` / `Tab` | keep the change and move on to the next word |
+| `←` / `→` | keep the change and step between words |
+| `Esc` | drop the change; again to leave edit mode |
+| **Done** | keep everything, leave edit mode |
+
+A **span** can be replaced by any number of words, which is what a join or a split needs —
+one word heard as two, or two heard as one. Type as many words as you mean; emptying the
+field deletes the span, for when something was heard that was never said.
+
+Timings survive the edit. Correcting a single word needs **no re-alignment at all**: the audio
+has not changed, so the word still occupies exactly the time it did — only its label was
+wrong. Replacing a span divides the time it covered among the new words in proportion to
+their length, which is a guess, but the only one available without going back to Python. It
+keeps the highlight on the right word; running `--transcribe` again replaces the guess with a
+real alignment against the corrected text.
+
+Leaving edit mode writes both `NN.words.json` and `NN.txt`, and starts the narration again a
+second and a half before your **first** correction — the point of replaying is to hear the
+change against the audio it was made for, and a long narration should not have to be sat
+through to reach it. Change nothing and it starts from the top instead. Keeping the transcript
+in step matters too: a later `--transcribe` then aligns against the corrected words instead of
+hearing the same mistake again.
+
+**The player stands still while you edit.** Its keys are off in *every* window, and the deck
+cannot change slides — not by key, not from the navigator, not by auto-advance. Two reasons:
+typing `b` into a word must not blank the projector, and the words on screen belong to the
+slide on screen, so moving off it would either throw the edit away or land it on the wrong
+slide. GLFW delivers keys to whichever window has focus, so the block has to be global rather
+than local to the caption window; a key that would have done something says why it didn't.
+
+An edit still in progress is saved if you quit — leaving mid-word should not be the one way
+to lose one.
 
 ## Exporting
 

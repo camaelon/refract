@@ -87,8 +87,9 @@ bool wantPresenter = false;
 
 void noteSlideShown();
 void startRunIfArmed();
+bool captionsEditing();
 void toggleTalkClock();
-void playSlideAudio();
+void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 double voicelessDwell();
 
@@ -156,6 +157,17 @@ int runCaptions(const fs::path& voiceDir, const std::string& model,
 // timer and the playlist stay in step.
 void goToSlide(int index) {
     if (app.deck.empty()) return;
+
+    // Not while the transcript is being corrected. The words on screen belong to the slide
+    // on screen: moving to another one under them would either throw the edit away or land
+    // it on the wrong slide. Every route to a slide change comes through here — the keys in
+    // any of the three windows, the navigator, a typed slide number, auto-advance — so this
+    // is the one place it has to be said.
+    if (captionsEditing()) {
+        std::cerr << "captions: finish the edit (Done, or Esc) before changing slides\n";
+        return;
+    }
+
     int target = app.deck.clamp(index);
     if (target == g.currentIndex && g.doc) return;
 
@@ -208,7 +220,7 @@ void noteSlideShown() {
 //
 // Called before the slide itself is loaded: the picture can afford the couple of
 // milliseconds, the audio cannot.
-void playSlideAudio() {
+void playSlideAudio(double startAt) {
     if (!voice || app.deck.empty()) return;
     voicePlaying = false;
 
@@ -218,7 +230,7 @@ void playSlideAudio() {
     overlapNextVoice = false;
 
     const fs::path wav = voicePathFor(app.deck.at(g.currentIndex).entry);
-    if (!wav.empty()) voicePlaying = voice->play(wav.string(), overlap);
+    if (!wav.empty()) voicePlaying = voice->play(wav.string(), overlap, startAt);
     else if (!overlap) voice->stop();
 
     if (g.currentIndex + 1 < app.deck.size()) {
@@ -234,6 +246,8 @@ void playSlideAudio() {
 // they stay in step. An explicit press is a decision, so the auto-start stops second-guessing
 // it from then on.
 void toggleTalkClock() {
+    // The presenter's button reaches this by mouse, which the keyboard guard does not cover.
+    if (captionsEditing()) return;
     app.clock.toggle();
     app.autoStartClock = false;
     // The microphone follows the talk: a pause is a break, and a break belongs in neither
@@ -329,11 +343,42 @@ void openPresenter() {
     }
 }
 
+bool captionsEditing() {
+    return captionWindow && captionWindow->isEditing();
+}
+
 void openCaptions() {
     if (captionWindow) return;
     captionWindow = refract::CaptionWindow::Create(900, 420);
     if (!captionWindow) return;
-    glfwSetKeyCallback(captionWindow->window(), playerKeyCallback);
+
+    // The caption window gets first refusal on the keyboard: while a word is being retyped,
+    // every key belongs to it, and only what it does not want reaches the player's bindings.
+    glfwSetKeyCallback(captionWindow->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (captionWindow && captionWindow->handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
+    glfwSetCharCallback(captionWindow->window(), [](GLFWwindow*, unsigned int codepoint) {
+        if (captionWindow) captionWindow->handleChar(codepoint);
+    });
+
+    captionWindow->setOnEditingChanged([](bool editing) {
+        if (!voice) return;
+        if (editing) {
+            // Nothing should be playing while the words are being changed.
+            voice->stop();
+            voicePlaying = false;
+        } else {
+            // Pick up shortly before the first correction rather than at the top of the
+            // slide. The point of replaying is to hear the change against the audio it was
+            // made for, and a long narration should not have to be sat through to reach it.
+            // With nothing changed there is nothing to hear, so it starts from the top.
+            constexpr double kLeadInSec = 1.5;
+            const double edited = captions.earliestEdit();
+            playSlideAudio(edited < 0.0 ? 0.0 : std::max(0.0, edited - kLeadInSec));
+        }
+    });
 }
 
 void toggleCaptions() {
@@ -357,6 +402,24 @@ void commitJump() {
 
 void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+
+    // While a transcript is being corrected, the player's bindings are off — in every window,
+    // not just the caption one. GLFW delivers keys to whichever window has focus, so a
+    // keystroke aimed at a word lands on the slide window's bindings if that is what was
+    // clicked last, and "b" blanks the projector instead of going into the word. The caption
+    // window handles its own keys before this is reached, so nothing here is needed while it
+    // has focus either.
+    if (captionsEditing()) {
+        static double lastSaid = 0.0;
+        const double now = glfwGetTime();
+        if (now - lastSaid > 2.0) {
+            lastSaid = now;
+            std::cerr << "captions: editing — the player's keys are off until you finish "
+                         "(Done, or Esc in the caption window)\n";
+        }
+        return;
+    }
+
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
     g.needsRedraw = true;
 
@@ -848,7 +911,11 @@ int main(int argc, char* argv[]) {
             g.animTime += dt;
             g.needsRedraw = true;
 
-            if (g.autoAdvanceSec > 0) {
+            // Auto-advance is held rather than blocked: it fires on a timer, and letting it
+            // run into the guard every frame would say so hundreds of times.
+            const bool holdForEdit = captionsEditing();
+
+            if (g.autoAdvanceSec > 0 && !holdForEdit) {
                 g.timeSinceSwitch += dt;
                 if (g.timeSinceSwitch >= g.autoAdvanceSec) {
                     // Reset here too: at the last slide step() has nowhere to go, and
@@ -857,7 +924,9 @@ int main(int argc, char* argv[]) {
                     step(1);
                 }
             }
-            if (g.autoAdvanceOnVoice && voicePlaying && voice) {
+            if (holdForEdit) {
+                // Nothing to do: the deck stays where it is until the edit is finished.
+            } else if (g.autoAdvanceOnVoice && voicePlaying && voice) {
                 // Hand over a moment *before* the narration ends rather than after it has.
                 // Waiting for the file to stop means noticing a frame late, and a frame of
                 // silence at every slide boundary is the seam this is trying to remove. The
@@ -980,6 +1049,10 @@ int main(int argc, char* argv[]) {
             refract::pumpThumbs(0.004);
         }
     }
+
+    // An edit in progress is finished rather than dropped: it is saved on leaving edit mode,
+    // and quitting mid-word should not be the one way to lose it.
+    if (captionWindow && captionWindow->isEditing()) captionWindow->finishEditing();
 
     if (app.timing.recording()) app.timing.finish(app.clock.elapsed);
     if (recorder) recorder->stop();

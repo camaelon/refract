@@ -12,7 +12,7 @@ AudioPlayer::~AudioPlayer() = default;
 std::unique_ptr<AudioPlayer> AudioPlayer::Create() { return nullptr; }
 
 void AudioPlayer::preload(const std::string&) {}
-bool AudioPlayer::play(const std::string&, bool) { return false; }
+bool AudioPlayer::play(const std::string&, bool, double) { return false; }
 double AudioPlayer::currentTime() const { return 0.0; }
 double AudioPlayer::remaining() const { return 0.0; }
 void AudioPlayer::stop() {}

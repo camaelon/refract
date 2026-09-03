@@ -55,7 +55,8 @@ void AudioPlayer::preload(const std::string& path) {
     mImpl->preparedPath = mImpl->prepared ? path : std::string();
 }
 
-bool AudioPlayer::play(const std::string& path, bool letPreviousFinish) {
+bool AudioPlayer::play(const std::string& path, bool letPreviousFinish,
+                       double startAt) {
     AVAudioPlayer* player = nil;
     if (mImpl->prepared && mImpl->preparedPath == path) {
         player = mImpl->prepared;
@@ -77,7 +78,7 @@ bool AudioPlayer::play(const std::string& path, bool letPreviousFinish) {
         else                   [mImpl->current stop];
     }
     mImpl->current = player;
-    mImpl->current.currentTime = 0;
+    mImpl->current.currentTime = std::max(0.0, std::min(startAt, mImpl->current.duration));
     return [mImpl->current play];
 }
 
