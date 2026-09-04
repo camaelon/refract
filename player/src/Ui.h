@@ -27,6 +27,10 @@ constexpr SkColor kWarn   = 0xFFFFC65C;
 constexpr SkColor kOver   = 0xFFFF6B6B;
 constexpr SkColor kAhead  = 0xFF6FCF97;   // ahead of the rehearsal — the one good green
 constexpr SkColor kScrim  = 0xD8090A0D;  // navigator backdrop over the live slide
+// Slides spliced in by an `:: include`. Deliberately none of the four above: the accent
+// already means "section heading" in the deck view, and the other three mean pace.
+constexpr SkColor kInclude = 0xFF9A82E0;
+constexpr SkColor kIncludeBg = 0xFF1B1826;   // the tint their cards sit on
 }  // namespace ui
 
 SkFont uiFont(float size, bool bold = false);

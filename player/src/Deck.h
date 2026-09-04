@@ -7,6 +7,8 @@
 // "A graph", and every slide is its own jump target. Nothing here is required for playback.
 #pragma once
 
+#include "DeckOrder.h"
+
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -33,6 +35,26 @@ struct Slide {
     bool hasNotes = false;
     std::string notes;         // loaded on demand by notesFor()
     bool notesLoaded = false;
+
+    // Where the slide was written. `srcFile` is a markdown path relative to the deck
+    // directory and `srcIndex` the `---`-separated block within it. One block can produce
+    // several slides (bullet fragments, scroll pages, staggered embeds), so these are what
+    // the deck view groups and reorders by. srcIndex is -1 when the manifest predates them
+    // or the deck was not built by refract, and the deck view is then read-only.
+    std::string srcFile;
+    int srcIndex = -1;
+    // The chain of `:: include` lines that pulled this slide in, outermost first — empty for
+    // a slide of the deck's own markdown. `srcFile`/`srcIndex` say where the slide is written
+    // and move it inside its own deck; the front of this chain is the block that moves the
+    // whole sub-deck inside the deck being looked at.
+    std::vector<SourceRef> srcVia;
+
+    // Full provenance, root-first, ending with the slide's own block.
+    std::vector<SourceRef> sourcePath() const {
+        std::vector<SourceRef> path = srcVia;
+        if (srcIndex >= 0) path.push_back({srcFile, srcIndex});
+        return path;
+    }
 };
 
 struct Section {
@@ -56,6 +78,10 @@ public:
 
     const Slide& at(int i) const { return mSlides[clamp(i)]; }
     int clamp(int i) const;
+
+    // True when every slide records where it came from, i.e. the deck can be reordered by
+    // rewriting its markdown.
+    bool reorderable() const;
 
     // Position of the slide with this basename, or -1. Traces key by name for the same
     // reason the manifest does: it survives a deck being renumbered around it.

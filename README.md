@@ -27,8 +27,9 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 `prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
 
 `refractplayer` is the deck player — a presenter window with the clock, the notes and the
-next slide, a navigator to jump to a section, a talk timer, rehearsal recording — and it
-exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
+next slide, a navigator to jump to a section, a talk timer, rehearsal recording, and a deck
+view (`V`) where slides can be dragged into a new order, which rewrites `slides.md` and
+rebuilds — and it exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
 [player/README.md](player/README.md). `rcviewer` is the plain RemoteCompose viewer; it
 shares the same playback and export code, and adds `--screenshot` / `--frames` for
 single-file headless capture.
@@ -43,6 +44,7 @@ single-file headless capture.
   includes/          # images, sub-decks, .rc / .json resources
   out/               # generated .rc files          (created)
   out/deck.json      # deck outline for the player   (created)
+  out/.refract-cache.json  # what the last build produced (incremental builds)
   out/notes.md       # speaker notes                 (when the deck has any)
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
@@ -544,9 +546,33 @@ python3 refract.py <deck> [options]
   --pdf [PATH]           export the deck to a PDF (default <deck>/out/deck.pdf)
   --images [DIR]         export each slide to a PNG (default <deck>/out/images/)
   --json                 keep the intermediate JSON in out/json/ (default: discard)
+  --force                rebuild every slide, ignoring the incremental build cache
   --json-only            emit JSON only; do not run json2rc
   --json2rc PATH         explicit json2rc launcher (default: auto-detect prebuilt)
 ```
+
+### Incremental builds
+
+Builds are incremental: a slide whose output is already up to date is left alone, and only
+what changed goes through `json2rc`. Rebuilding an untouched deck does no compilation at all.
+
+What is fingerprinted is the **generated JSON document**, not the markdown. That document is
+the entire input to `json2rc`, so an unchanged one means an unchanged `.rc` — and nothing has
+to reason about which markdown edit reaches which slide. Several things fall out of that:
+
+- Editing one slide rebuilds that slide. With `--transitions` it also rebuilds the *next*
+  one, whose document embeds it.
+- Editing an image rebuilds the slides that embed it — by content, so a `touch` or a fresh
+  checkout does not.
+- **Reordering rebuilds everything from the move onwards.** The page number and progress bar
+  are drawn into each document, so a slide that only changed position is not the same slide.
+  That is the case a cache keyed on the source text would get wrong.
+- A different `json2rc` throws the whole cache away.
+
+The record lives in `<deck>/out/.refract-cache.json`, and it is only ever an optimisation:
+delete it, or pass `--force`, and the build is exactly what it always was. Files a build no
+longer claims — a renamed or deleted slide's `.rc` — are swept at the end, so nothing stale
+is left for the player to pick up.
 
 Speaker notes (everything after a `???` line) are written to `<deck>/out/notes.md` and to a
 per-slide `<deck>/out/<slide>.rc.notes` sidecar. `refractplayer` shows them in the presenter
@@ -592,7 +618,8 @@ transcript lands in `voice/NN.txt`, so a misheard word can be corrected there an
   adds an `image` component that embeds a file inline)
 - `prebuilt/refractplayer` — the deck player: presenter window (clock, notes, next slide),
   navigator, talk timer, blanking, fullscreen, rehearsal recording (`--record` /
-  `--record-audio`, replayed with `--auto-voice`), and export to PDF (`--pdf talk.pdf`) or
+  `--record-audio`, replayed with `--auto-voice`), a deck view that reorders the deck by
+  rewriting its markdown (`V`, or `--deck-view`), and export to PDF (`--pdf talk.pdf`) or
   PNGs (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
   on top of the `rcplayer` library in the RemoteCompose `players/cpp` tree — playback,
   export and the custom-component hosts are shared with `rcviewer`, not forked.

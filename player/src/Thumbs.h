@@ -29,6 +29,12 @@ sk_sp<SkImage> thumbIfReady(const std::string& entry, int width, int height);
 // Start building a still without needing it yet.
 void requestThumb(const std::string& entry, int width, int height);
 
+// The finished still if it is already built, without queueing anything. A view showing many
+// slides at once wants this: thumbIfReady() promotes what it is asked for to the front of the
+// queue, and a grid asking for a screenful every frame would reshuffle the queue faster than
+// any job could finish.
+sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height);
+
 // Advance outstanding jobs by up to `budgetSeconds` of work. Call once per frame. A single
 // document paint cannot be interrupted, so one paint can overrun the budget — the budget
 // bounds how many paints happen per frame, not the length of the longest one.

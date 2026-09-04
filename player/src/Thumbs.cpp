@@ -252,6 +252,11 @@ sk_sp<SkImage> thumbIfReady(const std::string& entry, int width, int height) {
     return nullptr;
 }
 
+sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height) {
+    auto it = cache().find(Key{entry, width, height});
+    return it != cache().end() ? it->second : nullptr;
+}
+
 void requestThumb(const std::string& entry, int width, int height) {
     enqueue(Key{entry, width, height}, /*urgent=*/false);
 }

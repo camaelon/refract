@@ -280,9 +280,16 @@ def _parse_section(lines: list[str]) -> dict | None:
 
 
 def parse_markdown(text: str) -> list[dict]:
+    """Parse a slides.md into slide dicts.
+
+    Each slide records ``src_index``: its position among the ``---``-separated chunks of the
+    source text. Empty chunks are dropped and one chunk can later expand into several rendered
+    slides (fragments, scroll pages, stagger steps), so this is the only reliable way back from
+    a rendered slide to the markdown block that produced it."""
     slides = []
-    for chunk in SLIDE_SEP.split(text):
+    for i, chunk in enumerate(SLIDE_SEP.split(text)):
         slide = parse_slide(chunk)
         if slide:
+            slide["src_index"] = i
             slides.append(slide)
     return slides

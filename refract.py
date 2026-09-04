@@ -18,6 +18,7 @@ The implementation lives in the ``refractkit`` package; this file is just the CL
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,8 @@ import sys
 import time
 from dataclasses import replace
 
+from refractkit.buildcache import (BuildCache, copy_fingerprint, doc_fingerprint, file_digest,
+                                   prune, tool_stamp)
 from refractkit.deck import load_deck, resolve_blocks
 from refractkit.measure import content_height
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
@@ -78,6 +81,11 @@ def apply_agenda(slides: list) -> list:
                 "title": slide.get("title") or ("Outline" if stype == "outline" else "Agenda"),
                 "notes": None,
                 "base_dir": slide.get("base_dir", "."),
+                # The outline is synthesized, but it still *comes from* the `:: outline`
+                # markdown block — keep the provenance so it maps back for reordering.
+                "src_file": slide.get("src_file"),
+                "src_index": slide.get("src_index"),
+                "src_via": slide.get("src_via"),
             }
             if stype == "outline":
                 base["blocks"] = [{"kind": "outline",
@@ -478,6 +486,8 @@ def main() -> int:
                     help="export each slide to a PNG (default <deck>/out/images/)")
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
+    ap.add_argument("--force", action="store_true",
+                    help="rebuild every slide, ignoring the incremental build cache")
     ap.add_argument("--json-only", action="store_true", help="emit JSON only; do not run json2rc")
     ap.add_argument("--json2rc", default=None, help="path to the json2rc launcher (default: auto-detect)")
     args = ap.parse_args()
@@ -527,16 +537,20 @@ def run_once(args) -> int:
     os.makedirs(media_dir, exist_ok=True)
     repo_root = os.path.dirname(os.path.abspath(__file__))
 
-    # Fresh output: remove previously generated files so renamed or deleted slides
-    # don't leave stale .rc/.json/asset behind (the player would keep showing them).
-    # Videos live in out/ (lone-video slides) and out/media/ (embedded); clear both so a
-    # renamed clip doesn't linger as an orphan slide/page.
+    # Generated files, by directory: what the build owns and may delete. Videos live in
+    # out/ (lone-video slides) and out/media/ (embedded); both are swept so a renamed clip
+    # doesn't linger as an orphan slide/page.
     vid_exts = (".mp4", ".mov", ".m4v", ".webm")
-    for d, exts in ((out_dir, (".rc", ".notes") + vid_exts), (json_dir, (".json",)),
-                    (media_dir, (".rc",) + vid_exts)):
-        for fname in os.listdir(d):
-            if fname.endswith(exts):
-                os.remove(os.path.join(d, fname))
+    managed = [(out_dir, (".rc", ".notes") + vid_exts), (json_dir, (".json",)),
+               (media_dir, (".rc",) + vid_exts)]
+    # Incremental build. Nothing is deleted up front any more: each output is regenerated
+    # only when its input changed, and the sweep for renamed or deleted slides happens at
+    # the end, against the list of what this build actually produced.
+    json2rc = args.json2rc or find_json2rc(repo_root)
+    cache = BuildCache(out_dir, tool_stamp(json2rc))
+    if not args.force:
+        cache.load()
+    produced = set()     # absolute paths this build claims; anything else is swept
 
     slide_cfg = settings.get("slide", {})
     trans_cfg = settings.get("transition", {})
@@ -554,13 +568,16 @@ def run_once(args) -> int:
     theme.chrome_sections = compute_sections(slides, theme, speakers)
     theme.chrome_speaker_spans = compute_speaker_spans(slides, theme, speakers)
 
-    pairs = []       # (json_path, rc_path) to convert
+    pairs = []       # (json_path, rc_path) every slide's intermediate, converted or not
+    convert = []     # the subset of `pairs` whose .rc is out of date and must be rebuilt
     copies = []      # (src, dst) whole-slide passthroughs (rc / video)
     notes = []       # (index, title, notes) speaker notes
     manifest = []    # per-slide records for out/deck.json (the player's deck outline)
     freeze_jobs = [] # slides whose opening transition shows a frozen snapshot (rebuilt later)
     prev = None      # (slide, blocks) of the previous non-passthrough slide
     prev_theme = None  # its per-slide theme, so a transition renders it with its own overrides
+    pending = {}     # rc path -> fingerprint, committed to the cache once it has been built
+    reused = 0
     for i, slide in enumerate(slides):
         blocks = resolve_blocks(slide)
         name = slug(slide, i)
@@ -579,6 +596,21 @@ def run_once(args) -> int:
         }
         if slide.get("section_number"):
             record["section"] = slide["section_number"]
+        # Provenance: which markdown file this slide was parsed from, and which
+        # `---`-separated chunk of it. Several rendered slides can share one chunk
+        # (fragments, scroll pages, stagger steps); the deck view reorders whole chunks.
+        if slide.get("src_file"):
+            record["src"] = os.path.relpath(slide["src_file"], os.path.abspath(deck_dir))
+        if slide.get("src_index") is not None:
+            record["src_index"] = slide["src_index"]
+        # For a slide an `:: include` spliced in, the chain of include lines that pulled it
+        # here, outermost first. `src`/`src_index` above move the slide within the deck it is
+        # written in; these move the sub-deck itself, within the deck that includes it.
+        if slide.get("src_via"):
+            record["src_via"] = [
+                {"src": os.path.relpath(via["src"], os.path.abspath(deck_dir)),
+                 "src_index": via["src_index"]}
+                for via in slide["src_via"]]
         smeta = slide.get("meta") or {}
         if smeta.get("author"):
             record["author"] = smeta["author"]
@@ -594,7 +626,6 @@ def run_once(args) -> int:
             dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
             copies.append((v["path"], dst))
             record["file"] = os.path.basename(dst)
-            print(f"copy {dst}  [video]")
             prev = None; prev_theme = None
             continue
         # Embedded videos: copy each into out/media/ (NOT the top-level out/, where a bare
@@ -610,7 +641,6 @@ def run_once(args) -> int:
         if (not slide.get("title") and len(blocks) == 1
                 and blocks[0]["kind"] == "rc_include" and not blocks[0].get("json")):
             copies.append((blocks[0]["path"], rc_path))
-            print(f"copy {rc_path}  [rc passthrough]")
             prev = None; prev_theme = None
             continue
 
@@ -638,6 +668,15 @@ def run_once(args) -> int:
                 interm = os.path.join(json_dir, f"embed_{stem}.json")
                 copies.append((b["path"], interm))                 # source → intermediate copy
                 pairs.append((interm, media_rc))                   # compile the copy → .rc
+                produced.add(os.path.abspath(media_rc))
+                # Framed embeds are compiled from a file, not from a document refract built,
+                # so the source's own contents are the fingerprint.
+                embed_fp = "embed:" + file_digest(b["path"])
+                if cache.fresh(media_rc, embed_fp):
+                    cache.keep(media_rc, embed_fp)
+                else:
+                    convert.append((interm, media_rc))
+                    pending[media_rc] = embed_fp
                 b.update(kind="rc_include", json=None, src=f"media/{stem}.rc")
 
         # Per-slide theme: speaker accent + author attribution + inline overrides.
@@ -740,26 +779,62 @@ def run_once(args) -> int:
         # A `freeze` slide records its context so a second pass (after media is copied) can
         # render a frozen snapshot and rebuild its transition around it. The normal doc is still
         # written now, so the slide is valid even if the snapshot pass is skipped.
-        if transitions and prev is not None and tag in ("push", "push-up") and wants_freeze(meta):
-            freeze_jobs.append({"i": i, "slide": slide, "blocks": blocks, "theme": stheme,
-                                "prev": prev, "prev_theme": prev_theme, "push_dur": push_dur,
-                                "axis": "y" if tag == "push-up" else "x",
-                                "scroll": scroll_static, "name": name, "rc_path": rc_path,
-                                "total": total})
+        freezing = (transitions and prev is not None and tag in ("push", "push-up")
+                    and wants_freeze(meta))
+
         json_path = os.path.join(json_dir, name + ".json")
         with open(json_path, "w") as f:
             json.dump(doc, f, indent=2)
         pairs.append((json_path, rc_path))
+        produced.add(os.path.abspath(json_path))
+        produced.add(os.path.abspath(rc_path))
+
+        # The document is the entire input to json2rc, so an unchanged one means an unchanged
+        # .rc — and the document carries the page number and the progress bar, which is why a
+        # slide that merely *moved* is still rebuilt. A freeze slide is a two-pass build whose
+        # second pass overwrites this .rc, so it is fingerprinted as one thing: the document
+        # plus the push it is frozen over.
+        fingerprint = doc_fingerprint(doc)
+        png = os.path.join(out_dir, "media", name + "_frozen.png")
+        if freezing:
+            fingerprint = "freeze:" + hashlib.sha256(
+                f"{fingerprint}|{push_dur}|{tag}".encode()).hexdigest()
+        if cache.fresh(rc_path, fingerprint) and (not freezing or os.path.isfile(png)):
+            cache.keep(rc_path, fingerprint)
+            reused += 1
+        else:
+            convert.append((json_path, rc_path))
+            if freezing:
+                # Deliberately not in `pending`: this .rc is not finished until the snapshot
+                # pass has overwritten it, so it is the freeze pass that vouches for it.
+                freeze_jobs.append({"i": i, "slide": slide, "blocks": blocks, "theme": stheme,
+                                    "prev": prev, "prev_theme": prev_theme, "push_dur": push_dur,
+                                    "axis": "y" if tag == "push-up" else "x",
+                                    "scroll": scroll_static, "name": name, "rc_path": rc_path,
+                                    "total": total, "fingerprint": fingerprint})
+            else:
+                pending[rc_path] = fingerprint
+            print(f"wrote {json_path}  [{tag}]")
+
         # Sidecar notes file next to the .rc — the PDF exporter draws it below the slide.
         if slide.get("notes"):
             with open(rc_path + ".notes", "w") as nf:
                 nf.write(slide["notes"])
-        print(f"wrote {json_path}  [{tag}]")
+            produced.add(os.path.abspath(rc_path + ".notes"))
         prev = (slide, blocks)
         prev_theme = stheme
 
+    # Copies are videos and prebuilt .rc binaries — nothing the build reads, so an unchanged
+    # source is simply left where it was copied to last time.
     for src, dst in copies:
+        produced.add(os.path.abspath(dst))
+        fingerprint = "copy:" + copy_fingerprint(src)
+        if cache.fresh(dst, fingerprint):
+            cache.keep(dst, fingerprint)
+            continue
         shutil.copyfile(src, dst)
+        cache.keep(dst, fingerprint)
+        print(f"copy {dst}")
 
     # Deck outline → out/deck.json. The C++ player uses it for slide titles, section
     # jumps and the presenter view; without it a player can still play the directory,
@@ -767,8 +842,15 @@ def run_once(args) -> int:
     deck_json = {
         "version": 1,
         "deck": os.path.basename(os.path.abspath(deck_dir)),
+        # Where the markdown lives, relative to out/ — so a tool handed only the out
+        # directory can find the sources a slide's `src` is relative to.
+        "deck_dir": os.path.relpath(deck_dir, out_dir),
         "width": width,
         "height": height,
+        # How this deck was built. A tool that rebuilds it — the deck view's reorder, say —
+        # has to repeat the build, and a flag given on the command line is not written down
+        # anywhere else: rebuilding without it would quietly drop the deck's transitions.
+        "build": {"transitions": transitions, "debug": bool(args.debug)},
         "slides": manifest,
     }
     with open(os.path.join(out_dir, "deck.json"), "w") as f:
@@ -786,6 +868,11 @@ def run_once(args) -> int:
 
     keep_json = args.json or args.json_only
     if args.json_only:
+        # Still sweep and still record what was reused: stopping at JSON is a way of looking
+        # at the intermediate, not a reason to leave the directory in a different state.
+        for stale in prune(managed, produced):
+            cache.forget(stale)
+        cache.save()
         return 0
 
     json2rc = args.json2rc or find_json2rc(repo_root)
@@ -795,11 +882,20 @@ def run_once(args) -> int:
         return 2
 
     rc = 0
-    if pairs:
+    if convert:
         cmd = [json2rc]
-        for json_path, rc_path in pairs:
+        for json_path, rc_path in convert:
             cmd += [json_path, rc_path]
         rc = subprocess.run(cmd).returncode
+        if rc == 0:
+            # Only a clean run is remembered. A fingerprint recorded for a .rc that was not
+            # actually produced would be skipped forever after; forgetting costs one rebuild.
+            for path, fingerprint in pending.items():
+                if os.path.exists(path):
+                    cache.keep(path, fingerprint)
+    if reused:
+        print(f"reused {reused} slide{'s' if reused != 1 else ''} "
+              f"(unchanged since the last build)")
 
     # Frozen-transition pass: now that every media embed is copied, render each `freeze` slide's
     # live content to a PNG, then rebuild its .rc with the embeds gated off during the push and
@@ -832,6 +928,7 @@ def run_once(args) -> int:
                 with open(fj, "w") as f:
                     json.dump(final, f)
                 if subprocess.run([json2rc, fj, job["rc_path"]]).returncode == 0:
+                    cache.keep(job["rc_path"], job["fingerprint"])
                     print(f"froze {nm}  [snapshot transition]")
             else:
                 print(f"  freeze: snapshot failed for {nm}", file=sys.stderr)
@@ -852,6 +949,14 @@ def run_once(args) -> int:
             os.rmdir(json_dir)
         except OSError:
             pass
+
+    # The sweep that used to happen up front: a renamed or deleted slide leaves its old .rc
+    # behind, and the player would go on showing it. Done last, against what this build
+    # actually produced, so everything reused survives it.
+    for stale in prune(managed, produced):
+        cache.forget(stale)
+        print(f"removed {stale}  [no longer in the deck]")
+    cache.save()
 
     # Optional export to PDF / images via the viewer.
     if args.pdf is not None or args.images is not None:

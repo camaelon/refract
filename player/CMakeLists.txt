@@ -71,6 +71,8 @@ set(REFRACTPLAYER_SOURCES
     src/CaptionWindow.cpp
     src/Captions.cpp
     src/Deck.cpp
+    src/DeckOrder.cpp
+    src/DeckView.cpp
     src/Navigator.cpp
     src/Presenter.cpp
     src/Thumbs.cpp
@@ -94,3 +96,11 @@ endif()
 
 target_link_libraries(refractplayer PRIVATE rcplayer nlohmann_json::nlohmann_json)
 target_include_directories(refractplayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ── Tests ─────────────────────────────────────────────────────────────
+# The reorder arithmetic only. It has no window, no GPU and no engine behind it, so it
+# builds and runs in a second — which is the point of having pulled it out of the view.
+enable_testing()
+add_executable(deck_order_test tests/deck_order_test.cpp src/DeckOrder.cpp)
+target_include_directories(deck_order_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME deck_order COMMAND deck_order_test)

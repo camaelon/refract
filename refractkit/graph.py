@@ -503,8 +503,13 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
     # Edge lines (under nodes); arrowheads collected for last. Disappearing edges fade out
     # and matched edges morph over the whole move; *new* edges (arrows) instead cascade in
     # one after another only once the boxes have finished animating.
+    # Every one of these walks a *set*, whose iteration order is not stable between runs
+    # (Python randomises string hashing per process). Sorting is not cosmetic: the order these
+    # are emitted in is the order they are drawn in, so without it two builds of the same deck
+    # produce different documents — different z-order where elements overlap, and a slide that
+    # can never be reused by an incremental build.
     ea, eb = ga["edges"], gb["edges"]
-    for key in ea.keys() - eb.keys():
+    for key in sorted(ea.keys() - eb.keys()):
         cmds += _static_edge(ea[key], theme, f"1.0 - {t}", pid, "spline")
         arrows += _static_edge(ea[key], theme, f"1.0 - {t}", pid, "arrow")
     for i, key in enumerate(sorted(eb.keys() - ea.keys())):
@@ -513,20 +518,20 @@ def render_graph_morph(prev_block, cur_block, theme, debug, avail_w, avail_h,
         reveal = f"min(1.0, max(0.0, (animTime - {start}) / {_ARROW_REVEAL_DUR}))"
         cmds += _static_edge(eb[key], theme, reveal, pid, "spline")
         arrows += _static_edge(eb[key], theme, reveal, pid, "arrow")
-    for key in ea.keys() & eb.keys():
+    for key in sorted(ea.keys() & eb.keys()):
         cmds += _morph_edge(ea[key], eb[key], theme, t, pid, "spline")
         arrows += _morph_edge(ea[key], eb[key], theme, t, pid, "arrow")
 
     # Nodes.
     na, nb = ga["nodes"], gb["nodes"]
     glow: list[dict] = []
-    for name in na.keys() - nb.keys():
+    for name in sorted(na.keys() - nb.keys()):
         cmds += _static_node(na[name], theme, f"1.0 - {t}")
         glow += _node_glow_cmds(na[name], theme, f"1.0 - {t}")
-    for name in nb.keys() - na.keys():
+    for name in sorted(nb.keys() - na.keys()):
         cmds += _static_node(nb[name], theme, t)
         glow += _node_glow_cmds(nb[name], theme, t)
-    for name in na.keys() & nb.keys():
+    for name in sorted(na.keys() & nb.keys()):
         a2, b2 = na[name], nb[name]
         rad = _lerp(min(a2["nw"], a2["nh"]) * 0.28, min(b2["nw"], b2["nh"]) * 0.28, t)
         ll, tt = _lerp(a2["l"], b2["l"], t), _lerp(a2["t"], b2["t"], t)

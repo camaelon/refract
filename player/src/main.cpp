@@ -16,6 +16,7 @@
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
 #include "Captions.h"
+#include "DeckView.h"
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
@@ -37,6 +38,8 @@
 #include "rcplayer/ZipArchive.h"
 
 #include "rccore/CoreDocument.h"
+
+#include <nlohmann/json.hpp>
 
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
@@ -76,7 +79,16 @@ bool overlapNextVoice = false;
 
 std::unique_ptr<refract::CaptionWindow> captionWindow;
 refract::Captions captions;      // timings for the slide on screen
+std::unique_ptr<refract::DeckViewWindow> deckView;
 std::string tracePath;   // where --record will write, once the talk starts
+// The deck as the user named it. Kept because reordering rebuilds and reloads it, and the
+// reload has to look in the same place the first load did.
+std::string deckInput;
+// Set when the deck has been reordered on disk. The reload happens at the top of the frame
+// rather than in the mouse callback that asked for it: rebuilding the playlist reloads the
+// document, and doing that from inside glfwPollEvents — with another window's GL context
+// current — is asking for trouble.
+bool deckReloadPending = false;
 
 // Where the window sat before it went fullscreen, so F can put it back.
 struct WindowedGeometry { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
@@ -84,6 +96,7 @@ WindowedGeometry savedGeometry;
 
 int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherever it lands
 bool wantPresenter = false;
+bool wantDeckView = false;
 
 void noteSlideShown();
 void startRunIfArmed();
@@ -91,6 +104,8 @@ bool captionsEditing();
 void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
+void toggleDeckView();
+void goToSlide(int index);
 double voicelessDwell();
 
 // ── Caption processing ───────────────────────────────────────────────
@@ -132,8 +147,10 @@ fs::path findTool(const std::string& name) {
 }
 
 // Run one of the Python tools, waiting for it. Its output is the user's, not ours: it goes
-// straight to the terminal.
-int runTool(const std::string& name, const std::vector<std::string>& args) {
+// straight to the terminal — unless `out` is given, in which case stdout is captured for the
+// caller and only what the tool wrote to stderr reaches the terminal.
+int runTool(const std::string& name, const std::vector<std::string>& args,
+            std::string* out = nullptr) {
     const fs::path script = findTool(name);
     if (script.empty()) {
         std::cerr << "refractplayer: cannot find tools/" << name << "\n";
@@ -149,12 +166,32 @@ int runTool(const std::string& name, const std::vector<std::string>& args) {
     for (auto& arg : owned) argv.push_back(arg.data());
     argv.push_back(nullptr);
 
+    int pipeFds[2] = {-1, -1};
+    if (out && ::pipe(pipeFds) != 0) return 1;
+
     pid_t pid = ::fork();
-    if (pid < 0) return 1;
+    if (pid < 0) {
+        if (out) { ::close(pipeFds[0]); ::close(pipeFds[1]); }
+        return 1;
+    }
     if (pid == 0) {
+        if (out) {
+            ::close(pipeFds[0]);
+            ::dup2(pipeFds[1], STDOUT_FILENO);
+            ::close(pipeFds[1]);
+        }
         ::execvp("python3", argv.data());
         std::cerr << "refractplayer: python3 not found\n";
         ::_exit(127);
+    }
+    if (out) {
+        // Drained before waiting: a tool that fills the pipe would block forever otherwise.
+        ::close(pipeFds[1]);
+        out->clear();
+        char buf[4096];
+        ssize_t n = 0;
+        while ((n = ::read(pipeFds[0], buf, sizeof(buf))) > 0) out->append(buf, n);
+        ::close(pipeFds[0]);
     }
     int status = 0;
     ::waitpid(pid, &status, 0);
@@ -396,6 +433,132 @@ void toggleCaptions() {
     else openCaptions();
 }
 
+// ── Deck view ────────────────────────────────────────────────────────
+
+// Re-read the deck from disk. refract renumbers every slide downstream of a change, so a
+// rebuild renames files: there is nothing to patch up, the playlist is simply collected
+// again. The slide on screen is kept by *position*, which after a reorder is what the deck
+// view just moved it to.
+bool reloadDeck() {
+    if (g.zip || deckInput.empty()) return false;
+    std::vector<std::string> files = collectRcFiles(deckInput);
+    if (files.empty()) {
+        std::cerr << "refractplayer: reload found no slides in " << deckInput << "\n";
+        return false;
+    }
+    g.files = std::move(files);
+    app.deck.build(g.files, deckInput);
+    refract::clearThumbCache();
+    g.currentIndex = app.deck.clamp(g.currentIndex);
+    loadCurrentFile();
+    // The rehearsal trace and the recorded narration are keyed to slide *numbers*, and the
+    // numbers have just changed. Reloading them would pair the wrong audio with the wrong
+    // slide silently, so they are left alone and the mismatch is said out loud instead.
+    if (!app.timing.empty() || !g.voiceDirOverride.empty()) {
+        std::cerr << "refractplayer: the deck order changed — the rehearsal timings and any "
+                     "recorded narration still follow the old order\n";
+    }
+    return true;
+}
+
+// Move a slide by rewriting the markdown behind it, then rebuild and reload. The markdown
+// belongs to refract, not to the player, so the edit is made by the tool that owns the
+// grammar; this only decides which slide goes where and puts the result back on screen.
+bool moveSlideInSource(int from, int to, std::string* status) {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        *status = "this deck cannot be reordered (no directory to write to)";
+        return false;
+    }
+    std::string output;
+    const int rc = runTool("reorder.py", {out.parent_path().string(),
+                                          "--move", std::to_string(from),
+                                          "--to", std::to_string(to),
+                                          "--json"}, &output);
+    // The tool reports in JSON so the difference between "nothing to do", "the markdown was
+    // rewritten but refract could not rebuild it" and "refused" survives the process
+    // boundary. A failed rebuild in particular has already changed the file on disk, and
+    // saying so is the difference between a puzzle and a one-line fix in the terminal.
+    auto result = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    const bool parsed = !result.is_discarded() && result.is_object();
+    if (rc != 0 || (parsed && !result.value("ok", false))) {
+        *status = parsed && result.contains("error")
+                      ? result["error"].get<std::string>()
+                      : "reorder failed — see the terminal";
+        if (parsed && result.value("changed", false) && !result.value("rebuilt", false)) {
+            *status = "the markdown was reordered but the rebuild failed: "
+                      + *status;
+        }
+        return false;
+    }
+    if (parsed && !result.value("changed", false)) {
+        *status = "already there";
+        return true;
+    }
+    deckReloadPending = true;
+    *status = "moved slide " + std::to_string(from + 1);
+    return true;
+}
+
+// The same rewrite, for a whole run: a section, or an included sub-deck. The view has worked
+// out which block range that is and where it goes; this only carries it to the tool.
+bool moveRunInSource(const std::string& file, int first, int last, int dst,
+                     std::string* status) {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        *status = "this deck cannot be reordered (no directory to write to)";
+        return false;
+    }
+    std::string output;
+    const int rc = runTool("reorder.py", {out.parent_path().string(),
+                                          "--file", file,
+                                          "--chunks", std::to_string(first),
+                                          std::to_string(last),
+                                          "--to-chunk", std::to_string(dst),
+                                          "--json"}, &output);
+    auto result = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    const bool parsed = !result.is_discarded() && result.is_object();
+    if (rc != 0 || (parsed && !result.value("ok", false))) {
+        *status = parsed && result.contains("error")
+                      ? result["error"].get<std::string>()
+                      : "reorder failed — see the terminal";
+        if (parsed && result.value("changed", false) && !result.value("rebuilt", false)) {
+            *status = "the markdown was reordered but the rebuild failed: " + *status;
+        }
+        return false;
+    }
+    if (parsed && !result.value("changed", false)) {
+        *status = "already there";
+        return true;
+    }
+    deckReloadPending = true;
+    const int blocks = last - first + 1;
+    *status = "moved " + std::to_string(blocks)
+              + (blocks == 1 ? " block" : " blocks");
+    return true;
+}
+
+void openDeckView() {
+    if (deckView) return;
+    deckView = refract::DeckViewWindow::Create(1180, 780);
+    if (!deckView) return;
+    deckView->setOnOpenSlide([](int index) { goToSlide(index); });
+    deckView->setOnMoveSlide(moveSlideInSource);
+    deckView->setOnMoveRun(moveRunInSource);
+    // The view takes the keys it uses to walk the grid; everything else still drives the
+    // talk, so the deck can be run from this window like any other.
+    glfwSetKeyCallback(deckView->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (deckView && deckView->handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
+}
+
+void toggleDeckView() {
+    if (deckView) deckView.reset();
+    else openDeckView();
+}
+
 void togglePresenter() {
     if (presenter) presenter.reset();
     else openPresenter();
@@ -524,6 +687,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_F: setFullscreen(window, glfwGetWindowMonitor(window) == nullptr); break;
         case GLFW_KEY_P: togglePresenter(); break;
         case GLFW_KEY_C: toggleCaptions(); break;
+        case GLFW_KEY_V: toggleDeckView(); break;
 
         // ── Playback ─────────────────────────────────────────────────
         case GLFW_KEY_A:
@@ -597,6 +761,9 @@ void usage() {
         "\n"
         "Options:\n"
         "  --presenter        open the presenter window (clock, notes, next slide)\n"
+        "  --deck-view        open the deck view: every slide at once, and where the\n"
+        "                     deck is reordered (drag a slide; the markdown is rewritten\n"
+        "                     and the deck rebuilt)\n"
         "  --fullscreen, -f   start the slide window fullscreen\n"
         "  --display <n>      monitor for the slide window (0-based); the presenter\n"
         "                     window opens on the next one\n"
@@ -686,6 +853,7 @@ int main(int argc, char* argv[]) {
             return argv[++i];
         };
         if (arg == "--presenter") wantPresenter = true;
+        else if (arg == "--deck-view") wantDeckView = true;
         else if (arg == "--fullscreen" || arg == "-f") startFullscreen = true;
         else if (arg == "--display") slideMonitor = std::atoi(next("--display").c_str());
         else if (arg == "--duration") app.clock.target = parseDuration(next("--duration"));
@@ -742,6 +910,7 @@ int main(int argc, char* argv[]) {
     }
 
     // ── Playlist ─────────────────────────────────────────────────────
+    deckInput = input;
     if (getExt(input) == ".zip") {
         g.zip = std::make_unique<ZipArchive>();
         if (!g.zip->open(input)) {
@@ -903,6 +1072,7 @@ int main(int argc, char* argv[]) {
     }
     if (wantPresenter) openPresenter();
     if (wantCaptions) openCaptions();
+    if (wantDeckView) openDeckView();
 
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
@@ -916,6 +1086,7 @@ int main(int argc, char* argv[]) {
     int lastCapturedSlide = -1;
     double lastPresenterDraw = -1.0;
     double lastCaptionDraw = -1.0;
+    double lastDeckViewDraw = -1.0;
     // Fast enough that a word lights on the syllable, cheap enough to be free.
     constexpr double kCaptionInterval = 1.0 / 30.0;
     sk_sp<SkImage> liveFrame;
@@ -932,6 +1103,14 @@ int main(int argc, char* argv[]) {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        if (deckReloadPending) {
+            deckReloadPending = false;
+            glfwMakeContextCurrent(window);
+            if (!reloadDeck()) std::cerr << "refractplayer: reload failed\n";
+            liveFrame.reset();
+            lastCapturedSlide = -1;
+        }
 
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - startTime).count();
@@ -1055,6 +1234,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (deckView) {
+            if (deckView->shouldClose()) {
+                deckView.reset();
+            } else if (elapsed - lastDeckViewDraw >= kPresenterInterval) {
+                deckView->render(app);
+                lastDeckViewDraw = elapsed;
+            }
+        }
+
         if (captionWindow) {
             if (captionWindow->shouldClose()) {
                 captionWindow.reset();
@@ -1076,7 +1264,7 @@ int main(int argc, char* argv[]) {
         // lands. Hold off until the slide that was just put up has finished animating in,
         // and it lands on a still frame nobody is watching instead of in the middle of the
         // transition. The navigator is the exception: it is waiting on a preview now.
-        if (app.navOpen || app.sinceSlideChange > kTransitionQuietSec) {
+        if (app.navOpen || deckView || app.sinceSlideChange > kTransitionQuietSec) {
             refract::pumpThumbs(0.004);
         }
     }
@@ -1091,6 +1279,7 @@ int main(int argc, char* argv[]) {
     if (voice) voice->stop();
     voice.reset();
     captionWindow.reset();
+    deckView.reset();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

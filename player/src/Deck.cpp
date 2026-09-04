@@ -118,6 +118,15 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
                 slide.author        = rec.value("author", std::string());
                 slide.sectionNumber = rec.value("section", 0);
                 slide.hasNotes      = rec.value("notes", false);
+                slide.srcFile       = rec.value("src", std::string());
+                slide.srcIndex      = rec.value("src_index", -1);
+                slide.srcVia.clear();
+                if (rec.contains("src_via") && rec["src_via"].is_array()) {
+                    for (const auto& via : rec["src_via"]) {
+                        slide.srcVia.push_back({via.value("src", std::string()),
+                                                via.value("src_index", -1)});
+                    }
+                }
             }
             mHasManifest = matched > 0;
             if (doc.contains("deck")) mName = doc["deck"].get<std::string>();
@@ -162,6 +171,14 @@ const std::string& Deck::notesFor(int i) {
     while (!slide.notes.empty() && std::isspace(static_cast<unsigned char>(slide.notes.back())))
         slide.notes.pop_back();
     return slide.notes;
+}
+
+bool Deck::reorderable() const {
+    if (mSlides.empty() || rcplayer::g.zip) return false;
+    for (const auto& slide : mSlides) {
+        if (slide.srcIndex < 0 || slide.srcFile.empty()) return false;
+    }
+    return true;
 }
 
 int Deck::indexOfFile(const std::string& file) const {

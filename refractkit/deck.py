@@ -33,6 +33,14 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
             sub_md = os.path.join(sub_dir, "slides.md")
             if name and os.path.isfile(sub_md) and os.path.abspath(sub_dir) not in visited:
                 sub_slides = load_deck(sub_dir, visited | {os.path.abspath(sub_dir)})
+                # Where the include *itself* is written. A sub-deck's slides live in their own
+                # slides.md, so reordering one of them rewrites that file — but moving the
+                # whole sub-deck means moving this one ``:: include`` line in *this* file, and
+                # nothing else records where it was. Prepended, so ``src_via`` reads outermost
+                # first and a nested include keeps its whole chain.
+                for sub in sub_slides:
+                    sub.setdefault("src_via", []).insert(
+                        0, {"src": md_path, "src_index": slide.get("src_index")})
                 # An ``@author`` on the include attributes every slide it pulls in,
                 # unless that slide names its own author.
                 inc_author = meta.get("author")
@@ -49,9 +57,12 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
                     "title": None,
                     "blocks": [{"kind": "text", "text": f"<section {name} will go there>"}],
                     "base_dir": deck_dir,
+                    "src_file": md_path,
+                    "src_index": slide.get("src_index"),
                 })
         else:
             slide["base_dir"] = deck_dir
+            slide["src_file"] = md_path
             result.append(slide)
     return result
 
