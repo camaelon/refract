@@ -35,42 +35,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from refractkit import reorder
+    from refractkit import manifest, reorder
 except ImportError:  # pragma: no cover - only when the script is copied out of the repo
     sys.stderr.write(f"reorder.py: cannot import refractkit from {_ROOT}\n")
     raise
-
-
-def load_deck(out_dir: str) -> dict:
-    path = os.path.join(out_dir, "deck.json")
-    if not os.path.isfile(path):
-        raise SystemExit(f"reorder.py: no deck.json in {out_dir}")
-    with open(path) as f:
-        return json.load(f)
-
-
-def deck_source_dir(out_dir: str, deck: dict) -> str:
-    """The directory the slides' `src` paths are relative to."""
-    return os.path.abspath(os.path.join(out_dir, deck.get("deck_dir", "..")))
-
-
-def build_args(deck: dict) -> list[str]:
-    """The flags the deck was originally built with, from deck.json's `build` record.
-
-    Rebuilding without them is not a smaller build, it is a different deck: `--transitions`
-    is a command-line flag with nothing in the deck to say it was given, so a rebuild that
-    forgot it would strip every transition out of the deck the first time a slide was moved.
-    """
-    build = deck.get("build") or {}
-    args = []
-    if build.get("transitions"):
-        args.append("--transitions")
-    if build.get("debug"):
-        args.append("--debug")
-    for key in ("width", "height"):
-        if isinstance(deck.get(key), int):
-            args += [f"--{key}", str(deck[key])]
-    return args
 
 
 def rebuild(deck_dir: str, deck: dict) -> int:
@@ -83,7 +51,7 @@ def rebuild(deck_dir: str, deck: dict) -> int:
         return 1
     # refract's build log goes to stderr, not stdout: with --json the caller parses stdout,
     # and the player does exactly that. The log is still shown, just on the other stream.
-    return subprocess.call([sys.executable, script, deck_dir, *build_args(deck)],
+    return subprocess.call([sys.executable, script, deck_dir, *manifest.build_args(deck)],
                            stdout=sys.stderr)
 
 
@@ -107,9 +75,12 @@ def main() -> int:
     args = ap.parse_args()
 
     out_dir = os.path.abspath(args.out_dir)
-    deck = load_deck(out_dir)
+    try:
+        deck = manifest.load(out_dir)
+    except manifest.NotADeck as e:
+        raise SystemExit(f"reorder.py: {e}")
     slides = deck.get("slides") or []
-    deck_dir = deck_source_dir(out_dir, deck)
+    deck_dir = manifest.source_dir(out_dir, deck)
 
     run = args.chunks is not None
     if run:

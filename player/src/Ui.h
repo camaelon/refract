@@ -34,6 +34,10 @@ constexpr SkColor kIncludeBg = 0xFF1B1826;   // the tint their cards sit on
 }  // namespace ui
 
 SkFont uiFont(float size, bool bold = false);
+// A monospaced face, for the one place the player shows source: the slide editor. Markdown is
+// column-sensitive — indentation is what makes a sub-bullet a sub-bullet — and a proportional
+// font hides that. Falls back to uiFont where no mono face is installed.
+SkFont uiMonoFont(float size, bool bold = false);
 float  textWidth(const SkFont& font, const std::string& text);
 
 // Draw `text` with its baseline at (x, y); returns the advance.
@@ -53,6 +57,8 @@ std::vector<std::string> wrapText(const std::string& text, const SkFont& font, f
 std::string ellipsize(const std::string& text, const SkFont& font, float maxWidth);
 
 void fillRect(SkCanvas* canvas, const SkRect& r, SkColor color);
+// The same colour at a different alpha — for a wash of it behind something.
+SkColor withAlpha(SkColor color, unsigned alpha);
 void fillRoundRect(SkCanvas* canvas, const SkRect& r, float radius, SkColor color);
 void strokeRoundRect(SkCanvas* canvas, const SkRect& r, float radius, SkColor color,
                      float width = 1.0f);

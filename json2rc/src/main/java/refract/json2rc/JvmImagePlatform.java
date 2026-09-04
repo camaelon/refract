@@ -116,6 +116,13 @@ final class JvmImagePlatform implements RcPlatformServices {
 
     @Override
     public float[] pathToFloatArray(Object path) {
+        // getPath() returns RemotePathBase's raw growable buffer (padded to 1024 floats), and the
+        // json PathParser is not a RemotePathBase at all -- it only implements RcPathArrayCreator,
+        // so named string paths used to serialize as an empty path. createFloatArray() returns the
+        // trimmed data for both.
+        if (path instanceof RcPlatformServices.RcPathArrayCreator) {
+            return ((RcPlatformServices.RcPathArrayCreator) path).createFloatArray();
+        }
         return (path instanceof RemotePathBase) ? ((RemotePathBase) path).getPath() : new float[0];
     }
 

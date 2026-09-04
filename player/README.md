@@ -46,6 +46,9 @@ is up.
 preview and the notes of whatever row you are on. Enter jumps. It draws on the presenter
 window whenever there is one — a navigator projected onto the wall defeats the point.
 
+**A slide editor** (`--editor`, or `E`). The markdown behind the slide on screen, edited in
+place and rebuilt on save. Details below.
+
 **A build panel** (`--build`, or `M`). refract's options and a Rebuild button, in a column
 that attaches alongside the deck view. Details below.
 
@@ -76,6 +79,7 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | `C` | caption window |
 | `V` | deck view |
 | `M` | build panel |
+| `E` | slide editor |
 | `Z` / `Shift`+`Z` | fold the run at the cursor / the whole deck (deck view) |
 | `E` | correct the transcript (in the caption window) |
 | `T` / `Shift`+`T` | start-pause the timer / reset it |
@@ -105,6 +109,7 @@ refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]
   --presenter        open the presenter window
   --deck-view        open the deck view (every slide at once; reorders the deck)
   --build            open the build panel (refract's options, and a Rebuild button)
+  --editor           open the slide editor (the markdown behind the current slide)
   --fullscreen, -f   start fullscreen
   --display <n>      monitor for the slides (0-based); the presenter window
                      opens on the next one
@@ -232,6 +237,49 @@ The rebuild repeats the build the deck already had, reading it back from `deck.j
 `build` record — `--transitions` is a command-line flag with nothing in the deck to say it
 was given, and a rebuild that forgot it would strip every transition out of the deck the
 first time a slide was moved.
+
+## The slide editor
+
+`E`, or `--editor`. A window showing the markdown the slide on screen was written in. Edit it,
+press `cmd`+`S`, and the deck is rebuilt and reloaded — the last of the loop the deck view and
+the build panel started: reorder without a terminal, rebuild without a terminal, and now edit
+without one.
+
+It follows the slide you are on, so navigating the deck navigates the editor. `#` headings,
+`::` meta, `???` notes, `===` / `+++` splits and fenced code are coloured — not syntax
+highlighting so much as making a slide's *shape* visible at a glance.
+
+| | |
+|---|---|
+| `cmd`+`S` | save and rebuild |
+| `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo |
+| `cmd`+`A`, `cmd`+`C`/`X`/`V` | select all, clipboard |
+| `shift`+arrows, shift-click | select |
+| `Tab` | indent two spaces |
+| `Esc` | close (refuses while there are unsaved changes) |
+
+**It edits a block, not a slide.** A stepped bullet list is one `---` block and four rendered
+slides, so editing any of them edits the source they share — the header says "one block, 4
+slides" when that is the case, rather than letting it be a surprise.
+
+**The deck holds still while you type.** Every route to a slide change — the keys, the
+navigator, a typed number, auto-advance — is refused while the editor has unsaved changes,
+because moving the deck would either lose the edit or land it on the wrong slide. `Esc`
+refuses too; save or revert first.
+
+**Opening a slide and saving it untouched changes nothing.** The blank lines around a block
+are the file's spacing rather than the slide's, so they are kept out of the editor and put
+back on save. A visit that changed nothing leaves no diff.
+
+Saving replays the deck's own build options, the same way the reorder does, so editing a slide
+in a transitioned deck does not quietly build it without transitions.
+
+The read and write themselves are `player/tools/slide.py`, which runs on its own:
+
+```
+python3 player/tools/slide.py <deck>/out --slide 12 --read
+python3 player/tools/slide.py <deck>/out --slide 12 --write new.md [--no-rebuild]
+```
 
 ## The build panel
 

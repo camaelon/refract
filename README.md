@@ -29,7 +29,8 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 `refractplayer` is the deck player — a presenter window with the clock, the notes and the
 next slide, a navigator to jump to a section, a talk timer, rehearsal recording, a deck view
 (`V`) where slides can be dragged into a new order, which rewrites `slides.md` and rebuilds,
-and a build panel (`M`) that re-runs refract without leaving the player — and it exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
+a build panel (`M`) that re-runs refract, and a slide editor (`E`) for the markdown
+behind the slide on screen — all without leaving the player — and it exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
 [player/README.md](player/README.md). `rcviewer` is the plain RemoteCompose viewer; it
 shares the same playback and export code, and adds `--screenshot` / `--frames` for
 single-file headless capture.
@@ -620,7 +621,8 @@ transcript lands in `voice/NN.txt`, so a misheard word can be corrected there an
   navigator, talk timer, blanking, fullscreen, rehearsal recording (`--record` /
   `--record-audio`, replayed with `--auto-voice`), a deck view that reorders the deck by
   rewriting its markdown (`V`, or `--deck-view`), a build panel that re-runs refract with its
-  options on screen (`M`, or `--build`), and export to PDF (`--pdf talk.pdf`) or
+  options on screen (`M`, or `--build`), a slide editor that rewrites one slide's markdown
+  and rebuilds (`E`, or `--editor`), and export to PDF (`--pdf talk.pdf`) or
   PNGs (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
   on top of the `rcplayer` library in the RemoteCompose `players/cpp` tree — playback,
   export and the custom-component hosts are shared with `rcviewer`, not forked.

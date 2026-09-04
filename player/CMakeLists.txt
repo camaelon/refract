@@ -76,6 +76,8 @@ set(REFRACTPLAYER_SOURCES
     src/DeckView.cpp
     src/Navigator.cpp
     src/Presenter.cpp
+    src/SlideEditor.cpp
+    src/TextBuffer.cpp
     src/Thumbs.cpp
     src/Timing.cpp
     src/Ui.cpp
@@ -105,3 +107,8 @@ enable_testing()
 add_executable(deck_order_test tests/deck_order_test.cpp src/DeckOrder.cpp)
 target_include_directories(deck_order_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME deck_order COMMAND deck_order_test)
+
+# The slide editor's text model: lines, caret, selection, undo. No window, no engine.
+add_executable(text_buffer_test tests/text_buffer_test.cpp src/TextBuffer.cpp)
+target_include_directories(text_buffer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME text_buffer COMMAND text_buffer_test)

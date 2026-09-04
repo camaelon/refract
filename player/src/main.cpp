@@ -21,6 +21,7 @@
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
+#include "SlideEditor.h"
 #include "Thumbs.h"
 #include "Ui.h"
 
@@ -57,6 +58,7 @@
 #include <unistd.h>
 #include <iostream>
 #include <atomic>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -85,6 +87,7 @@ std::unique_ptr<refract::CaptionWindow> captionWindow;
 refract::Captions captions;      // timings for the slide on screen
 std::unique_ptr<refract::DeckViewWindow> deckView;
 std::unique_ptr<refract::BuildPanel> buildPanel;
+std::unique_ptr<refract::SlideEditor> slideEditor;
 // A build runs off the main thread — refract takes seconds on a big deck, and a frozen window
 // during it would be the wrong trade for a panel whose whole point is staying in the player.
 // The thread only ever writes `buildResult` and clears `buildRunning`; the loop reads them.
@@ -110,6 +113,7 @@ int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherev
 bool wantPresenter = false;
 bool wantDeckView = false;
 bool wantBuildPanel = false;
+bool wantEditor = false;
 
 void noteSlideShown();
 void startRunIfArmed();
@@ -119,6 +123,8 @@ void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 void toggleDeckView();
 void toggleBuildPanel();
+void toggleSlideEditor();
+bool editorHoldsDeck();
 void goToSlide(int index);
 double voicelessDwell();
 
@@ -228,6 +234,13 @@ void goToSlide(int index) {
         std::cerr << "captions: finish the edit (Done, or Esc) before changing slides\n";
         return;
     }
+    // Nor while a slide's source is half-rewritten: the editor is showing one slide's
+    // markdown, and moving the deck under it would either lose the edit or land it on
+    // another slide.
+    if (editorHoldsDeck()) {
+        std::cerr << "editor: save or revert the slide before changing slides\n";
+        return;
+    }
 
     int target = app.deck.clamp(index);
     if (target == g.currentIndex && g.doc) return;
@@ -244,6 +257,7 @@ void goToSlide(int index) {
     playSlideAudio();
     loadCurrentFile();
     noteSlideShown();
+    if (slideEditor) slideEditor->showSlide(g.currentIndex);
 
     // Start the next slide's still now. It is built a little at a time over the following
     // frames, so by the time you press the key again it is already there.
@@ -658,6 +672,103 @@ void toggleBuildPanel() {
     else openBuildPanel();
 }
 
+// ── Slide editor ─────────────────────────────────────────────────────
+
+// The deck must not move while a slide's source is half-rewritten: the editor would either
+// lose the edit or save it onto the wrong slide.
+bool editorHoldsDeck() {
+    return slideEditor && slideEditor->dirty();
+}
+
+// Read one slide's markdown. The block-level surgery is the tool's — it has to split the file
+// exactly the way refract's parser does, and that parser is Python's.
+bool loadSlideSource(int slide, std::string* text, std::string* file, int* shared,
+                     std::string* error) {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        *error = "this deck has no markdown behind it";
+        return false;
+    }
+    std::string output;
+    const int rc = runTool("slide.py", {out.parent_path().string(),
+                                        "--slide", std::to_string(slide), "--read"}, &output);
+    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
+        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
+                     ? doc["error"].get<std::string>()
+                     : "cannot read this slide's source";
+        return false;
+    }
+    *text = doc.value("text", std::string());
+    *file = doc.value("file", std::string());
+    *shared = doc.value("slides", 1);
+    return true;
+}
+
+// Write it back and rebuild. The text goes through a temp file rather than an argument: a
+// slide's markdown contains newlines, quotes and whatever else the author typed.
+bool saveSlideSource(int slide, const std::string& text, std::string* error) {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        *error = "this deck has no markdown behind it";
+        return false;
+    }
+    const fs::path scratch = fs::temp_directory_path()
+                             / ("refractplayer_slide_" + std::to_string(::getpid()) + ".md");
+    {
+        std::ofstream file(scratch, std::ios::binary);
+        if (!file) {
+            *error = "cannot write a temporary file";
+            return false;
+        }
+        file << text;
+        if (!text.empty() && text.back() != '\n') file << "\n";
+    }
+    std::string output;
+    const int rc = runTool("slide.py", {out.parent_path().string(),
+                                        "--slide", std::to_string(slide),
+                                        "--write", scratch.string(), "--json"}, &output);
+    std::error_code ec;
+    fs::remove(scratch, ec);
+
+    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    const bool parsed = !doc.is_discarded() && doc.is_object();
+    if (rc != 0 || (parsed && !doc.value("ok", false))) {
+        *error = parsed && doc.contains("error") ? doc["error"].get<std::string>()
+                                                 : "save failed — see the terminal";
+        if (parsed && doc.value("changed", false) && !doc.value("rebuilt", false)) {
+            *error = "the markdown was saved but the rebuild failed: " + *error;
+        }
+        return false;
+    }
+    if (parsed && doc.value("changed", false)) deckReloadPending = true;
+    return true;
+}
+
+void openSlideEditor() {
+    if (slideEditor) return;
+    slideEditor = refract::SlideEditor::Create(560, 620);
+    if (!slideEditor) return;
+    slideEditor->setLoader(loadSlideSource);
+    slideEditor->setSaver(saveSlideSource);
+    slideEditor->showSlide(g.currentIndex);
+    // The editor takes the whole keyboard while it has focus — every key is a character in
+    // there, and "b" must not blank the projector mid-sentence.
+    glfwSetKeyCallback(slideEditor->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (slideEditor && slideEditor->handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
+    glfwSetCharCallback(slideEditor->window(), [](GLFWwindow*, unsigned int codepoint) {
+        if (slideEditor) slideEditor->handleChar(codepoint);
+    });
+}
+
+void toggleSlideEditor() {
+    if (slideEditor) slideEditor.reset();
+    else openSlideEditor();
+}
+
 void togglePresenter() {
     if (presenter) presenter.reset();
     else openPresenter();
@@ -788,6 +899,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_C: toggleCaptions(); break;
         case GLFW_KEY_V: toggleDeckView(); break;
         case GLFW_KEY_M: toggleBuildPanel(); break;
+        case GLFW_KEY_E: toggleSlideEditor(); break;
 
         // ── Playback ─────────────────────────────────────────────────
         case GLFW_KEY_A:
@@ -866,6 +978,8 @@ void usage() {
         "                     and the deck rebuilt)\n"
         "  --build            open the build panel: refract's options and a rebuild\n"
         "                     button, attached alongside the deck view\n"
+        "  --editor           open the slide editor: the markdown behind the slide on\n"
+        "                     screen, edited in place and rebuilt on save\n"
         "  --fullscreen, -f   start the slide window fullscreen\n"
         "  --display <n>      monitor for the slide window (0-based); the presenter\n"
         "                     window opens on the next one\n"
@@ -957,6 +1071,7 @@ int main(int argc, char* argv[]) {
         if (arg == "--presenter") wantPresenter = true;
         else if (arg == "--deck-view") wantDeckView = true;
         else if (arg == "--build") wantBuildPanel = true;
+        else if (arg == "--editor") wantEditor = true;
         else if (arg == "--fullscreen" || arg == "-f") startFullscreen = true;
         else if (arg == "--display") slideMonitor = std::atoi(next("--display").c_str());
         else if (arg == "--duration") app.clock.target = parseDuration(next("--duration"));
@@ -1177,6 +1292,7 @@ int main(int argc, char* argv[]) {
     if (wantCaptions) openCaptions();
     if (wantDeckView) openDeckView();
     if (wantBuildPanel) openBuildPanel();
+    if (wantEditor) openSlideEditor();
 
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
@@ -1192,6 +1308,7 @@ int main(int argc, char* argv[]) {
     double lastCaptionDraw = -1.0;
     double lastDeckViewDraw = -1.0;
     double lastBuildDraw = -1.0;
+    double lastEditorDraw = -1.0;
     // A finished build is acted on once, not every frame it stays finished.
     bool buildReloaded = true;
     // Fast enough that a word lights on the syllable, cheap enough to be free.
@@ -1341,6 +1458,17 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (slideEditor) {
+            if (slideEditor->shouldClose()) {
+                slideEditor.reset();
+            } else if (elapsed - lastEditorDraw >= kCaptionInterval) {
+                // At the caption window's rate rather than the presenter's: a caret that
+                // blinks at 20 Hz is a caret that stutters while you type.
+                slideEditor->render(app);
+                lastEditorDraw = elapsed;
+            }
+        }
+
         if (buildPanel) {
             if (buildPanel->shouldClose()) {
                 buildPanel.reset();
@@ -1417,6 +1545,7 @@ int main(int argc, char* argv[]) {
     captionWindow.reset();
     deckView.reset();
     buildPanel.reset();
+    slideEditor.reset();
     if (buildThread.joinable()) buildThread.join();
     stopVoiceOver();
     cleanupTempFile();

@@ -196,6 +196,7 @@ const HelpRow kHelp[] = {
     {"V", "deck view (drag to reorder)"},
     {"Z  /  Shift Z", "fold a run / all of them (deck view)"},
     {"M", "build panel (rebuild the deck)"},
+    {"E", "slide editor (edit the markdown)"},
     {"T  /  Shift T", "start-pause timer / reset it"},
     {"B  W", "blank to black / white"},
     {"F", "fullscreen"},

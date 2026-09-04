@@ -23,6 +23,11 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+try:
+    from refractkit import manifest
+except ImportError:  # pragma: no cover - only when the script is copied out of the repo
+    sys.stderr.write(f"build.py: cannot import refractkit from {_ROOT}\n")
+    raise
 
 # What a build produces and may replace. A file outside this set is none of its business.
 BUILT_EXTS = (".rc", ".notes", ".mp4", ".mov", ".m4v", ".webm")
@@ -47,27 +52,11 @@ def outputs(out_dir: str) -> dict:
     return found
 
 
-def deck_source_dir(out_dir: str, deck: dict) -> str:
-    return os.path.abspath(os.path.join(out_dir, deck.get("deck_dir", "..")))
-
-
 def refract_args(args, deck: dict) -> list:
-    """The options to build with. The deck's own size comes from deck.json rather than being
-    guessed, so a rebuild cannot quietly resize a deck that set its size in settings.toml."""
-    out = []
-    if args.transitions:
-        out.append("--transitions")
-    if args.debug:
-        out.append("--debug")
-    if args.force:
-        out.append("--force")
-    if args.keep_json:
-        out.append("--json")
-    for key in ("width", "height"):
-        value = getattr(args, key, None) or deck.get(key)
-        if isinstance(value, int):
-            out += [f"--{key}", str(value)]
-    return out
+    """The options to build with: the panel's choices, over the deck's own size."""
+    return manifest.build_args(deck, transitions=args.transitions, debug=args.debug,
+                               force=args.force, keep_json=args.keep_json,
+                               width=args.width, height=args.height)
 
 
 def main() -> int:
@@ -83,12 +72,10 @@ def main() -> int:
     args = ap.parse_args()
 
     out_dir = os.path.abspath(args.out_dir)
-    manifest = os.path.join(out_dir, "deck.json")
     deck = {}
-    if os.path.isfile(manifest):
-        with open(manifest) as f:
-            deck = json.load(f)
-        deck_dir = deck_source_dir(out_dir, deck)
+    if os.path.isfile(os.path.join(out_dir, "deck.json")):
+        deck = manifest.load(out_dir)
+        deck_dir = manifest.source_dir(out_dir, deck)
     else:
         # No manifest yet — a deck that has never been built. The convention is <deck>/out,
         # so the deck is one level up; anything else is a directory that is not a deck.

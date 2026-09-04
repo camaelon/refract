@@ -600,12 +600,15 @@ class Tool(unittest.TestCase):
 class BuildArgs(unittest.TestCase):
     """The rebuild has to repeat the build, not just run one."""
 
-    def build_args(self, deck):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("reorder_tool", TOOL)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.build_args(deck)
+    def build_args(self, deck, **overrides):
+        from refractkit import manifest
+        return manifest.build_args(deck, **overrides)
+
+    def test_overrides_win_over_the_deck(self):
+        # The build panel builds deliberately differently; the reorder tool never does.
+        self.assertIn("--force", self.build_args({}, force=True))
+        self.assertNotIn("--transitions",
+                         self.build_args({"build": {"transitions": True}}, transitions=False))
 
     def test_no_build_record_means_no_flags(self):
         self.assertEqual(self.build_args({}), [])

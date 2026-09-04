@@ -1,90 +1,25 @@
-"""Reordering slides by rewriting the markdown they came from.
+"""Reordering a deck by rewriting the markdown it was written in.
 
-The player's deck view can drag a slide to a new position. What actually has to move is the
-*source*: the block of `slides.md` between two `---` separators. This module does that move on
-the text, and nothing else — no rendering, no rebuild — so it stays testable.
+The player's deck view can drag a slide, a section or an included sub-deck to a new position.
+What actually moves is the source: the `---`-separated blocks of a slides.md. The blocks
+themselves — splitting, rejoining, reading and replacing one — are :mod:`refractkit.chunks`;
+this is the moving, and nothing else, so it stays testable without a renderer in sight.
 
-Two facts shape the design.
-
-* A source chunk is not a slide. refract expands one chunk into several rendered slides
-  (bullet fragments, scroll pages, staggered embeds), so a deck of 40 slides may come from 25
-  chunks. Reordering therefore moves *chunks*: every slide a chunk produced travels together,
-  which is the only interpretation that keeps a fragment sequence intact.
-* Chunk numbering must agree exactly with the parser's. `parse_markdown` splits on
-  ``^\\s*---\\s*$`` with no awareness of fenced code blocks, so a ``---`` inside a fence *does*
-  start a new slide. This module splits the same way — deliberately, bugs included — because a
-  cleverer split would number chunks differently from the ``src_index`` recorded in deck.json
-  and move the wrong block.
+What moves is a block, not a slide. refract expands one block into several rendered slides
+(bullet fragments, scroll pages, staggered embeds), and those only make sense in sequence, so
+reordering moves whole blocks and every slide one produced travels with it.
 """
 
 from __future__ import annotations
 
-import re
+# Re-exported: the block primitives are this module's alphabet, and callers that reorder
+# usually also want to look at what they are reordering.
+from .chunks import (SEP_LINE, chunk_texts, count_chunks, join_chunks, read_chunk,
+                     replace_chunk, split_chunks, _edit)
 
-# The line-oriented twin of markdown.SLIDE_SEP. Splitting by lines (rather than with the
-# multi-line regex, whose \s can swallow the blank lines around a separator) is what lets the
-# text be put back together character for character; test_reorder pins the two to the same
-# chunk count.
-# \r is allowed so a CRLF file splits into the same chunks the parser sees (SLIDE_SEP's
-# \s matches the \r); the separator line is stored verbatim, so the CRLF survives.
-SEP_LINE = re.compile(r"^[ \t\r]*---[ \t\r]*$")
-
-
-def split_chunks(text: str) -> tuple[list[list[str]], list[str]]:
-    """Split ``text`` into (chunks, separators).
-
-    A chunk is a list of lines, so that an *empty* chunk (two adjacent separators) is an empty
-    list and contributes no line at all — the distinction ``""`` would lose. There is always
-    one more chunk than separator, and the separator lines are kept verbatim so odd spacing
-    (``  ---  ``) survives a rewrite.
-    """
-    chunks: list[list[str]] = []
-    seps: list[str] = []
-    cur: list[str] = []
-    for line in text.split("\n"):
-        if SEP_LINE.match(line):
-            chunks.append(cur)
-            seps.append(line)
-            cur = []
-        else:
-            cur.append(line)
-    chunks.append(cur)
-    return chunks, seps
-
-
-def join_chunks(chunks: list[list[str]], seps: list[str]) -> str:
-    """Inverse of :func:`split_chunks`. Round-trips exactly when nothing was reordered."""
-    lines: list[str] = []
-    for i, chunk in enumerate(chunks):
-        lines.extend(chunk)
-        if i < len(seps):
-            lines.append(seps[i])
-    return "\n".join(lines)
-
-
-def chunk_texts(text: str) -> list[str]:
-    """The chunks as strings — for tests and for anything that wants to look at their content."""
-    chunks, _ = split_chunks(text)
-    return ["\n".join(c) for c in chunks]
-
-
-def count_chunks(text: str) -> int:
-    return len(split_chunks(text)[0])
-
-
-def _edit(text: str, rearrange) -> str:
-    """Run ``rearrange`` over the file's chunks and put the file back together.
-
-    The file's final newline is set aside first. It belongs to the *file*, not to whichever
-    chunk happens to be last: leaving it attached would give the last chunk a trailing blank
-    line the moment it moved elsewhere, so moving a slide away and back would not restore the
-    file byte for byte.
-    """
-    trailing = text.endswith("\n")
-    body = text[:-1] if trailing else text
-    chunks, seps = split_chunks(body)
-    out = join_chunks(rearrange(chunks), seps)
-    return out + "\n" if trailing else out
+__all__ = ["SEP_LINE", "chunk_texts", "count_chunks", "join_chunks", "read_chunk",
+           "replace_chunk", "split_chunks", "reorder_chunks", "move_chunk", "move_chunks",
+           "plan_move", "move_slide_text"]
 
 
 def reorder_chunks(text: str, order: list[int]) -> str:

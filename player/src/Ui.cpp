@@ -43,13 +43,43 @@ sk_sp<SkTypeface> uiTypeface(bool bold) {
     return bold ? heavy : regular;
 }
 
+// A monospaced face. Tried by name because there is no "give me the mono default" in the
+// font manager; the first that resolves wins, and a deck editor on a machine with none of
+// them falls back to the UI face rather than to nothing.
+sk_sp<SkTypeface> monoTypeface(bool bold) {
+    static const char* kFamilies[] = {"Menlo", "SF Mono", "Monaco", "DejaVu Sans Mono",
+                                      "Liberation Mono", "Consolas", "monospace"};
+    auto resolve = [](const SkFontStyle& style) -> sk_sp<SkTypeface> {
+        if (!fontMgr()) return nullptr;
+        for (const char* family : kFamilies) {
+            if (auto face = fontMgr()->matchFamilyStyle(family, style)) return face;
+        }
+        return nullptr;
+    };
+    static sk_sp<SkTypeface> regular = resolve(SkFontStyle());
+    static sk_sp<SkTypeface> heavy = resolve(SkFontStyle::Bold());
+    sk_sp<SkTypeface> face = bold ? heavy : regular;
+    return face ? face : uiTypeface(bold);
+}
+
 }  // namespace
+
+SkFont uiMonoFont(float size, bool bold) {
+    SkFont f(monoTypeface(bold), size);
+    f.setEdging(SkFont::Edging::kAntiAlias);
+    f.setSubpixel(true);
+    return f;
+}
 
 SkFont uiFont(float size, bool bold) {
     SkFont f(uiTypeface(bold), size);
     f.setEdging(SkFont::Edging::kAntiAlias);
     f.setSubpixel(true);
     return f;
+}
+
+SkColor withAlpha(SkColor color, unsigned alpha) {
+    return SkColorSetARGB(alpha, SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
 }
 
 float textWidth(const SkFont& font, const std::string& text) {

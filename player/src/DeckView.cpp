@@ -41,12 +41,6 @@ std::vector<SlideGroup> buildGroups(const Deck& deck) {
     return groupSlides(sources);
 }
 
-// The same colour, dimmed to a fill — a grip bar lit up should read as the run's colour
-// behind it, not as a second colour.
-SkColor withAlpha(SkColor color, unsigned alpha) {
-    return SkColorSetARGB(alpha, SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
-}
-
 std::string groupLabel(const SlideGroup& g) {
     if (g.count() == 1) return std::to_string(g.first + 1);
     return std::to_string(g.first + 1) + "-" + std::to_string(g.last + 1);
