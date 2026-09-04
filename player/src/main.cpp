@@ -111,38 +111,48 @@ fs::path executableDir() {
     return {};
 }
 
-// The script sits in the repo beside the player's sources. Both places the binary normally
-// lives — prebuilt/ and player/build/ — are a fixed distance from it.
-fs::path findCaptionsScript() {
-    if (const char* override = std::getenv("REFRACT_CAPTIONS_SCRIPT")) {
-        if (fs::exists(override)) return override;
+// The scripts sit in the repo beside the player's sources. Both places the binary normally
+// lives — prebuilt/ and player/build/ — are a fixed distance from them.
+fs::path findTool(const std::string& name) {
+    if (name == "captions.py") {
+        if (const char* override = std::getenv("REFRACT_CAPTIONS_SCRIPT")) {
+            if (fs::exists(override)) return override;
+        }
     }
     const fs::path dir = executableDir();
     if (dir.empty()) return {};
-    for (const char* rel : {"../player/tools/captions.py",   // prebuilt/refractplayer
-                            "../tools/captions.py",          // player/build/refractplayer
-                            "tools/captions.py"}) {
+    for (const char* rel : {"../player/tools/",   // prebuilt/refractplayer
+                            "../tools/",          // player/build/refractplayer
+                            "tools/"}) {
         std::error_code ec;
-        fs::path candidate = fs::weakly_canonical(dir / rel, ec);
+        fs::path candidate = fs::weakly_canonical(dir / rel / name, ec);
         if (!ec && fs::exists(candidate)) return candidate;
     }
     return {};
 }
 
-int runCaptions(const fs::path& voiceDir, const std::string& model,
-                const std::string& language) {
-    const fs::path script = findCaptionsScript();
+// Run one of the Python tools, waiting for it. Its output is the user's, not ours: it goes
+// straight to the terminal.
+int runTool(const std::string& name, const std::vector<std::string>& args) {
+    const fs::path script = findTool(name);
     if (script.empty()) {
-        std::cerr << "refractplayer: cannot find tools/captions.py — set "
-                     "REFRACT_CAPTIONS_SCRIPT to its path\n";
+        std::cerr << "refractplayer: cannot find tools/" << name << "\n";
         return 1;
     }
+
+    std::vector<char*> argv;
+    std::string python = "python3";
+    std::string path = script.string();
+    argv.push_back(python.data());
+    argv.push_back(path.data());
+    std::vector<std::string> owned = args;
+    for (auto& arg : owned) argv.push_back(arg.data());
+    argv.push_back(nullptr);
 
     pid_t pid = ::fork();
     if (pid < 0) return 1;
     if (pid == 0) {
-        ::execlp("python3", "python3", script.c_str(), voiceDir.c_str(),
-                 "--model", model.c_str(), "--language", language.c_str(), (char*)nullptr);
+        ::execvp("python3", argv.data());
         std::cerr << "refractplayer: python3 not found\n";
         ::_exit(127);
     }
@@ -605,6 +615,10 @@ void usage() {
         "  --caption-model N  whisper model for transcription (default: base)\n"
         "  --caption-lang L   language of the narration (default: en)\n"
         "\n"
+        "Web:\n"
+        "  --web <dir>        write a self-contained web player of the deck — slides,\n"
+        "                     narration and captions — into <dir>, then exit\n"
+        "\n"
         "Rehearsing:\n"
         "  --record           time the run: writes timing.json beside the slides, so a\n"
         "                     later run can show whether it is ahead or behind\n"
@@ -656,6 +670,7 @@ int main(int argc, char* argv[]) {
     bool record = false;
     bool wantCaptions = false;
     bool transcribe = false;
+    std::string webOutput;
     std::string captionModel = "base";
     std::string captionLanguage = "en";
     std::string input;
@@ -686,6 +701,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--images") imagesOutput = next("--images");
         else if (arg == "--captions") wantCaptions = true;
         else if (arg == "--transcribe") transcribe = true;
+        else if (arg == "--web") webOutput = next("--web");
         else if (arg == "--caption-model") captionModel = next("--caption-model");
         else if (arg == "--caption-lang") captionLanguage = next("--caption-lang");
         else if (arg == "--record") record = true;
@@ -750,6 +766,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // ── Web player ───────────────────────────────────────────────────
+    // The deck, its narration and its captions, assembled into a page that plays them.
+    if (!webOutput.empty()) {
+        if (g.zip) {
+            std::cerr << "refractplayer: --web needs a deck directory, not a zip\n";
+            return 1;
+        }
+        const fs::path slidesDir = fs::is_directory(input)
+                                       ? fs::path(input)
+                                       : fs::path(g.files.front()).parent_path();
+        return runTool("web.py", {slidesDir.string(), webOutput});
+    }
+
     // ── Transcription ────────────────────────────────────────────────
     // Needs the playlist — that is what says where the narration was recorded — but no
     // window, so it runs before one is opened and exits.
@@ -760,7 +789,9 @@ int main(int argc, char* argv[]) {
                          "files to transcribe\n";
             return 1;
         }
-        return runCaptions(wav.parent_path(), captionModel, captionLanguage);
+        return runTool("captions.py", {wav.parent_path().string(),
+                                       "--model", captionModel,
+                                       "--language", captionLanguage});
     }
 
     app.deck.build(g.files, input);

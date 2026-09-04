@@ -106,6 +106,7 @@ refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]
   --captions         open the close-caption window
 
   --transcribe       transcribe + align the recorded narration, then exit
+  --web <dir>        write a self-contained web player into <dir>, then exit
   --caption-model N  whisper model for transcription (default: base)
   --caption-lang L   language of the narration (default: en)
 
@@ -295,6 +296,59 @@ than local to the caption window; a key that would have done something says why 
 An edit still in progress is saved if you quit — leaving mid-word should not be the one way
 to lose one.
 
+## A web player
+
+The whole thing — slides, narration, captions — as a page:
+
+```sh
+prebuilt/refractplayer mytalk/out --web mytalk/web
+(cd mytalk/web && python3 -m http.server 8000)
+```
+
+The slides are the **real `.rc` documents**, rendered by the RemoteCompose TypeScript
+player: animations, shaders, the same documents the desktop player shows — not pictures of
+them. On top of that it plays the recorded narration, lights the captions word by word off
+the audio clock, and advances when a slide's narration ends. A slide with no audio holds for
+the time the rehearsal recorded, so a partly-recorded deck still plays end to end.
+
+**It opens off the disk.** Double-clicking `index.html` works — the slide bytes travel inside
+the page rather than beside it, because a browser refuses to `fetch()` a local file and the
+player loads documents by URL. Without that a `file://` deck shows its controls and plays its
+audio (a media element is not a fetch) and never draws a slide.
+
+**Slides are laid out at their design size and scaled to fit**, exactly as the desktop player
+does. The web player would otherwise size the document to the canvas — right for a document
+authored to reflow, wrong for a slide authored at a fixed size, where it leaves the chrome
+stretched to the new edges and the title, bullets and figures huddled in one corner at their
+authored sizes.
+
+**Narration is compressed** to mp3 on the way out when `ffmpeg` is available (`--keep-wav`
+opts out): wav is the right format to record and edit in and the wrong one to download, at
+roughly ten times the size. mp3 rather than the better-compressing m4a because
+`python3 -m http.server` — which is how a deck like this actually gets served — labels `.m4a`
+as `audio/mp4a-latm`, which is not what an `.m4a` is, and the browser then refuses it.
+
+**Captions sit below the slide, not over it.** The page is a column — a two-line band at the
+bottom that scrolls with the narration, and the slide letterboxed into whatever is left. So a
+window shorter than the deck's aspect ratio gives up slide height to the captions rather than
+covering the content they are describing, and the slide keeps its proportions at any window
+shape. `C` hides the band, and the slide grows back into the space.
+
+Controls: space / arrows to move, `C` for captions, `F` for fullscreen, `P` to pause, and a
+scrubbable progress bar with a tick per section. Browsers refuse to play sound until the page
+has been clicked, so it opens behind a start screen rather than silently failing to begin.
+
+The output directory is self-contained — the slides are inside `deck.js`, alongside `media/`,
+`audio/`, `bundle.js` and `index.html` — so it can be opened directly or served from
+anywhere. It needs the TypeScript player bundle,
+built once from the sibling RemoteCompose checkout:
+
+```sh
+(cd ../remotecompose-experiments/players/typescript && npm install && npm run bundle)
+```
+
+`--web` finds it there automatically; `tools/web.py --bundle <path>` takes it explicitly.
+
 ## Exporting
 
 ```sh
@@ -369,3 +423,4 @@ the archives it downloaded rather than pulling a second copy.
 | `src/Captions.{h,cpp}`, `CaptionWindow.{h,cpp}` | caption timings and the window that lights them |
 | `src/Audio*.{h,mm}` | narration capture and gapless playback |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
+| `tools/web.py` | the web player: assembles the deck, audio and captions into a page |

@@ -563,7 +563,14 @@ to say about turning markdown into slides.
 prebuilt/refractplayer mytalk/out --record-audio     # record
 prebuilt/refractplayer mytalk/out --transcribe       # transcribe + align
 prebuilt/refractplayer mytalk/out --captions         # play back with captions
+prebuilt/refractplayer mytalk/out --web mytalk/web   # …or as a web page
 ```
+
+`--web` writes a self-contained site that plays the deck in a browser — the real `.rc`
+slides rendered by the RemoteCompose TypeScript player, the recorded narration, and captions
+lit word by word. It opens by double-clicking `index.html` as well as from a server, and
+compresses the narration on the way out. It needs that player's bundle built once
+(`cd ../remotecompose-experiments/players/typescript && npm install && npm run bundle`).
 
 Two steps, each with its own optional dependency — the same split
 [Echo](https://github.com/camaelon/Echo)'s scripts make, because forced alignment against a
