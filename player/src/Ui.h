@@ -42,6 +42,9 @@ float drawText(SkCanvas* canvas, const std::string& text, float x, float y,
 // Same, right-aligned so the text *ends* at x.
 float drawTextRight(SkCanvas* canvas, const std::string& text, float x, float y,
                     const SkFont& font, SkColor color);
+// Centred in `box`, horizontally and on its vertical middle — for button labels.
+float drawTextCentred(SkCanvas* canvas, const std::string& text, const SkRect& box,
+                      const SkFont& font, SkColor color);
 
 // Greedy word wrap, honouring newlines already in `text`.
 std::vector<std::string> wrapText(const std::string& text, const SkFont& font, float maxWidth);

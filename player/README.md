@@ -46,6 +46,9 @@ is up.
 preview and the notes of whatever row you are on. Enter jumps. It draws on the presenter
 window whenever there is one — a navigator projected onto the wall defeats the point.
 
+**A build panel** (`--build`, or `M`). refract's options and a Rebuild button, in a column
+that attaches alongside the deck view. Details below.
+
 **A deck view** (`--deck-view`, or `V`). Every slide at once, in a window of its own — and
 the one place the deck's *order* can be changed. Details below.
 
@@ -72,6 +75,7 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | `P` | presenter window |
 | `C` | caption window |
 | `V` | deck view |
+| `M` | build panel |
 | `Z` / `Shift`+`Z` | fold the run at the cursor / the whole deck (deck view) |
 | `E` | correct the transcript (in the caption window) |
 | `T` / `Shift`+`T` | start-pause the timer / reset it |
@@ -100,6 +104,7 @@ refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]
 
   --presenter        open the presenter window
   --deck-view        open the deck view (every slide at once; reorders the deck)
+  --build            open the build panel (refract's options, and a Rebuild button)
   --fullscreen, -f   start fullscreen
   --display <n>      monitor for the slides (0-based); the presenter window
                      opens on the next one
@@ -227,6 +232,66 @@ The rebuild repeats the build the deck already had, reading it back from `deck.j
 `build` record — `--transitions` is a command-line flag with nothing in the deck to say it
 was given, and a rebuild that forgot it would strip every transition out of the deck the
 first time a slide was moved.
+
+## The build panel
+
+`M`, or `--build`. Editing a deck otherwise means going back to a terminal to re-run refract
+and then back to the player to look at it. This closes that loop: the options refract was
+given are on screen, one button re-runs it, and the deck reloads underneath the slides when it
+finishes.
+
+```
+┌──────────────────────────┐
+│ Build                    │
+│ droidkaigi26             │
+│ 42 slides                │
+│ ─────────────────────    │
+│ OPTIONS                  │
+│ [x] transitions          │
+│ [ ] debug outlines       │
+│ [ ] keep intermediate…   │
+│ [ ] force full rebuild   │
+│ ─────────────────────    │
+│ ┌──────────────────────┐ │
+│ │      Rebuild         │ │
+│ └──────────────────────┘ │
+│ Enter                    │
+│ ─────────────────────    │
+│ LAST BUILD               │
+│ 3 files rebuilt          │
+│ 39 files reused          │
+│ 1.24s                    │
+│                          │
+│ [x] attach to the panel  │
+└──────────────────────────┘
+```
+
+The options open showing how the deck on screen was **actually built** — they come from
+`deck.json`'s `build` record, not from defaults, so the panel is not quietly offering to
+rebuild a transitioned deck without transitions. The slide size comes from the manifest too
+and is not editable here: a deck that set its size in `settings.toml` should not be resized by
+a button press.
+
+The build runs off the main thread, so the player keeps drawing while refract works, and the
+Rebuild button is inert until it finishes — two refracts writing into the same `out/` is the
+one reliable way to get a deck that is neither.
+
+**Reading the result.** Builds are incremental, so the interesting number is how much was
+*not* rebuilt. The counts come from the outputs' modification times taken either side of the
+build rather than from refract's log: that is exact, and it stays right under `force full
+rebuild`, where every slide is recompiled from an unchanged input and a fingerprint-based
+count would report that nothing happened.
+
+**Attaching.** With a deck view or presenter window open the panel sits flush against its
+right edge and matches its height, tracking it as it moves — GLFW has no docking, but a window
+that follows another one is close enough at this size. Uncheck *attach to the panel* and it
+goes back to where it was floating.
+
+The rebuild itself is `player/tools/build.py`, which can be run on its own:
+
+```
+python3 player/tools/build.py <deck>/out [--transitions] [--debug] [--force] [--keep-json]
+```
 
 ## Rehearsing
 

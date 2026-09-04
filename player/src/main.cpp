@@ -15,6 +15,7 @@
 #include "App.h"
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
+#include "BuildPanel.h"
 #include "Captions.h"
 #include "DeckView.h"
 #include "AudioRecorder.h"
@@ -55,8 +56,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <iostream>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -80,6 +84,14 @@ bool overlapNextVoice = false;
 std::unique_ptr<refract::CaptionWindow> captionWindow;
 refract::Captions captions;      // timings for the slide on screen
 std::unique_ptr<refract::DeckViewWindow> deckView;
+std::unique_ptr<refract::BuildPanel> buildPanel;
+// A build runs off the main thread — refract takes seconds on a big deck, and a frozen window
+// during it would be the wrong trade for a panel whose whole point is staying in the player.
+// The thread only ever writes `buildResult` and clears `buildRunning`; the loop reads them.
+std::thread buildThread;
+std::atomic<bool> buildRunning{false};
+std::mutex buildMutex;
+refract::BuildState buildResult;
 std::string tracePath;   // where --record will write, once the talk starts
 // The deck as the user named it. Kept because reordering rebuilds and reloads it, and the
 // reload has to look in the same place the first load did.
@@ -97,6 +109,7 @@ WindowedGeometry savedGeometry;
 int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherever it lands
 bool wantPresenter = false;
 bool wantDeckView = false;
+bool wantBuildPanel = false;
 
 void noteSlideShown();
 void startRunIfArmed();
@@ -105,6 +118,7 @@ void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 void toggleDeckView();
+void toggleBuildPanel();
 void goToSlide(int index);
 double voicelessDwell();
 
@@ -559,6 +573,91 @@ void toggleDeckView() {
     else openDeckView();
 }
 
+// ── Build panel ──────────────────────────────────────────────────────
+
+// Run refract over the deck with the panel's options, off the main thread. True when a build
+// was started; the loop notices it finish and reloads the deck.
+bool startBuild(const refract::BuildOptions& options) {
+    if (buildRunning) return false;
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        std::lock_guard<std::mutex> lock(buildMutex);
+        buildResult = {};
+        buildResult.ran = true;
+        buildResult.ok = false;
+        buildResult.error = "this deck has no directory to rebuild into";
+        return false;
+    }
+
+    std::vector<std::string> args{out.parent_path().string()};
+    if (options.transitions) args.push_back("--transitions");
+    if (options.debug)       args.push_back("--debug");
+    if (options.force)       args.push_back("--force");
+    if (options.keepJson)    args.push_back("--keep-json");
+    args.push_back("--json");
+
+    if (buildThread.joinable()) buildThread.join();
+    buildRunning = true;
+    buildThread = std::thread([args]() {
+        std::string output;
+        const int rc = runTool("build.py", args, &output);
+        auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+        const bool parsed = !doc.is_discarded() && doc.is_object();
+
+        refract::BuildState state;
+        state.ran = true;
+        state.ok = rc == 0 && parsed && doc.value("ok", false);
+        if (parsed) {
+            state.rebuilt = doc.value("rebuilt", 0);
+            state.reused  = doc.value("reused", 0);
+            state.removed = doc.value("removed", 0);
+            state.seconds = doc.value("seconds", 0.0);
+            if (doc.contains("error")) state.error = doc["error"].get<std::string>();
+        }
+        if (!state.ok && state.error.empty()) state.error = "see the terminal";
+
+        {
+            std::lock_guard<std::mutex> lock(buildMutex);
+            buildResult = state;
+        }
+        buildRunning = false;
+    });
+    return true;
+}
+
+// The options the deck on screen was actually built with, so the panel opens telling the
+// truth rather than showing defaults. They live in deck.json's `build` record, which is also
+// what the reorder tool replays.
+refract::BuildOptions optionsFromManifest() {
+    refract::BuildOptions options;
+    std::string text;
+    if (!refract::readDeckSidecar(deckInput, "deck.json", &text) || text.empty()) return options;
+    auto doc = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (doc.is_discarded() || !doc.contains("build")) return options;
+    const auto& build = doc["build"];
+    options.transitions = build.value("transitions", false);
+    options.debug = build.value("debug", false);
+    return options;
+}
+
+void openBuildPanel() {
+    if (buildPanel) return;
+    buildPanel = refract::BuildPanel::Create(300, 760);
+    if (!buildPanel) return;
+    buildPanel->setOptions(optionsFromManifest());
+    buildPanel->setOnBuild(startBuild);
+    glfwSetKeyCallback(buildPanel->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (buildPanel && buildPanel->handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
+}
+
+void toggleBuildPanel() {
+    if (buildPanel) buildPanel.reset();
+    else openBuildPanel();
+}
+
 void togglePresenter() {
     if (presenter) presenter.reset();
     else openPresenter();
@@ -688,6 +787,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_P: togglePresenter(); break;
         case GLFW_KEY_C: toggleCaptions(); break;
         case GLFW_KEY_V: toggleDeckView(); break;
+        case GLFW_KEY_M: toggleBuildPanel(); break;
 
         // ── Playback ─────────────────────────────────────────────────
         case GLFW_KEY_A:
@@ -764,6 +864,8 @@ void usage() {
         "  --deck-view        open the deck view: every slide at once, and where the\n"
         "                     deck is reordered (drag a slide; the markdown is rewritten\n"
         "                     and the deck rebuilt)\n"
+        "  --build            open the build panel: refract's options and a rebuild\n"
+        "                     button, attached alongside the deck view\n"
         "  --fullscreen, -f   start the slide window fullscreen\n"
         "  --display <n>      monitor for the slide window (0-based); the presenter\n"
         "                     window opens on the next one\n"
@@ -854,6 +956,7 @@ int main(int argc, char* argv[]) {
         };
         if (arg == "--presenter") wantPresenter = true;
         else if (arg == "--deck-view") wantDeckView = true;
+        else if (arg == "--build") wantBuildPanel = true;
         else if (arg == "--fullscreen" || arg == "-f") startFullscreen = true;
         else if (arg == "--display") slideMonitor = std::atoi(next("--display").c_str());
         else if (arg == "--duration") app.clock.target = parseDuration(next("--duration"));
@@ -1073,6 +1176,7 @@ int main(int argc, char* argv[]) {
     if (wantPresenter) openPresenter();
     if (wantCaptions) openCaptions();
     if (wantDeckView) openDeckView();
+    if (wantBuildPanel) openBuildPanel();
 
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
@@ -1087,6 +1191,9 @@ int main(int argc, char* argv[]) {
     double lastPresenterDraw = -1.0;
     double lastCaptionDraw = -1.0;
     double lastDeckViewDraw = -1.0;
+    double lastBuildDraw = -1.0;
+    // A finished build is acted on once, not every frame it stays finished.
+    bool buildReloaded = true;
     // Fast enough that a word lights on the syllable, cheap enough to be free.
     constexpr double kCaptionInterval = 1.0 / 30.0;
     sk_sp<SkImage> liveFrame;
@@ -1234,6 +1341,35 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (buildPanel) {
+            if (buildPanel->shouldClose()) {
+                buildPanel.reset();
+            } else {
+                // A build that has just finished changed the deck on disk; reload it the same
+                // way a reorder does, so the slides on screen are the ones just built.
+                refract::BuildState state;
+                {
+                    std::lock_guard<std::mutex> lock(buildMutex);
+                    state = buildResult;
+                }
+                state.running = buildRunning;
+                if (state.ran && !state.running && !buildReloaded) {
+                    buildReloaded = true;
+                    if (state.ok) deckReloadPending = true;
+                }
+                if (state.running) buildReloaded = false;
+                buildPanel->setState(state);
+                // The column sits against whichever panel window is open, and floats free
+                // when neither is.
+                buildPanel->setHost(deckView ? deckView->window()
+                                             : presenter ? presenter->window() : nullptr);
+                if (elapsed - lastBuildDraw >= kPresenterInterval) {
+                    buildPanel->render(app);
+                    lastBuildDraw = elapsed;
+                }
+            }
+        }
+
         if (deckView) {
             if (deckView->shouldClose()) {
                 deckView.reset();
@@ -1280,6 +1416,8 @@ int main(int argc, char* argv[]) {
     voice.reset();
     captionWindow.reset();
     deckView.reset();
+    buildPanel.reset();
+    if (buildThread.joinable()) buildThread.join();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

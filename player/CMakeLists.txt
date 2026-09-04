@@ -68,6 +68,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ── The player ────────────────────────────────────────────────────────
 set(REFRACTPLAYER_SOURCES
     src/App.cpp
+    src/BuildPanel.cpp
     src/CaptionWindow.cpp
     src/Captions.cpp
     src/Deck.cpp

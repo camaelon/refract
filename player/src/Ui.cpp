@@ -1,5 +1,6 @@
 #include "Ui.h"
 
+#include "include/core/SkFontMetrics.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkPaint.h"
@@ -70,6 +71,16 @@ float drawTextRight(SkCanvas* canvas, const std::string& text, float x, float y,
     float w = textWidth(font, text);
     drawText(canvas, text, x - w, y, font, color);
     return w;
+}
+
+float drawTextCentred(SkCanvas* canvas, const std::string& text, const SkRect& box,
+                      const SkFont& font, SkColor color) {
+    // Centred on the cap height rather than the baseline: a label sitting on the box's
+    // middle line reads as low, because the glyphs hang above it.
+    SkFontMetrics metrics;
+    font.getMetrics(&metrics);
+    const float y = box.centerY() - (metrics.fAscent + metrics.fDescent) * 0.5f;
+    return drawText(canvas, text, box.centerX() - textWidth(font, text) * 0.5f, y, font, color);
 }
 
 std::vector<std::string> wrapText(const std::string& text, const SkFont& font, float maxWidth) {
