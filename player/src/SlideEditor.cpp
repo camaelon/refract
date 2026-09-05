@@ -1,6 +1,7 @@
 #include "SlideEditor.h"
 
 #include "Ui.h"
+#include "ViewGeometry.h"
 
 #include "rcplayer/CpuRenderBackend.h"
 
@@ -88,14 +89,13 @@ struct SlideEditor::Impl {
     void setStatus(const std::string& text, bool error) { status = text; statusError = error; }
 
     // The caret position under a point in the window.
+    Lines lineGeometry() const { return {textTop, lineHeight, kLineGap}; }
+
     Caret caretAt(float x, float y) const {
-        // `textTop + i * lineHeight` is line i's *baseline*; its box runs from one line
-        // higher. Measuring from the baseline put every click a line above where it was
-        // aimed, which is the sort of thing you feel long before you can name it.
-        const float top = textTop - lineHeight + kLineGap;
-        const float row = (y - top + scrollY) / std::max(1.0f, lineHeight);
-        const int line = std::max(0, std::min(buffer.lineCount() - 1,
-                                              static_cast<int>(std::floor(row))));
+        // The line mapping is in ViewGeometry, tested without a window: `textTop` is line 0's
+        // *baseline*, its box starts a line higher, and measuring from the wrong one put
+        // every click a line above where it was aimed.
+        const int line = lineAt(lineGeometry(), y, scrollY, buffer.lineCount());
         return {line, columnAt(buffer.line(line), x)};
     }
 
@@ -459,12 +459,11 @@ void SlideEditor::render(App& app) {
     const float viewTop = kHeaderH, viewBottom = h - kFooterH;
     const float viewH = viewBottom - viewTop;
 
-    // Keep the caret on screen — following it is the whole job of the scroll here.
+    // Keep the caret on screen — following it is the whole job of the scroll here. Unlike
+    // the deck view this follows on every frame, and should: the caret is where you are
+    // typing, and there is no separate selection to scroll away from.
     const Caret caret = impl.buffer.caret();
-    const float caretTop = caret.line * lineHeight;
-    if (caretTop < impl.scrollY) impl.scrollY = caretTop;
-    else if (caretTop + lineHeight > impl.scrollY + viewH - lineHeight)
-        impl.scrollY = caretTop + lineHeight * 2 - viewH;
+    impl.scrollY = scrollToShowLine(impl.lineGeometry(), caret.line, impl.scrollY, viewH);
     const float caretX = textWidth(mono, impl.buffer.line(caret.line).substr(0, caret.col));
     const float textW = w - impl.textLeft - pad;
     if (caretX < impl.scrollX) impl.scrollX = std::max(0.0f, caretX - 40);

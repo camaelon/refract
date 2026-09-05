@@ -124,6 +124,7 @@ void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
+void refreshVoicePresence();
 void toggleDeckView();
 void toggleBuildPanel();
 void toggleSlideEditor();
@@ -292,6 +293,9 @@ void noteSlideShown() {
         } else {
             recorder->start(wav.string());
             voiceIndex.record(slide.sourceKey(), wav.stem().string());
+            if (g.currentIndex < static_cast<int>(app.voice.size())) {
+                app.voice[g.currentIndex] = 1;   // it has narration from this moment on
+            }
         }
     }
 }
@@ -315,6 +319,19 @@ fs::path voiceFileFor(int slide, const char* extension) {
                                  : positional.parent_path() / (stem + ".wav");
     if (std::string(extension) != ".wav") path.replace_extension(extension);
     return path;
+}
+
+// Which slides have narration, for the deck view to show. Done once per deck rather than per
+// frame: it is a look at the disk for every slide, and the answer only changes when the deck
+// is rebuilt or something is recorded.
+void refreshVoicePresence() {
+    app.voice.assign(app.deck.size(), 0);
+    if (g.voiceDirOverride.empty()) return;
+    for (int i = 0; i < app.deck.size(); i++) {
+        const fs::path wav = voiceFileFor(i);
+        std::error_code ec;
+        app.voice[i] = (!wav.empty() && fs::exists(wav, ec)) ? 1 : 0;
+    }
 }
 
 // Start this slide's narration, then open the *next* slide's file so the following change
@@ -507,6 +524,7 @@ bool reloadDeck() {
     }
     g.files = std::move(files);
     app.deck.build(g.files, deckInput);
+    refreshVoicePresence();
     refract::clearThumbCache();
     g.currentIndex = app.deck.clamp(g.currentIndex);
     loadCurrentFile();
@@ -581,6 +599,10 @@ bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
                 result.status = "the markdown was written but the rebuild failed: "
                                 + result.status;
             }
+        } else if (parsed && doc.contains("description")) {
+            // The tool knows better than the caller does: "undid move slide 3" says more
+            // than "undone", and "nothing to undo" is not "no change".
+            result.status = doc["description"].get<std::string>();
         } else {
             result.status = result.changed ? doneMessage : "no change";
         }
@@ -658,6 +680,15 @@ bool deleteSlideInSource(int slide, std::string* status) {
                            }, status);
 }
 
+// Take back the last rewrite of the deck's markdown, or put it back.
+bool undoSourceEdit(bool redo, std::string* status) {
+    return startSourceEdit("history.py", {redo ? "--redo" : "--undo"},
+                           redo ? "redone" : "undone",
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
+}
+
 void openDeckView() {
     if (deckView) return;
     deckView = refract::DeckViewWindow::Create(1180, 780);
@@ -667,6 +698,7 @@ void openDeckView() {
     deckView->setOnMoveRun(moveRunInSource);
     deckView->setOnAddSlide(addSlideInSource);
     deckView->setOnDeleteSlide(deleteSlideInSource);
+    deckView->setOnUndo(undoSourceEdit);
     // The view takes the keys it uses to walk the grid; everything else still drives the
     // talk, so the deck can be run from this window like any other.
     glfwSetKeyCallback(deckView->window(),
@@ -1410,6 +1442,7 @@ int main(int argc, char* argv[]) {
     if (wantBuildPanel) openBuildPanel();
     if (wantEditor) openSlideEditor();
 
+    refreshVoicePresence();
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
     playSlideAudio();

@@ -56,6 +56,7 @@ and adds `--screenshot` / `--frames` for single-file headless capture.
   out/               # generated .rc files           (created)
   out/deck.json      # deck outline + provenance      (created)
   out/.refract-cache.json  # what the last build produced (incremental builds)
+  out/.refract-history.json # the last 30 edits, for undo in the deck view
   out/notes.md       # speaker notes                 (when the deck has any)
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
@@ -603,6 +604,7 @@ is the same one `markdown.py` produces.
 python3 player/tools/reorder.py <deck>/out --move 12 --to 3      # move a slide
 python3 player/tools/slide.py   <deck>/out --slide 12 --read     # one slide's markdown
 python3 player/tools/build.py   <deck>/out --transitions         # rebuild, and say what it did
+python3 player/tools/history.py <deck>/out --undo                # take the last one back
 ```
 
 See [player/README.md](player/README.md#the-editing-loop).
@@ -685,6 +687,7 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `reorder`     | moving those blocks — a slide, a section, an included sub-deck |
 | `buildcache`  | what the last build produced, so an unchanged slide is not recompiled |
 | `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
+| `history`     | undo and redo for every edit that rewrites a deck's markdown |
 
 **Add a language:** drop a `tokenize_x` in `highlight.py` and register it in
 `LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the

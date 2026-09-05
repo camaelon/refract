@@ -81,6 +81,7 @@ set(REFRACTPLAYER_SOURCES
     src/Thumbs.cpp
     src/Timing.cpp
     src/Ui.cpp
+    src/ViewGeometry.cpp
     src/VoiceIndex.cpp
     src/main.cpp
 )
@@ -120,3 +121,8 @@ add_executable(timing_test tests/timing_test.cpp src/Timing.cpp src/Deck.cpp src
 target_include_directories(timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(timing_test PRIVATE rcplayer nlohmann_json::nlohmann_json)
 add_test(NAME timing COMMAND timing_test)
+
+# The deck view's grid and the editor's lines: clicking, scrolling, hit-testing.
+add_executable(view_geometry_test tests/view_geometry_test.cpp src/ViewGeometry.cpp)
+target_include_directories(view_geometry_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME view_geometry COMMAND view_geometry_test)

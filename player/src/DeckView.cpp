@@ -1,6 +1,7 @@
 #include "DeckView.h"
 
 #include "DeckOrder.h"
+#include "ViewGeometry.h"
 #include "Thumbs.h"
 #include "Ui.h"
 
@@ -41,6 +42,28 @@ std::vector<SlideGroup> buildGroups(const Deck& deck) {
     return groupSlides(sources);
 }
 
+// A few bars of a waveform, in the corner of a card that has narration recorded for it.
+//
+// Drawn rather than written: the chrome renders through one typeface with no fallback, and a
+// speaker glyph is exactly the sort of character that comes out as an empty box. Four bars
+// read as sound at any size and cannot.
+void drawVoiceMark(SkCanvas* canvas, const SkRect& thumb, SkColor tone) {
+    constexpr float kBar = 2.0f, kGap = 2.0f;
+    static const float kHeights[] = {5, 9, 6, 11, 4};
+    constexpr int kBars = 5;
+    const float w = kBars * kBar + (kBars - 1) * kGap;
+    const float right = thumb.right() - 8, bottom = thumb.bottom() - 8;
+
+    SkRect pill = SkRect::MakeLTRB(right - w - 7, bottom - 15, right + 5, bottom + 4);
+    fillRoundRect(canvas, pill, pill.height() * 0.5f, 0xC00E1013);
+    for (int i = 0; i < kBars; i++) {
+        const float x = right - w + i * (kBar + kGap);
+        fillRect(canvas, SkRect::MakeXYWH(x, bottom - kHeights[i] * 0.5f - 5, kBar,
+                                          kHeights[i]),
+                 tone);
+    }
+}
+
 std::string groupLabel(const SlideGroup& g) {
     if (g.count() == 1) return std::to_string(g.first + 1);
     return std::to_string(g.first + 1) + "-" + std::to_string(g.last + 1);
@@ -58,6 +81,7 @@ struct DeckViewWindow::Impl {
     std::function<bool(const std::string&, int, int, int, std::string*)> onMoveRun;
     std::function<bool(int, bool, std::string*)> onAdd;
     std::function<bool(int, std::string*)> onDelete;
+    std::function<bool(bool, std::string*)> onUndo;
     // Delete asks twice. A slide is a paragraph of somebody's talk and there is no undo
     // behind this — only the markdown, and whatever they have in git.
     int armedDelete = -1;
@@ -346,6 +370,10 @@ void DeckViewWindow::setOnDeleteSlide(std::function<bool(int, std::string*)> act
     mImpl->onDelete = std::move(action);
 }
 
+void DeckViewWindow::setOnUndo(std::function<bool(bool, std::string*)> action) {
+    mImpl->onUndo = std::move(action);
+}
+
 // Move the whole run the cursor is in, one place either way — what dragging its grip bar
 // does, for anyone not reaching for the mouse.
 void DeckViewWindow::nudgeRun(int delta) {
@@ -488,6 +516,21 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
 
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
     const bool alt = (mods & GLFW_MOD_ALT) != 0;
+#if defined(__APPLE__)
+    const bool cmd = (mods & GLFW_MOD_SUPER) != 0;
+#else
+    const bool cmd = (mods & GLFW_MOD_CONTROL) != 0;
+#endif
+    if (cmd && key == GLFW_KEY_Z) {
+        // Undo for the deck rather than for the text: reordering, adding, deleting, and a
+        // slide saved from the editor. Every one of them rewrote slides.md, and until this
+        // existed none of them could be taken back.
+        if (impl.onUndo) {
+            std::string status;
+            impl.setStatus(status, !impl.onUndo(shift, &status));
+        }
+        return true;
+    }
     // A key that is not the second press of a delete disarms it: a confirmation you have
     // walked away from should not be waiting when you come back to the arrow keys.
     if (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE) impl.armedDelete = -1;
@@ -697,44 +740,37 @@ void DeckViewWindow::render(App& app) {
     }
 
     // ── Grid layout ──────────────────────────────────────────────────
-    const float gutter = 14.0f;
-    const float gridW = w - pad * 2;
-    int columns = std::max(1, static_cast<int>((gridW + gutter) / (kMinCardW + gutter)));
+    // The arithmetic is in ViewGeometry, where it can be tested without a window — which is
+    // how it stopped being wrong. See view_geometry_test.
+    GridSpec gridSpec;
+    gridSpec.width = static_cast<float>(w);
+    gridSpec.height = static_cast<float>(h);
+    gridSpec.headerH = headerH;
+    gridSpec.pad = pad;
+    gridSpec.minCardW = kMinCardW;
+    gridSpec.thumbAspect = static_cast<float>(kThumbH) / kThumbW;
+    gridSpec.labelH = 34.0f + impl.barRows * 13.0f;
+
     const int cellCount = static_cast<int>(impl.cells.size());
-    columns = std::min(columns, cellCount);
+    const Grid grid = layoutGrid(gridSpec, cellCount);
+    const float gutter = grid.gutter;
+    const int columns = grid.columns;
+    const float cardW = grid.cardW, thumbH = grid.thumbH, cardH = grid.cardH;
     impl.columns = columns;
-    const float cardW = (gridW - gutter * (columns - 1)) / columns;
-    const float thumbH = cardW * static_cast<float>(kThumbH) / kThumbW;
-    const float labelH = 34.0f + impl.barRows * 13.0f;
-    const float cardH = thumbH + labelH;
     impl.cardW = cardW;
     impl.cardH = cardH;
     impl.thumbH = thumbH;
+    impl.scrollMax = grid.scrollMax;
 
-    const int rows = (cellCount + columns - 1) / columns;
-    const float contentH = rows * cardH + std::max(0, rows - 1) * gutter + pad;
-    const float viewH = h - headerH;
-    impl.scrollMax = std::max(0.0f, contentH - viewH + pad);
-
-    // Scroll to the cursor when it has just been *moved* — the keyboard walks it off the
-    // bottom otherwise, and the view would show the same rows while the selection left. Only
-    // then: doing it every frame is doing it to the wheel as well.
-    if (impl.followCursor) {
-        impl.followCursor = false;
-        const int row = impl.cursor / columns;
-        const float top = row * (cardH + gutter);
-        if (top < impl.scroll) impl.scroll = top;
-        else if (top + cardH > impl.scroll + viewH - pad)
-            impl.scroll = top + cardH - viewH + pad;
-    }
-    impl.scroll = std::max(0.0f, std::min(impl.scrollMax, impl.scroll));
+    // Follows the cursor only on the frame it moved. Every frame would be following it with
+    // the wheel too, which is a scroll that lasts until the next redraw and no longer.
+    impl.scroll = settleScroll(grid, impl.scroll, impl.cursor, impl.followCursor);
+    impl.followCursor = false;
 
     impl.cards.assign(cellCount, SkRect::MakeEmpty());
     for (int i = 0; i < cellCount; i++) {
-        const int row = i / columns, col = i % columns;
-        const float x = pad + col * (cardW + gutter);
-        const float y = headerH + pad * 0.4f + row * (cardH + gutter) - impl.scroll;
-        impl.cards[i] = SkRect::MakeXYWH(x, y, cardW, cardH);
+        const Box box = grid.card(i, impl.scroll);
+        impl.cards[i] = SkRect::MakeLTRB(box.left, box.top, box.right, box.bottom);
     }
 
     // The selection follows a moved block, once the rebuilt deck is actually the one being
@@ -865,6 +901,12 @@ void DeckViewWindow::render(App& app) {
             fillRoundRect(canvas, badge, 9, withAlpha(foldTone, 0xE0));
             drawText(canvas, count, badge.left() + 8, badge.bottom() - 5, badgeFont, ui::kBg);
         }
+
+        // Narration recorded for this slide. On a folded run, for any slide inside it —
+        // what is behind the card is what the mark is about.
+        bool voiced = false;
+        for (int v = cell.firstSlide; v <= cell.lastSlide && !voiced; v++) voiced = app.hasVoice(v);
+        if (voiced) drawVoiceMark(canvas, thumb, ui::kAhead);
 
         // A section heading gets a bar down its left edge: the deck's structure has to be
         // visible in a grid, or a long deck is an undifferentiated wall of slides.

@@ -47,6 +47,11 @@ public:
     void setOnAddSlide(std::function<bool(int slide, bool before, std::string* status)> action);
     void setOnDeleteSlide(std::function<bool(int slide, std::string* status)> action);
 
+    // Take back the last edit to the deck's markdown, or put it back. Same contract again:
+    // true when the work was started. This is *not* the editor's cmd+Z — that undoes typing
+    // inside one slide; this undoes reordering, adding and deleting whole ones.
+    void setOnUndo(std::function<bool(bool redo, std::string* status)> action);
+
     // The rewrite this view asked for has finished and the deck has been reloaded.
     void editFinished(bool ok, const std::string& status);
 

@@ -35,7 +35,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from refractkit import manifest, reorder
+    from refractkit import history, manifest, reorder
 except ImportError:  # pragma: no cover - only when the script is copied out of the repo
     sys.stderr.write(f"reorder.py: cannot import refractkit from {_ROOT}\n")
     raise
@@ -136,6 +136,10 @@ def main() -> int:
         result["dst"] = args.to_chunk
 
     if not args.dry_run and changed:
+        # Recorded before it happens, so it can be taken back. See refractkit.history.
+        history.record(out_dir, src, text, new_text,
+                       (f"move blocks {from_chunk}-{to_chunk}" if run
+                        else f"move slide {args.move + 1}"))
         # Written via a temp file in the same directory then renamed, so an interrupted write
         # can never leave a half-rewritten slides.md behind.
         tmp = md_path + ".reorder.tmp"

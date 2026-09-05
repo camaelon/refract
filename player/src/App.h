@@ -9,6 +9,7 @@
 #include "Timing.h"
 
 #include <string>
+#include <vector>
 
 namespace refract {
 
@@ -61,6 +62,14 @@ struct App {
     std::string jumpDigits;
 
     bool showHelp = false;
+
+    // Which slides have narration recorded for them, one entry per slide. Refreshed when the
+    // deck is loaded rather than probed while drawing: the answer needs the voice index and a
+    // look at the disk, and the deck view asks it of every card on screen.
+    std::vector<char> voice;
+    bool hasVoice(int slide) const {
+        return slide >= 0 && slide < static_cast<int>(voice.size()) && voice[slide];
+    }
 
     int current() const;
     // Seconds spent on the current slide.

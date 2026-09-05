@@ -145,6 +145,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `option`+`shift`+`←`/`→` | move the whole section or sub-deck |
 | `N` / `shift`+`N` | add a slide after / before the cursor |
 | `⌫` | delete the slide (press twice) |
+| `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo the last edit to the deck |
 | `Z` / `shift`+`Z` | fold the run at the cursor / the whole deck |
 
 **In the slide editor** — every other key is a character
@@ -249,6 +250,7 @@ all run on their own:
 | `tools/reorder.py` | move a slide, a section or a sub-deck |
 | `tools/slide.py` | read, rewrite, add or delete one slide's markdown |
 | `tools/build.py` | rebuild with a given set of options, and report what it did |
+| `tools/history.py` | undo and redo those edits |
 | `tools/captions.py` | transcribe the narration and align it into per-word timings |
 | `tools/web.py` | assemble the deck, its audio and its captions into a web page |
 
@@ -293,8 +295,22 @@ number under such a card reads `4-6` rather than `4`.
 ```
 
 `N` adds an empty slide after the cursor (`shift`+`N` before it) and `⌫` removes the one it is
-on — twice, because there is no undo behind it but the markdown itself. Deleting the source of
-an expanded slide takes every slide it produced, and the confirmation says how many.
+on — twice, because deleting a slide is not a small thing. Deleting the source of an expanded
+slide takes every slide it produced, and the confirmation says how many.
+
+**`cmd`+`Z` undoes the deck**, not the text: reordering, adding, deleting, and a slide saved
+from the editor — every edit that rewrote `slides.md`. (The editor's own `cmd`+`Z` undoes
+typing inside one slide; they are different stacks because they are different questions.) The
+last thirty edits are kept in `out/.refract-history.json`, with the file's contents either side
+of each one.
+
+An undo refuses if the markdown has changed outside the player since that edit. A `slides.md`
+edited in a terminal while the player was open is an ordinary thing to have happened, and undo
+must not throw it away to make room for its own idea of the past.
+
+A card shows a small **waveform** in its corner when narration has been recorded for that
+slide — so a rehearsal's coverage is visible at a glance. A folded run shows it if any slide
+behind it has one.
 
 Grab a card and that slide moves. Grab a bar and the whole run moves — every slide it covers
 lights up while you carry it, so what you have picked up is never in doubt. Bars sit in space
@@ -844,6 +860,12 @@ ctest --test-dir player/build --output-on-failure
 | `deck_order` | which slides group together, which block a drop moves, how folding tiles the grid |
 | `text_buffer` | the editor's caret, selection, UTF-8, frame selection and undo |
 | `timing` | the rehearsal trace, and the slide identity that survives a reorder |
+| `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
+
+`view_geometry` exists because both of this player's visual bugs lived in coordinate arithmetic
+buried inside a render function — the grid scrolling back to the cursor every frame, and a
+click landing a line high — and both were reported by a person rather than caught by anything.
+That arithmetic is now a separate unit, with a test named after each bug.
 
 The other half of the same features — turning a move into a rewritten `slides.md`, the
 incremental build, the tools — is covered by refract's Python suite:
@@ -862,6 +884,7 @@ python3 -m unittest discover -s tests
 | `src/Navigator.{h,cpp}` | the navigator, help card, pending-jump chip |
 | `src/DeckView.{h,cpp}` | the deck view: the grid, folding, dragging |
 | `src/DeckOrder.{h,cpp}` | the reordering arithmetic behind it, with no window attached |
+| `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
 | `src/SlideEditor.{h,cpp}` | the slide editor window |
 | `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
 | `src/BuildPanel.{h,cpp}` | the build panel |
@@ -875,6 +898,7 @@ python3 -m unittest discover -s tests
 | `tools/reorder.py` | moving a slide, a section or a sub-deck in the markdown |
 | `tools/slide.py` | reading, rewriting, adding and deleting one slide's markdown |
 | `tools/build.py` | rebuilding, and reporting how much of the deck it had to touch |
+| `tools/history.py` | undo and redo for every edit above |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
 | `tools/web.py` | the web player: assembles the deck, audio and captions into a page |
 | `tests/` | the three C++ suites above |

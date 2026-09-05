@@ -30,7 +30,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from refractkit import chunks, manifest
+    from refractkit import chunks, history, manifest
 except ImportError:  # pragma: no cover - only when the script is copied out of the repo
     sys.stderr.write(f"slide.py: cannot import refractkit from {_ROOT}\n")
     raise
@@ -122,6 +122,8 @@ def main() -> int:
         except ValueError as e:
             return fail(str(e), as_json)
 
+        history.record(out_dir, src, text, new_text,
+                       "add a slide" if args.new else f"delete slide {args.slide + 1}")
         tmp = md_path + ".edit.tmp"
         with open(tmp, "w") as f:
             f.write(new_text)
@@ -162,6 +164,7 @@ def main() -> int:
     changed = new_text != text
     result = {"ok": True, "file": src, "block": block, "changed": changed, "rebuilt": False}
     if changed:
+        history.record(out_dir, src, text, new_text, f"edit slide {args.slide + 1}")
         # Temp file then rename, so an interrupted write can never leave a half-written
         # slides.md — the file the whole deck is made of.
         tmp = md_path + ".edit.tmp"
