@@ -43,6 +43,7 @@ struct BuildPanel::Impl {
 
     GLFWwindow* host = nullptr;
     bool attached = true;
+    bool watch = false;
 
     double mouseX = 0, mouseY = 0;
     std::vector<Hit> hits;
@@ -141,6 +142,8 @@ void BuildPanel::setOptions(const BuildOptions& options) { mImpl->options = opti
 void BuildPanel::setState(const BuildState& state) { mImpl->state = state; }
 
 void BuildPanel::setHost(GLFWwindow* host) { mImpl->host = host; }
+
+bool BuildPanel::watching() const { return mImpl->watch; }
 
 bool BuildPanel::handleKey(int key, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return false;
@@ -289,6 +292,11 @@ void BuildPanel::render(App& app) {
                    "changed is recompiled.",
                    &impl.options.force, idle);
 
+    y += 2;
+    y = drawOption(canvas, impl.hits, pad, y, colW, "rebuild on change",
+                   "Watch slides.md, settings.toml and includes/, and build when they change.",
+                   &impl.watch, idle);
+
     y += 6;
     fillRect(canvas, SkRect::MakeXYWH(pad, y, colW, 1), ui::kLine);
     y += 20;
@@ -316,7 +324,8 @@ void BuildPanel::render(App& app) {
         drawText(canvas, "LAST BUILD", pad, y, uiFont(10, true), ui::kDim);
         y += 20;
         if (impl.state.running) {
-            drawText(canvas, "running refract…", pad, y, uiFont(13), ui::kText);
+            drawText(canvas, impl.watch ? "a change landed — building…" : "running refract…",
+                     pad, y, uiFont(13), ui::kText);
             y += 20;
         } else if (impl.state.ok) {
             // The reused count is the point of the incremental build, so it is said out loud

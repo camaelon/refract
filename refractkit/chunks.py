@@ -118,6 +118,89 @@ def replace_chunk(text: str, index: int, replacement: str) -> str:
     return out + "\n" if trailing else out
 
 
+def _padding(chunks: list[list[str]]) -> list[str]:
+    """The blank line a deck puts either side of its ``---``, or nothing if it does not.
+
+    Taken from the file rather than chosen, so a new slide is spaced the way its neighbours
+    are and adding one shows up in the diff as a slide rather than as a reformat.
+    """
+    for chunk in chunks:
+        if chunk and not chunk[0].strip():
+            return [chunk[0]]
+    return []
+
+
+def _trimEnds(chunks: list[list[str]]) -> None:
+    """Drop blank lines from the very top and bottom of the file.
+
+    A block's padding is the gap around the ``---`` next to it, so the first block has none
+    above it and the last none below. Adding or removing a block at either end leaves padding
+    for a separator that is no longer there.
+    """
+    if not chunks:
+        return
+    while chunks[0] and not chunks[0][0].strip():
+        chunks[0].pop(0)
+    while chunks[-1] and not chunks[-1][-1].strip():
+        chunks[-1].pop()
+
+
+def insert_chunk(text: str, index: int, source: str = "") -> str:
+    """Add a block so that it becomes block ``index``, pushing the rest down.
+
+    The separator and the blank lines around it follow the deck's own style, so a file
+    written with a blank line either side of every ``---`` stays that way.
+    """
+    n = count_chunks(text)
+    if not 0 <= index <= n:
+        raise IndexError(f"block {index} out of range (deck has {n} blocks)")
+
+    trailing = text.endswith("\n")
+    body = text[:-1] if trailing else text
+    chunks, seps = split_chunks(body)
+    pad = _padding(chunks)
+
+    body_lines = source.strip("\n").split("\n") if source.strip("\n") else []
+    lines = pad + body_lines + pad
+    # The block at an end of the file has no padding on that side — there is no separator
+    # there to pad against — so the neighbour that is about to gain one needs it back.
+    if index == len(chunks) and pad and chunks and chunks[-1] and chunks[-1][-1].strip():
+        chunks[-1] = chunks[-1] + pad
+    if index == 0 and pad and chunks and chunks[0] and chunks[0][0].strip():
+        chunks[0] = pad + chunks[0]
+    chunks.insert(index, lines)
+    # A block needs a separator to be a block: one more than there were, in the gap the new
+    # one opened. Copied from a neighbour so `  ---  ` stays `  ---  `.
+    seps.insert(min(index, len(seps)), seps[min(index, len(seps) - 1)] if seps else "---")
+    _trimEnds(chunks)
+
+    out = join_chunks(chunks, seps)
+    return out + "\n" if trailing else out
+
+
+def delete_chunk(text: str, index: int) -> str:
+    """Remove block ``index``, and the separator that held it.
+
+    Refuses to empty the file: a deck of no slides is not a deck, and the markdown would have
+    nothing left to put a slide back into.
+    """
+    n = count_chunks(text)
+    if not 0 <= index < n:
+        raise IndexError(f"block {index} out of range (deck has {n} blocks)")
+    if n == 1:
+        raise ValueError("a deck has to keep at least one slide")
+
+    trailing = text.endswith("\n")
+    body = text[:-1] if trailing else text
+    chunks, seps = split_chunks(body)
+    del chunks[index]
+    del seps[min(index, len(seps) - 1)]
+    _trimEnds(chunks)
+
+    out = join_chunks(chunks, seps)
+    return out + "\n" if trailing else out
+
+
 def _leading_blanks(lines: list[str]) -> list[str]:
     out = []
     for line in lines:

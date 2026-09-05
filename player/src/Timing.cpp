@@ -44,9 +44,14 @@ bool Timing::loadForDeck(const std::string& source) {
         if (!rec.contains("file")) continue;
         TimingEntry e;
         e.file     = rec["file"].get<std::string>();
+        e.key      = rec.value("key", std::string());
         e.start    = rec.value("start", 0.0);
         e.duration = rec.value("duration", 0.0);
-        mFirstVisit.emplace(e.file, mEntries.size());   // emplace keeps the first
+        // Both, so a lookup by either finds it: the key is what survives a reorder, and the
+        // filename is what a trace written before keys existed has to be found by.
+        // `emplace` keeps the first of a revisited slide.
+        if (!e.key.empty()) mFirstVisit.emplace(e.key, mEntries.size());
+        mFirstVisit.emplace(e.file, mEntries.size());
         mEntries.push_back(std::move(e));
     }
     mTotal = doc.value("total", mEntries.empty() ? 0.0 : mEntries.back().end());
@@ -57,7 +62,18 @@ bool Timing::loadForDeck(const std::string& source) {
     return true;
 }
 
-const TimingEntry* Timing::find(const std::string& file) const {
+const TimingEntry* Timing::find(const std::string& key, const std::string& file) const {
+    // The key first: after a reorder the filename belongs to a different slide, and matching
+    // on it would credit this slide with somebody else's timing.
+    if (!key.empty()) {
+        auto it = mFirstVisit.find(key);
+        if (it != mFirstVisit.end()) return &mEntries[it->second];
+        // A trace with keys in it that does not have *this* key has nothing for this slide;
+        // falling back to the filename would find the slide that used to be in its place.
+        for (const auto& e : mEntries) {
+            if (!e.key.empty()) return nullptr;
+        }
+    }
     auto it = mFirstVisit.find(file);
     return it == mFirstVisit.end() ? nullptr : &mEntries[it->second];
 }
@@ -86,15 +102,17 @@ void Timing::beginRecording(const std::string& path) {
     std::cerr << "recording timings to " << path << "\n";
 }
 
-void Timing::mark(const std::string& file, double elapsed) {
+void Timing::mark(const std::string& key, const std::string& file, double elapsed) {
     if (!mRecording) return;
     if (!mEntries.empty()) {
         TimingEntry& last = mEntries.back();
         last.duration = std::max(0.0, elapsed - last.start);
     }
     TimingEntry e;
+    e.key   = key;
     e.file  = file;
     e.start = elapsed;
+    if (!key.empty()) mFirstVisit.emplace(key, mEntries.size());
     mFirstVisit.emplace(file, mEntries.size());
     mEntries.push_back(std::move(e));
     mTotal = elapsed;
@@ -139,7 +157,7 @@ bool Timing::save() const {
     doc["recorded"] = isoNow();
     doc["total"]    = round2(mTotal);
     for (const auto& e : mEntries) {
-        doc["slides"].push_back(nlohmann::ordered_json{{"file", e.file},
+        doc["slides"].push_back(nlohmann::ordered_json{{"key", e.key}, {"file", e.file},
                                                        {"start", round2(e.start)},
                                                        {"duration", round2(e.duration)}});
     }
@@ -152,9 +170,9 @@ bool Timing::save() const {
     return true;
 }
 
-bool paceDelta(const Timing& timing, const std::string& file, double elapsed,
-               double timeOnSlide, double* delta) {
-    const TimingEntry* e = timing.find(file);
+bool paceDelta(const Timing& timing, const std::string& key, const std::string& file,
+               double elapsed, double timeOnSlide, double* delta) {
+    const TimingEntry* e = timing.find(key, file);
     if (!e) return false;
     // Credit the rehearsal's own time on this slide, but no more than it actually spent:
     // matching its pace holds the delta steady, and overrunning grows it.

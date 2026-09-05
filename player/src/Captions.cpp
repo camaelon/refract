@@ -14,18 +14,17 @@ namespace fs = std::filesystem;
 
 namespace refract {
 
-void Captions::loadFor(const std::string& entry) {
-    if (entry == mEntry) return;
+void Captions::loadForVoice(const fs::path& wav) {
+    if (wav.string() == mEntry) return;
     if (mDirty) save();          // never lose a correction to a slide change
-    mEntry = entry;
+    mEntry = wav.string();
     mPath.clear();
     mText.clear();
     mWords.clear();
     mDirty = false;
     mEarliestEdit = -1.0;
 
-    // Captions sit beside the wav they were made from, under the same slide number.
-    fs::path wav = rcplayer::voicePathFor(entry);
+    // Captions sit beside the wav they were made from, under the same name.
     if (wav.empty()) return;
     fs::path path = wav;
     path.replace_extension();               // drop ".wav"

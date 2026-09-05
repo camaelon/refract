@@ -55,6 +55,10 @@ public:
     void setOptions(const BuildOptions& options);
     void setState(const BuildState& state);
 
+    // Rebuild whenever the deck's markdown changes. The panel only holds the switch; the
+    // watching is the app's, which is where the deck's files are known.
+    bool watching() const;
+
     // The window to sit against, or null to float free. Passed every frame because the
     // window it attaches to can be opened and closed while the panel is up.
     void setHost(GLFWwindow* host);

@@ -7,6 +7,8 @@ source, hand back an edited version, and have the deck rebuilt around it.
 
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --read
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --write new.md [--no-rebuild]
+    python3 player/tools/slide.py <deck-out-dir> --slide 12 --new [--before]
+    python3 player/tools/slide.py <deck-out-dir> --slide 12 --delete
 
 `--read` prints JSON: the file, the block index, and the source. `--write` takes the new
 source from a file (not stdin, so the player can hand over text with any bytes in it without
@@ -73,13 +75,19 @@ def main() -> int:
     ap.add_argument("--read", action="store_true", help="print the slide's markdown")
     ap.add_argument("--write", metavar="FILE", default=None,
                     help="replace the slide's markdown with the contents of FILE")
+    ap.add_argument("--new", action="store_true",
+                    help="add an empty slide after this one (--before puts it in front)")
+    ap.add_argument("--before", action="store_true", help="with --new: insert in front")
+    ap.add_argument("--delete", action="store_true",
+                    help="remove this slide's markdown block, and every slide it produced")
     ap.add_argument("--no-rebuild", action="store_true",
                     help="write the markdown but do not re-run refract")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     args = ap.parse_args()
 
-    if args.read == (args.write is not None):
-        ap.error("give exactly one of --read or --write")
+    modes = [args.read, args.write is not None, args.new, args.delete]
+    if sum(1 for m in modes if m) != 1:
+        ap.error("give exactly one of --read, --write, --new or --delete")
     # A read always answers in JSON, so its failures do too — the caller is parsing stdout
     # either way, and an error on stderr would look to it like no answer at all.
     as_json = args.json or args.read
@@ -101,6 +109,39 @@ def main() -> int:
         return fail(f"cannot find {md_path}", as_json)
     with open(md_path) as f:
         text = f.read()
+
+    if args.new or args.delete:
+        # A block is what is added or removed, not a slide: deleting one step of a stepped
+        # bullet list would leave the others without their source.
+        at = block if args.before else block + 1
+        try:
+            new_text = (chunks.insert_chunk(text, at, "# New slide\n") if args.new
+                        else chunks.delete_chunk(text, block))
+        except IndexError as e:
+            return fail(f"{e} — the deck is out of date with {src}", as_json)
+        except ValueError as e:
+            return fail(str(e), as_json)
+
+        tmp = md_path + ".edit.tmp"
+        with open(tmp, "w") as f:
+            f.write(new_text)
+        os.replace(tmp, md_path)
+
+        result = {"ok": True, "file": src, "block": block if args.delete else at,
+                  "changed": True, "rebuilt": False,
+                  "removed": shared if args.delete else 0}
+        if not args.no_rebuild:
+            rc = rebuild(deck_dir, deck)
+            result["rebuilt"] = rc == 0
+            if rc != 0:
+                result["ok"] = False
+                result["error"] = f"refract.py exited with {rc}"
+        if as_json:
+            print(json.dumps(result))
+        else:
+            print(("added a slide at" if args.new else "removed") + f" block {result['block']}"
+                  f" of {src}" + ("" if result["rebuilt"] else " (not rebuilt)"))
+        return 0 if result["ok"] else 1
 
     if args.read:
         try:

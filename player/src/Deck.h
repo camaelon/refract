@@ -49,6 +49,22 @@ struct Slide {
     // whole sub-deck inside the deck being looked at.
     std::vector<SourceRef> srcVia;
 
+    // Which of the slides that share this block this one is: 0 unless refract expanded the
+    // block into several (bullet fragments, scroll pages, staggered embeds).
+    int srcStep = 0;
+
+    // A name for the slide that survives the deck being reordered.
+    //
+    // Filenames cannot: they carry the slide's position, so moving one slide renames every
+    // slide after it. A rehearsal trace and a recording of the narration are both keyed by
+    // slide, and both used to be silently wrong the moment anything moved. This is the block
+    // the slide was written in, which is what a reorder moves rather than renames. Empty when
+    // the deck has no provenance, and callers fall back to the filename.
+    std::string sourceKey() const {
+        if (srcFile.empty() || srcIndex < 0) return {};
+        return srcFile + "#" + std::to_string(srcIndex) + "." + std::to_string(srcStep);
+    }
+
     // Full provenance, root-first, ending with the slide's own block.
     std::vector<SourceRef> sourcePath() const {
         std::vector<SourceRef> path = srcVia;
@@ -82,6 +98,10 @@ public:
     // True when every slide records where it came from, i.e. the deck can be reordered by
     // rewriting its markdown.
     bool reorderable() const;
+
+    // The slide with this source key, or -1. How a trace or a recording finds its slide
+    // again after the deck has been reordered.
+    int indexOfSourceKey(const std::string& key) const;
 
     // Position of the slide with this basename, or -1. Traces key by name for the same
     // reason the manifest does: it survives a deck being renumbered around it.

@@ -26,14 +26,24 @@ prebuilt/refractplayer examples/deck/out       # present it (→ steps, Tab jump
 Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
 `prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
 
-`refractplayer` is the deck player — a presenter window with the clock, the notes and the
-next slide, a navigator to jump to a section, a talk timer, rehearsal recording, a deck view
-(`V`) where slides can be dragged into a new order, which rewrites `slides.md` and rebuilds,
-a build panel (`M`) that re-runs refract, and a slide editor (`E`) for the markdown
-behind the slide on screen — all without leaving the player — and it exports the deck to a PDF (`--pdf talk.pdf`) or to PNGs (`--images dir/`). See
-[player/README.md](player/README.md). `rcviewer` is the plain RemoteCompose viewer; it
-shares the same playback and export code, and adds `--screenshot` / `--frames` for
-single-file headless capture.
+**`refractplayer`** is the deck player, and it is where a deck is presented *and* edited:
+
+| | | |
+|---|---|---|
+| presenter window | `P` | clock, timer, notes, the next slide, pace against a rehearsal |
+| navigator | `Tab` | the deck as a list, to jump somewhere |
+| deck view | `V` | every slide at once; drag to reorder, fold sections, add and delete |
+| slide editor | `E` | the markdown behind the slide on screen |
+| build panel | `M` | refract's options, and a Rebuild button |
+| captions | `C` | the recorded narration, word by word |
+
+The middle three write back to `slides.md` and re-run refract, so a deck can be rearranged
+and rewritten without leaving the player. It also records and replays a rehearsal, transcribes
+the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`) or a
+self-contained web page (`--web dir/`). See **[player/README.md](player/README.md)**.
+
+`rcviewer` is the plain RemoteCompose viewer; it shares the same playback and export code,
+and adds `--screenshot` / `--frames` for single-file headless capture.
 
 ## Deck layout on disk
 
@@ -43,13 +53,14 @@ single-file headless capture.
   settings.toml      # optional per-deck settings (colors, size, transitions, shader…)
   shader.sksl        # optional background shader referenced from settings.toml
   includes/          # images, sub-decks, .rc / .json resources
-  out/               # generated .rc files          (created)
-  out/deck.json      # deck outline for the player   (created)
+  out/               # generated .rc files           (created)
+  out/deck.json      # deck outline + provenance      (created)
   out/.refract-cache.json  # what the last build produced (incremental builds)
   out/notes.md       # speaker notes                 (when the deck has any)
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
   voice/             # one NN.wav per slide          (refractplayer --record-audio)
+  voice/index.json   # which wav belongs to which slide, so a reorder does not break it
   voice/NN.txt       # its transcript                (refractplayer --transcribe)
   voice/NN.words.json# per-word caption timings      (refractplayer --transcribe)
 ```
@@ -579,6 +590,23 @@ Speaker notes (everything after a `???` line) are written to `<deck>/out/notes.m
 per-slide `<deck>/out/<slide>.rc.notes` sidecar. `refractplayer` shows them in the presenter
 window; the PDF export puts them in a panel below each slide (the page grows to fit them).
 
+### Editing a deck from the player
+
+`out/deck.json` records where every slide was written — which markdown file, and which
+`---`-separated block of it. That is what lets `refractplayer` rearrange and rewrite a deck
+without a terminal: drag a slide in the deck view, type in the slide editor, press Rebuild in
+the build panel, and `slides.md` is what changes. The player never parses markdown itself; the
+edits are made by `player/tools/*.py`, which sit on `refractkit.chunks` so the block numbering
+is the same one `markdown.py` produces.
+
+```sh
+python3 player/tools/reorder.py <deck>/out --move 12 --to 3      # move a slide
+python3 player/tools/slide.py   <deck>/out --slide 12 --read     # one slide's markdown
+python3 player/tools/build.py   <deck>/out --transitions         # rebuild, and say what it did
+```
+
+See [player/README.md](player/README.md#the-editing-loop).
+
 ### Captions from a recorded talk
 
 `refractplayer --record-audio` records one wav per slide, `--transcribe` turns those into
@@ -653,16 +681,31 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `graph`       | graphviz layout → drawing (clusters/styles); magic-move geometry |
 | `chart`       | bar / line / pie charts on a canvas                       |
 | `render`      | blocks + theme → RemoteCompose component JSON             |
+| `chunks`      | the `---`-separated blocks of a slides.md: split, read, replace, insert, delete |
+| `reorder`     | moving those blocks — a slide, a section, an included sub-deck |
+| `buildcache`  | what the last build produced, so an unchanged slide is not recompiled |
+| `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
 
 **Add a language:** drop a `tokenize_x` in `highlight.py` and register it in
 `LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the
 `.sksl`.
 
+The last four are the ones the player edits a deck through. The player never parses markdown
+itself: block numbering has to agree exactly with `markdown.py`'s (which splits on `---` with
+no awareness of code fences, deliberately reproduced), and a second implementation would drift
+and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over them.
+
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests          # refract, and the player's tools
+ctest --test-dir player/build                  # the player's own logic — no window, no GPU
 ```
+
+The Python suite covers the markdown grammar, rendering, the incremental build, and the tools
+the player edits decks through. The C++ suites cover the parts of the player that are pure
+logic: the reordering arithmetic, the editor's text model, and the rehearsal trace. Neither
+needs a display.
 
 ## Notes
 

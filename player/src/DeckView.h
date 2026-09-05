@@ -37,9 +37,18 @@ public:
     void setOnOpenSlide(std::function<void(int)> action);
 
     // Move the slide at `from` so it ends up at `to`, in deck order, by rewriting the
-    // markdown and rebuilding. True when the deck was rebuilt and reloaded; the view then
-    // re-reads it on the next frame. False leaves the deck untouched — `status` says why.
+    // markdown and rebuilding. True when the work was *started* — it runs off the main
+    // thread, and editFinished() says how it went. False means it never began, and `status`
+    // says why.
     void setOnMoveSlide(std::function<bool(int from, int to, std::string* status)> action);
+
+    // Add an empty slide after `slide` (or before it), or remove the block `slide` came
+    // from. Same contract as the moves: true when the work was started.
+    void setOnAddSlide(std::function<bool(int slide, bool before, std::string* status)> action);
+    void setOnDeleteSlide(std::function<bool(int slide, std::string* status)> action);
+
+    // The rewrite this view asked for has finished and the deck has been reloaded.
+    void editFinished(bool ok, const std::string& status);
 
     // Move a whole run — an included sub-deck, or a section — by lifting the block range
     // `first..last` out of `file` and putting it back starting at `dst`. Same contract as
@@ -62,6 +71,8 @@ private:
     void commitRunDrag(int bar, int atChunk, bool after);
     // Step the cursor's group one place earlier (-1) or later (+1).
     void nudge(int delta);
+    // The same, for the whole run the cursor is in — the keyboard's grip bar.
+    void nudgeRun(int delta);
     // Fold or unfold the run the cursor is in; and everything, in either direction.
     void foldAtCursor();
     void foldAll(bool shut);

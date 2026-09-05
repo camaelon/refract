@@ -8,6 +8,7 @@
 // captions are an addition to a deck, never a requirement of one.
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -22,8 +23,11 @@ struct CaptionWord {
 class Captions {
 public:
     // Load the timings beside a slide's wav ("<voice>/NN.words.json"). Cheap to call
-    // repeatedly with the same entry; results are cached, misses included.
-    void loadFor(const std::string& entry);
+    // repeatedly with the same wav; results are cached, misses included.
+    //
+    // Given the wav rather than the slide, because which wav a slide's narration is in is a
+    // question the deck has to answer once the deck has been reordered — see VoiceIndex.
+    void loadForVoice(const std::filesystem::path& wav);
 
     bool empty() const { return mWords.empty(); }
     const std::vector<CaptionWord>& words() const { return mWords; }

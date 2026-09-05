@@ -1,9 +1,14 @@
 // A rehearsal trace: when each slide came up, measured from the start of the run.
 //
 // Recorded with --record, and read back on later runs so the presenter window can say
-// whether this run is ahead of or behind the one that was timed. Slides are keyed by
-// filename, not position, for the same reason deck.json is: a deck gets slides inserted
-// and renumbered around a trace, and the entries that still match should still count.
+// whether this run is ahead of or behind the one that was timed.
+//
+// Entries are keyed by the *source block* a slide was written in, not by its filename and not
+// by its position. A filename carries the slide's number, so moving one slide renames every
+// slide after it and a trace recorded before the move would quietly line up with the wrong
+// slides — which is exactly what reordering a deck in the deck view does. The block is what a
+// reorder moves rather than renames. The filename is written too, and read as a fallback, so
+// a trace recorded before this existed still works.
 //
 // Written to timing.json beside the slides, after every slide change — a rehearsal that
 // ends by closing the window should not lose the trace.
@@ -16,7 +21,8 @@
 namespace refract {
 
 struct TimingEntry {
-    std::string file;      // slide basename
+    std::string key;       // the slide's source block — see the note above
+    std::string file;      // slide basename, for a trace with no key and for reading by eye
     double start = 0.0;    // seconds from the start of the run
     double duration = 0.0; // seconds spent on it
     double end() const { return start + duration; }
@@ -33,9 +39,11 @@ public:
     double total() const { return mTotal; }
     const std::vector<TimingEntry>& entries() const { return mEntries; }
 
-    // The trace's timing for a slide, or null when it has none. On a revisited slide this
-    // is the *first* visit: that is the point in the talk the pace should be measured at.
-    const TimingEntry* find(const std::string& file) const;
+    // The trace's timing for a slide, or null when it has none. Matched on the source key
+    // first and the filename second, so a reordered deck still finds its own timings and an
+    // older trace still finds them by name. On a revisited slide this is the *first* visit:
+    // that is the point in the talk the pace should be measured at.
+    const TimingEntry* find(const std::string& key, const std::string& file) const;
 
     // Where the trace says the talk would be at `elapsed` — the slide's file and how far
     // through it, as a fraction. Empty file when `elapsed` is past the end of the trace.
@@ -46,8 +54,8 @@ public:
     bool recording() const { return mRecording; }
     const std::string& path() const { return mPath; }
 
-    // Note that `file` came up at `elapsed`, closing the entry before it. Writes the file.
-    void mark(const std::string& file, double elapsed);
+    // Note that a slide came up at `elapsed`, closing the entry before it. Writes the file.
+    void mark(const std::string& key, const std::string& file, double elapsed);
 
     // Keep the slide currently being timed up to date. Call each frame while recording: a
     // rehearsal that ends by being killed — or by the machine going to sleep — then still
@@ -64,7 +72,7 @@ private:
     bool save() const;
 
     std::vector<TimingEntry> mEntries;
-    std::map<std::string, size_t> mFirstVisit;   // file -> index of its first entry
+    std::map<std::string, size_t> mFirstVisit;   // key (or file) -> index of its first entry
     double mTotal = 0.0;
     std::string mDeck;
 
@@ -79,7 +87,7 @@ private:
 // The rehearsal's own progress through the current slide is credited, so holding the same
 // pace holds the number steady; it only grows once you have been on a slide longer than the
 // rehearsal was, and it drops when you move on early.
-bool paceDelta(const Timing& timing, const std::string& file, double elapsed,
-               double timeOnSlide, double* delta);
+bool paceDelta(const Timing& timing, const std::string& key, const std::string& file,
+               double elapsed, double timeOnSlide, double* delta);
 
 }  // namespace refract

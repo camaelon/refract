@@ -133,6 +133,15 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
         }
     }
 
+    // Number the slides that came out of one markdown block, so each still has a name of
+    // its own: four steps of a stepped bullet list are one block and four slides.
+    for (size_t i = 0; i < mSlides.size(); i++) {
+        if (mSlides[i].srcIndex < 0) continue;
+        mSlides[i].srcStep = (i > 0 && mSlides[i - 1].srcIndex == mSlides[i].srcIndex
+                              && mSlides[i - 1].srcFile == mSlides[i].srcFile)
+                                 ? mSlides[i - 1].srcStep + 1 : 0;
+    }
+
     // ── Sections ─────────────────────────────────────────────────────
     for (const auto& slide : mSlides) {
         if (slide.type == "section" || slide.sectionNumber > 0) {
@@ -179,6 +188,14 @@ bool Deck::reorderable() const {
         if (slide.srcIndex < 0 || slide.srcFile.empty()) return false;
     }
     return true;
+}
+
+int Deck::indexOfSourceKey(const std::string& key) const {
+    if (key.empty()) return -1;
+    for (const auto& slide : mSlides) {
+        if (slide.sourceKey() == key) return slide.index;
+    }
+    return -1;
 }
 
 int Deck::indexOfFile(const std::string& file) const {

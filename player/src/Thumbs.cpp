@@ -72,9 +72,46 @@ struct Job {
     int step = 0;
 };
 
-std::map<Key, sk_sp<SkImage>>& cache() {
-    static std::map<Key, sk_sp<SkImage>> c;
+// Stills are held until the deck is reloaded, which on a long deck is real memory: a card at
+// 384x216 is a third of a megabyte, and the deck view asks for every one of them. Past this
+// the least recently looked-at are dropped — they cost one re-render if they are wanted
+// again, which happens on a worker and is not felt.
+constexpr size_t kMaxCached = 120;
+
+struct Entry {
+    sk_sp<SkImage> image;
+    uint64_t used = 0;      // a counter, not a clock: monotonic and free
+};
+
+std::map<Key, Entry>& cache() {
+    static std::map<Key, Entry> c;
     return c;
+}
+
+uint64_t& useCounter() {
+    static uint64_t n = 0;
+    return n;
+}
+
+// Look up and mark as used in one go, so a still that is being looked at every frame cannot
+// be the one that gets dropped.
+sk_sp<SkImage> touch(const Key& key, bool* found) {
+    auto it = cache().find(key);
+    *found = it != cache().end();
+    if (!*found) return nullptr;
+    it->second.used = ++useCounter();
+    return it->second.image;
+}
+
+void store(const Key& key, sk_sp<SkImage> image) {
+    cache()[key] = Entry{std::move(image), ++useCounter()};
+    while (cache().size() > kMaxCached) {
+        auto oldest = cache().begin();
+        for (auto it = cache().begin(); it != cache().end(); ++it) {
+            if (it->second.used < oldest->second.used) oldest = it;
+        }
+        cache().erase(oldest);
+    }
 }
 
 std::deque<Job>& jobs() {
@@ -296,7 +333,7 @@ void enqueue(const Key& key, bool urgent) {
     const std::string ext = rcplayer::getExt(key.entry);
     if (rcplayer::isRcExt(ext) || rcplayer::isCodecVideoExt(ext)) {
         if (!rcplayer::readFileBytes(key.entry, job.bytes) || job.bytes.empty()) {
-            cache()[key] = nullptr;
+            store(key, nullptr);
             return;
         }
     } else {
@@ -306,7 +343,7 @@ void enqueue(const Key& key, bool urgent) {
         if (rcplayer::g.zip) {
             job.mediaPath = "/tmp/refractplayer_thumb_" + rcplayer::baseName(key.entry);
             if (!rcplayer::g.zip->extractToFile(key.entry, job.mediaPath)) {
-                cache()[key] = nullptr;
+                store(key, nullptr);
                 return;
             }
             job.mediaTemp = true;
@@ -326,15 +363,16 @@ void enqueue(const Key& key, bool urgent) {
 
 sk_sp<SkImage> thumbIfReady(const std::string& entry, int width, int height) {
     Key key{entry, width, height};
-    auto it = cache().find(key);
-    if (it != cache().end()) return it->second;
+    bool found = false;
+    sk_sp<SkImage> image = touch(key, &found);
+    if (found) return image;
     enqueue(key, /*urgent=*/true);   // somebody is looking at this pane right now
     return nullptr;
 }
 
 sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height) {
-    auto it = cache().find(Key{entry, width, height});
-    return it != cache().end() ? it->second : nullptr;
+    bool found = false;
+    return touch(Key{entry, width, height}, &found);
 }
 
 void requestThumb(const std::string& entry, int width, int height) {
@@ -349,7 +387,7 @@ void collectThumbs() {
         if (q.done.empty()) return;
         finished.swap(q.done);
     }
-    for (auto& [key, image] : finished) cache()[key] = std::move(image);
+    for (auto& [key, image] : finished) store(key, std::move(image));
 }
 
 bool thumbsPending() {

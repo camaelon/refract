@@ -20,7 +20,30 @@ players/cpp/lib/rcplayer   playback runtime  ──┬── players/cpp/apps/vi
 
 Pulling the upstream tree gets you every engine fix; nothing is vendored or forked.
 
+## What is in here
+
+The player is five windows and a handful of scripts. The slide window plays the deck; the
+other four are for the person driving it.
+
+| | | |
+|---|---|---|
+| **[Presenter](#the-presenter-window)** | `P`, `--presenter` | clock, timer, notes, what's next, pace against a rehearsal |
+| **[Navigator](#the-navigator)** | `Tab` `G` | the deck as a list, to jump somewhere |
+| **[Deck view](#the-deck-view)** | `V`, `--deck-view` | every slide at once — and where the deck is reordered |
+| **[Slide editor](#the-slide-editor)** | `E`, `--editor` | the markdown behind the slide on screen |
+| **[Build panel](#the-build-panel)** | `M`, `--build` | refract's options and a Rebuild button |
+| **[Captions](#captions)** | `C`, `--captions` | the narration, word by word, and where it is wrong |
+
+Together the middle three close a loop that used to need a terminal: **reorder, edit and
+rebuild a deck without leaving the player** — see [the editing loop](#the-editing-loop).
+
+Everything else it does: [rehearsing](#rehearsing) a talk and playing it back,
+[transcribing](#captions) the narration, [exporting](#exporting) to PDF or PNGs, and building
+[a web player](#a-web-player) of the whole thing.
+
 ## What it adds
+
+### The presenter window
 
 **A presenter window** (`--presenter`, or `P`). Wall clock, talk timer, the slide you are
 on, the one coming next, the speaker notes, how long you have been on this slide, and a
@@ -50,6 +73,8 @@ a poster frame. An embedded **web page** cannot be drawn off-screen at all — i
 comes from (the host, or the folder for a local one). The real page is live once the slide
 is up.
 
+### The navigator
+
 **A navigator** (`Tab` or `G`). The whole deck as a list, sections called out, with a
 preview and the notes of whatever row you are on. Enter jumps. It draws on the presenter
 window whenever there is one — a navigator projected onto the wall defeats the point.
@@ -75,6 +100,12 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 
 ## Keys
 
+Every window takes the same keys, so the talk can be driven from whichever one you last
+clicked. A window that wants a key for itself takes it first and the rest fall through — which
+is why `E` opens the editor from the slide window but types an `e` in it.
+
+**Driving the talk** — from any window
+
 | Key | |
 |---|---|
 | `→` `Space` `PgDn` `↓` | next slide |
@@ -82,14 +113,6 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | `Shift`+`←` / `→` | previous / next section |
 | `Home` `End` | first / last slide |
 | digits then `Enter` | jump to a slide number |
-| `Tab` `G` | navigator |
-| `P` | presenter window |
-| `C` | caption window |
-| `V` | deck view |
-| `M` | build panel |
-| `E` | slide editor |
-| `Z` / `Shift`+`Z` | fold the run at the cursor / the whole deck (deck view) |
-| `E` | correct the transcript (in the caption window) |
 | `T` / `Shift`+`T` | start-pause the timer / reset it |
 | `B` `W` | blank the screen to black / white |
 | `F` | fullscreen |
@@ -101,9 +124,50 @@ running negative (`-2:30`) to show by how much. Without a duration it counts up.
 | `Esc` | back out of whatever is on top — never quits |
 | `Q` | quit |
 
+**Opening a window**
+
+| Key | |
+|---|---|
+| `Tab` `G` | navigator |
+| `P` | presenter |
+| `V` | deck view |
+| `E` | slide editor |
+| `M` | build panel |
+| `C` | captions |
+
+**In the deck view**
+
+| Key | |
+|---|---|
+| arrows | move the cursor |
+| `Enter`, double-click | put that slide on the projector (or open a folded run) |
+| `shift`+`←`/`→` | nudge the slide one place |
+| `option`+`shift`+`←`/`→` | move the whole section or sub-deck |
+| `N` / `shift`+`N` | add a slide after / before the cursor |
+| `⌫` | delete the slide (press twice) |
+| `Z` / `shift`+`Z` | fold the run at the cursor / the whole deck |
+
+**In the slide editor** — every other key is a character
+
+| Key | |
+|---|---|
+| `cmd`+`S` | save and rebuild |
+| `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo |
+| `cmd`+`←`/`→`, `cmd`+`↑`/`↓` | ends of the line / of the slide |
+| `option`+`←`/`→` | a word at a time |
+| `option`+`shift`+arrows, `option`+drag | select a frame — a rectangle, not a run |
+| double / triple / quadruple click | word, line, paragraph |
+
+**In the caption window**
+
+| Key | |
+|---|---|
+| `E` | correct the transcript |
+| `Esc` | leave edit mode |
+
 The presenter window has a **play/pause button** beside the clock, doing the same thing as
 `T` — which is also what starts an armed recording, so a rehearsal can be driven without the
-keyboard.
+keyboard. The deck view and the build panel have their own buttons for folding and building.
 
 `Esc` deliberately does not quit: it closes the help card, then a pending jump, then
 un-blanks, then leaves fullscreen. Losing the deck to a stray `Esc` mid-talk is not worth
@@ -142,6 +206,52 @@ refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]
   --export-delay <s> how long each slide animates before capture (default 2)
 ```
 
+## The editing loop
+
+The deck view, the slide editor and the build panel are three views of one thing: **the
+markdown the deck was written in**. Between them a deck can be rearranged, rewritten and
+rebuilt without a terminal, and every change lands in `slides.md` rather than in the player —
+so the next build, the PDF, the web export and anybody else's checkout all see it.
+
+```
+   deck view          slide editor        build panel
+   reorder, add,      rewrite one         options, and
+   delete, fold       slide's markdown    a Rebuild button
+        │                   │                   │
+        └───────────────┬───┴───────────────────┘
+                        ▼
+                    slides.md                     ← the only thing that is edited
+                        │
+                     refract                      ← incremental: only what changed
+                        │
+                        ▼
+                     out/*.rc  ──────────────► the deck reloads underneath the slides
+```
+
+Three things make that work, and each is somewhere non-obvious:
+
+- **Provenance.** `deck.json` records, per slide, which markdown file and which
+  `---`-separated block it came from. Without it none of these views could find the text
+  behind a slide. See [where the deck outline comes from](#where-the-deck-outline-comes-from).
+- **Blocks, not slides.** refract expands one block into several slides — a stepped bullet
+  list is one block and four slides — so everything here edits and moves *blocks*, and every
+  view says so when the distinction bites.
+- **Nothing blocks the frame.** The rewrite and the rebuild run on a worker thread and the
+  deck reloads on the next frame, so the window keeps drawing. One at a time: two rewrites of
+  the same `slides.md` is the reliable way to get a deck that is neither.
+
+The edits themselves are made by the scripts in `player/tools/`, not by the player — the
+markdown grammar belongs to refract, so the code that owns the parser owns the surgery. They
+all run on their own:
+
+| | |
+|---|---|
+| `tools/reorder.py` | move a slide, a section or a sub-deck |
+| `tools/slide.py` | read, rewrite, add or delete one slide's markdown |
+| `tools/build.py` | rebuild with a given set of options, and report what it did |
+| `tools/captions.py` | transcribe the narration and align it into per-word timings |
+| `tools/web.py` | assemble the deck, its audio and its captions into a web page |
+
 ## The deck view
 
 `V`, or `--deck-view`. A grid of every slide in the deck, scrollable, with the slide the
@@ -150,11 +260,16 @@ down their left edge, so the shape of the talk is visible without reading titles
 walk the grid; `Enter` or a double-click puts a slide on the projector; `Esc` closes the
 window. Every other key still drives the talk, so the deck can be run from this window.
 
-**Reordering.** Drag a slide and drop it where it should go, or press `Shift`+`←`/`→` to
-nudge it one place. What that does is not a player setting: it **rewrites `slides.md`**,
+**Reordering.** Drag a slide and drop it where it should go, press `shift`+`←`/`→` to nudge it
+one place, or `option`+`shift`+`←`/`→` to move the whole run the cursor is in — the keyboard's
+grip bar. What that does is not a player setting: it **rewrites `slides.md`**,
 moving the `---`-separated block the slide was written in, and then re-runs refract. The
 change is in the source, so the next build, the PDF, the web export and anyone else's
 checkout all see it.
+
+The rewrite and the rebuild happen off the main thread, so the window keeps drawing while
+refract works and the deck reloads underneath it when it lands. One at a time: two rewrites of
+the same `slides.md` is the reliable way to get a deck that is neither.
 
 refract builds incrementally, so the rebuild is not the whole deck — but it is not cheap
 either. Every slide from the move onwards has a new page number and a new progress bar, both
@@ -176,6 +291,10 @@ number under such a card reads `4-6` rather than `4`.
              ║  :: intro  2           ║
    :: 1. Opening  6 ──────────────────────────────
 ```
+
+`N` adds an empty slide after the cursor (`shift`+`N` before it) and `⌫` removes the one it is
+on — twice, because there is no undo behind it but the markdown itself. Deleting the source of
+an expanded slide takes every slide it produced, and the confirmation says how many.
 
 Grab a card and that slide moves. Grab a bar and the whole run moves — every slide it covers
 lights up while you carry it, so what you have picked up is never in doubt. Bars sit in space
@@ -209,10 +328,8 @@ reads as one thing to go before or after. A parent slide can still be dragged *p
 sub-deck to the other side of it: the include splits the parent's slides into two stretches,
 but they are the same file and move past each other normally.
 
-Two things the reorder does not fix, and says so in the terminal when they apply:
+One thing the reorder does not fix, and says so when it applies:
 
-- **A rehearsal trace and recorded narration follow the old order.** Both are keyed by slide
-  number, and the numbers have just changed. Re-record, or move the wavs yourself.
 - **A failed rebuild leaves the markdown reordered.** If refract cannot rebuild the deck the
   view says the markdown was changed but the rebuild failed — the fix is in the terminal
   output, and running `refract <deck>` again picks it up.
@@ -353,6 +470,10 @@ The build runs off the main thread, so the player keeps drawing while refract wo
 Rebuild button is inert until it finishes — two refracts writing into the same `out/` is the
 one reliable way to get a deck that is neither.
 
+**Watching.** *Rebuild on change* watches `slides.md`, `settings.toml` and `includes/`, and
+builds when any of them moves — the deck on the projector then follows an editor in another
+window without anybody pressing anything.
+
 **Reading the result.** Builds are incremental, so the interesting number is how much was
 *not* rebuilt. The counts come from the outputs' modification times taken either side of the
 build rather than from refract's log: that is exact, and it stays right under `force full
@@ -385,10 +506,22 @@ spent getting the projector working. Starting with `T` while the opening slide i
 that slide in the trace; starting by advancing past it does not.
 
 `--record` writes **`timing.json`** beside the slides: when each slide came up, measured
-from the first one, and how long it held. Slides are keyed by filename rather than position,
-so a trace still matches after slides are inserted and renumbered around it. It is written
-after every slide change and refreshed every few seconds, so a rehearsal that ends by being
-killed still leaves a usable trace.
+from the first one, and how long it held. It is written after every slide change and refreshed
+every few seconds, so a rehearsal that ends by being killed still leaves a usable trace.
+
+**A recording survives the deck being reordered.** A slide's filename carries its number, so
+moving one slide renames every slide after it — and a trace or a set of narration wavs keyed
+by name would quietly line up with the wrong slides the first time anything moved, which is
+one drag in the deck view. So both are keyed by the *markdown block* a slide was written in,
+which is what a reorder moves rather than renames:
+
+- `timing.json` records a `key` alongside the filename. A trace written before keys existed
+  still matches by name, and a keyed trace never falls back to one — a filename match after a
+  reorder is a different slide's timing.
+- The wavs keep their numbered names, because `--transcribe` and `--web` read them by number
+  and expect `NN.txt` and `NN.words.json` beside them. What moves is a small
+  **`voice/index.json`** the recorder writes as it goes, saying which wav belongs to which
+  block. Captions follow the wav.
 
 A recorded run is timed from its **first** slide, not from the first advance — the opening
 slide is part of the talk.
@@ -634,22 +767,53 @@ prebuilt/refractplayer mytalk/out --display 0 --fullscreen --presenter --duratio
 
 ## Where the deck outline comes from
 
-`refract.py` writes **`out/deck.json`** beside the slides — titles, slide types, section
-numbers, which slides have notes, and where each slide was written (`src`, the markdown file
-relative to the deck, and `src_index`, the `---`-separated block within it; plus `src_via`,
-the chain of `:: include` lines that pulled a spliced-in slide here). That is what fills the
-navigator and the presenter's labels, and the provenance is what lets the deck view map a
-slide back to the markdown it has to rewrite — `src`/`src_index` to move the slide inside the
-deck it is written in, `src_via` to move the whole sub-deck inside the deck around it. Speaker notes come from the
-per-slide `out/<slide>.rc.notes` sidecars.
+`refract.py` writes **`out/deck.json`** beside the slides. Per slide:
 
-Neither is required. Without a manifest the player falls back to the filenames
-(`07_a_graph.rc` still reads as "A graph") and treats every slide as its own jump target;
-you lose section grouping, not playback. A deck built before `deck.json` existed just
-needs a re-run of `refract.py`.
+| | |
+|---|---|
+| `file`, `title`, `type` | what the navigator and the presenter's labels show |
+| `section`, `author`, `speaker`, `notes` | section numbering, attribution, whether there are notes |
+| `src`, `src_index` | the markdown file, and the `---`-separated block within it |
+| `src_via` | for a spliced-in slide, the chain of `:: include` lines that brought it here |
+
+and per deck: `deck_dir` (where the markdown is, relative to `out/`), the slide size, and
+`build` — the options refract was given, so a rebuild started from the player repeats the
+build rather than making a different deck.
+
+The last three rows are the provenance the whole editing loop rests on. `src`/`src_index`
+moves or rewrites a slide inside the deck it is written in; `src_via` moves a whole sub-deck
+inside the deck around it. They are also how a rehearsal survives being reordered — see
+[narration](#narration). Speaker notes come from the per-slide `out/<slide>.rc.notes`
+sidecars.
+
+None of it is required. Without a manifest the player falls back to the filenames
+(`07_a_graph.rc` still reads as "A graph") and treats every slide as its own jump target; you
+lose section grouping and every kind of editing, not playback. A deck built before any of this
+existed just needs a re-run of `refract.py`.
 
 Zip decks work the same way, as long as `deck.json` and the `.notes` files are in the
-archive — except for reordering, which needs the markdown a zip does not carry.
+archive — except for editing, which needs the markdown a zip does not carry.
+
+## How it holds together
+
+Two things happen off the main thread, and both are there because the alternative was a
+window that stops dead at the worst moment.
+
+**Slide stills** — the deck view's cards, the presenter's "next" pane, the navigator's
+preview — are full document renders: parse, lay out, compile the shaders, then step through
+eight frames of the opening animation, which on a heavy slide is over a second. A worker
+thread renders them; the main thread reads the file, queues the job and collects finished
+pictures. Files are read on the main thread because a zip archive is one shared handle with a
+read cursor. The cache is bounded and evicts what has been looked at least recently.
+
+**Rewrites and rebuilds** — every source edit and every build — run on a worker too, and the
+deck reloads on the main thread once one lands. One at a time.
+
+Concurrent rendering needed four fixes upstream in the RemoteCompose engine, which had never
+been asked to render two documents at once: the per-pass layout flags and the detached layout
+store are `thread_local`, the opcode tables build under `std::call_once`, the Java-compatible
+RNG is per thread, and `StillHosts`' label font no longer hands out a reference to a static it
+reassigns on the next call.
 
 ## Building
 
@@ -668,15 +832,21 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-The reorder arithmetic — which slides group together, and which block a drop moves — builds
-without Skia or a window and runs in a second:
+Three C++ suites, none of which needs Skia, a window or a GPU — they build and run in a
+second:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
 ```
 
-The other half of the same feature, turning that into a rewritten `slides.md`, is covered by
-refract's Python suite:
+| | |
+|---|---|
+| `deck_order` | which slides group together, which block a drop moves, how folding tiles the grid |
+| `text_buffer` | the editor's caret, selection, UTF-8, frame selection and undo |
+| `timing` | the rehearsal trace, and the slide identity that survives a reorder |
+
+The other half of the same features — turning a move into a rewritten `slides.md`, the
+incremental build, the tools — is covered by refract's Python suite:
 
 ```sh
 python3 -m unittest discover -s tests
@@ -690,10 +860,21 @@ python3 -m unittest discover -s tests
 | `src/Deck.{h,cpp}` | the deck: manifest, titles, sections, notes |
 | `src/Presenter.{h,cpp}` | the second window |
 | `src/Navigator.{h,cpp}` | the navigator, help card, pending-jump chip |
-| `src/Thumbs.{h,cpp}` | off-screen slide stills, cached |
+| `src/DeckView.{h,cpp}` | the deck view: the grid, folding, dragging |
+| `src/DeckOrder.{h,cpp}` | the reordering arithmetic behind it, with no window attached |
+| `src/SlideEditor.{h,cpp}` | the slide editor window |
+| `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
+| `src/BuildPanel.{h,cpp}` | the build panel |
+| `src/Timing.{h,cpp}` | the rehearsal trace |
+| `src/VoiceIndex.{h,cpp}` | which narration belongs to which slide, across a reorder |
+| `src/Thumbs.{h,cpp}` | off-screen slide stills, rendered on a worker and cached |
 | `src/Ui.{h,cpp}` | text, boxes and images for the chrome |
 | `src/App.h` | presenter state: talk clock, blanking, overlay state |
 | `src/Captions.{h,cpp}`, `CaptionWindow.{h,cpp}` | caption timings and the window that lights them |
 | `src/Audio*.{h,mm}` | narration capture and gapless playback |
+| `tools/reorder.py` | moving a slide, a section or a sub-deck in the markdown |
+| `tools/slide.py` | reading, rewriting, adding and deleting one slide's markdown |
+| `tools/build.py` | rebuilding, and reporting how much of the deck it had to touch |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
 | `tools/web.py` | the web player: assembles the deck, audio and captions into a page |
+| `tests/` | the three C++ suites above |

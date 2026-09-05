@@ -271,17 +271,25 @@ void SlideEditor::save() {
         impl.setStatus("no changes", false);
         return;
     }
-    impl.saving = true;
     std::string error;
-    const bool ok = impl.saver(impl.slide, impl.buffer.text(), &error);
-    impl.saving = false;
-    if (ok) {
-        impl.buffer.markClean();
-        impl.setStatus("saved", false);
-        if (impl.onSaved) impl.onSaved();
-    } else {
+    if (!impl.saver(impl.slide, impl.buffer.text(), &error)) {
         impl.setStatus(error.empty() ? "save failed — see the terminal" : error, true);
+        return;
     }
+    // The rebuild takes seconds on a big deck and runs on another thread. The buffer is
+    // marked clean now rather than on the way back: what was sent *is* what is being written,
+    // and leaving it dirty would let the slide-change guard hold the deck for the whole
+    // rebuild — for an edit that has already been handed over.
+    impl.saving = true;
+    impl.buffer.markClean();
+    impl.setStatus("saving…", false);
+}
+
+void SlideEditor::saveFinished(bool ok, const std::string& status) {
+    Impl& impl = *mImpl;
+    impl.saving = false;
+    impl.setStatus(status, !ok);
+    if (ok && impl.onSaved) impl.onSaved();
 }
 
 bool SlideEditor::handleKey(int key, int action, int mods) {

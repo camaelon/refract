@@ -56,6 +56,11 @@ struct DeckViewWindow::Impl {
     std::function<void(int)> onOpen;
     std::function<bool(int, int, std::string*)> onMove;
     std::function<bool(const std::string&, int, int, int, std::string*)> onMoveRun;
+    std::function<bool(int, bool, std::string*)> onAdd;
+    std::function<bool(int, std::string*)> onDelete;
+    // Delete asks twice. A slide is a paragraph of somebody's talk and there is no undo
+    // behind this — only the markdown, and whatever they have in git.
+    int armedDelete = -1;
 
     float scroll = 0.0f;
     float scrollMax = 0.0f;
@@ -85,9 +90,12 @@ struct DeckViewWindow::Impl {
     std::string status;
     bool        statusError = false;
 
-    // Set when a move succeeds; the deck is rebuilt underneath us, so the selection is put
-    // back on the next frame, once the new deck has been laid out.
-    int pendingSelectSlide = -1;
+    // The group a move is heading for, kept from the drag until the rewrite comes back. The
+    // work happens on another thread, so the selection cannot follow it until the reloaded
+    // deck is actually here — moving the cursor to where the slide is *going* while the old
+    // deck is still on screen would put it on a stranger.
+    int workingGroup = -1;
+    int pendingSelectGroup = -1;
 
     // Last frame's layout, so the pointer can be hit-tested against what is on screen.
     std::vector<SlideGroup> groups;
@@ -323,6 +331,45 @@ void DeckViewWindow::setOnMoveSlide(std::function<bool(int, int, std::string*)> 
     mImpl->onMove = std::move(action);
 }
 
+void DeckViewWindow::editFinished(bool ok, const std::string& status) {
+    Impl& impl = *mImpl;
+    impl.setStatus(status, !ok);
+    if (ok && impl.workingGroup >= 0) impl.pendingSelectGroup = impl.workingGroup;
+    impl.workingGroup = -1;
+}
+
+void DeckViewWindow::setOnAddSlide(std::function<bool(int, bool, std::string*)> action) {
+    mImpl->onAdd = std::move(action);
+}
+
+void DeckViewWindow::setOnDeleteSlide(std::function<bool(int, std::string*)> action) {
+    mImpl->onDelete = std::move(action);
+}
+
+// Move the whole run the cursor is in, one place either way — what dragging its grip bar
+// does, for anyone not reaching for the mouse.
+void DeckViewWindow::nudgeRun(int delta) {
+    Impl& impl = *mImpl;
+    const int slide = impl.slideOfCell(impl.cursor);
+    // The innermost run wins, the same as folding: it is the smaller thing, and it is what
+    // the cursor is most specifically inside.
+    int best = -1;
+    for (size_t bi = 0; bi < impl.bars.size(); bi++) {
+        const RunBar& bar = impl.bars[bi];
+        if (slide < bar.firstSlide || slide > bar.lastSlide) continue;
+        if (best < 0 || bar.slides() < impl.bars[best].slides()) best = static_cast<int>(bi);
+    }
+    if (best < 0) {
+        impl.setStatus("no section or sub-deck here to move", true);
+        return;
+    }
+    // The block just outside the run on the side it is going, which is the one it swaps with.
+    const RunBar& bar = impl.bars[best];
+    const int target = delta < 0 ? bar.firstChunk - 1 : bar.lastChunk + 1;
+    if (target < 0) return;
+    commitRunDrag(best, target, delta > 0);
+}
+
 void DeckViewWindow::setOnMoveRun(
         std::function<bool(const std::string&, int, int, int, std::string*)> action) {
     mImpl->onMoveRun = std::move(action);
@@ -343,7 +390,7 @@ void DeckViewWindow::commitRunDrag(int bar, int atChunk, bool after) {
     std::string status;
     const bool ok = impl.onMoveRun(run.file, run.firstChunk, run.lastChunk, dst, &status);
     impl.setStatus(status, !ok);
-    if (ok) impl.dropChunk = -1;   // the deck is rebuilt next frame; the cursor re-lands there
+    if (ok) impl.dropChunk = -1;   // the rewrite is under way; editFinished says how it went
 }
 
 // Turn "the group holding `slide`, dropped before group `drop`" into the (from, to) pair of
@@ -370,11 +417,9 @@ void DeckViewWindow::commitDrag(int slide, int drop) {
     const bool ok = impl.onMove(fromSlide, toSlide, &status);
     impl.setStatus(status, !ok);
     if (ok) {
-        // The deck has been rebuilt and every slide renumbered; the moved block is now the
-        // group at the landing position, whatever its slides ended up being called.
-        const int landing = drop > from ? drop - 1 : drop;
-        impl.pendingSelectSlide = landing < static_cast<int>(impl.groups.size())
-                                      ? impl.groups[landing].first : -1;
+        // Where the block will be once the rewrite lands. Group *positions* survive a
+        // rebuild even though every slide is renumbered, so this is still the right one.
+        impl.workingGroup = drop > from ? drop - 1 : drop;
         impl.dropGroup = -1;
     }
 }
@@ -442,16 +487,24 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
     if (last < 0) return false;
 
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
+    const bool alt = (mods & GLFW_MOD_ALT) != 0;
+    // A key that is not the second press of a delete disarms it: a confirmation you have
+    // walked away from should not be waiting when you come back to the arrow keys.
+    if (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE) impl.armedDelete = -1;
     auto moveCursor = [&](int delta) {
         impl.setCursor(std::max(0, std::min(last, impl.cursor + delta)));
     };
 
     switch (key) {
         case GLFW_KEY_LEFT:
-            if (shift) nudge(-1); else moveCursor(-1);
+            if (shift && alt) nudgeRun(-1);
+            else if (shift) nudge(-1);
+            else moveCursor(-1);
             return true;
         case GLFW_KEY_RIGHT:
-            if (shift) nudge(1); else moveCursor(1);
+            if (shift && alt) nudgeRun(1);
+            else if (shift) nudge(1);
+            else moveCursor(1);
             return true;
         case GLFW_KEY_UP:    moveCursor(-impl.columns); return true;
         case GLFW_KEY_DOWN:  moveCursor(impl.columns);  return true;
@@ -478,6 +531,31 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
             if (shift) foldAll(!allFolded());
             else foldAtCursor();
             return true;
+        case GLFW_KEY_N: {
+            if (!impl.onAdd) return true;
+            std::string status;
+            // Shift puts it in front of the cursor rather than after it.
+            impl.setStatus(status, !impl.onAdd(impl.slideOfCell(impl.cursor), shift, &status));
+            return true;
+        }
+        case GLFW_KEY_BACKSPACE:
+        case GLFW_KEY_DELETE: {
+            if (!impl.onDelete) return true;
+            const int slide = impl.slideOfCell(impl.cursor);
+            const DeckCell& cell = impl.cells[impl.cursor];
+            if (impl.armedDelete != impl.cursor) {
+                impl.armedDelete = impl.cursor;
+                const int n = cell.slides();
+                impl.setStatus(n > 1
+                    ? "delete " + std::to_string(n) + " slides? press again"
+                    : "delete this slide? press again", true);
+                return true;
+            }
+            impl.armedDelete = -1;
+            std::string status;
+            impl.setStatus(status, !impl.onDelete(slide, &status));
+            return true;
+        }
         case GLFW_KEY_ESCAPE:
             glfwSetWindowShouldClose(mWindow, GLFW_TRUE);
             return true;
@@ -659,11 +737,14 @@ void DeckViewWindow::render(App& app) {
         impl.cards[i] = SkRect::MakeXYWH(x, y, cardW, cardH);
     }
 
-    // The selection follows a moved run once the rebuilt deck has been laid out.
-    if (impl.pendingSelectSlide >= 0) {
-        const int cell = impl.cellOfSlide(std::min(impl.pendingSelectSlide, deck.size() - 1));
+    // The selection follows a moved block, once the rebuilt deck is actually the one being
+    // laid out — which is why this waits for editFinished rather than for the next frame.
+    if (impl.pendingSelectGroup >= 0) {
+        const int gi = std::min(impl.pendingSelectGroup,
+                                static_cast<int>(impl.groups.size()) - 1);
+        const int cell = gi >= 0 ? impl.cellOfSlide(impl.groups[gi].first) : -1;
         if (cell >= 0) impl.setCursor(cell);
-        impl.pendingSelectSlide = -1;
+        impl.pendingSelectGroup = -1;
     }
     impl.cursor = std::max(0, std::min(cellCount - 1, impl.cursor));
 

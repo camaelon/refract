@@ -31,7 +31,8 @@ public:
     // Fetch the markdown for a slide. Returns false and sets `error` when it cannot be read.
     using Loader = std::function<bool(int slide, std::string* text, std::string* file,
                                       int* sharedSlides, std::string* error)>;
-    // Write it back and rebuild. Returns false with `error` set when that fails.
+    // Write it back and rebuild. True when the work was *started* — it runs off the main
+    // thread, and saveFinished() says how it went. False means it never began.
     using Saver = std::function<bool(int slide, const std::string& text, std::string* error)>;
 
     void setLoader(Loader loader);
@@ -42,6 +43,9 @@ public:
     void showSlide(int slide);
     int  slide() const;
     bool dirty() const;
+
+    // The save this editor asked for has finished and the deck has been rebuilt.
+    void saveFinished(bool ok, const std::string& status);
 
     // Called after a successful save, once the deck has been rebuilt.
     void setOnSaved(std::function<void()> action);

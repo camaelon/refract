@@ -22,6 +22,7 @@
 #include "Navigator.h"
 #include "Presenter.h"
 #include "SlideEditor.h"
+#include "VoiceIndex.h"
 #include "Thumbs.h"
 #include "Ui.h"
 
@@ -85,6 +86,7 @@ bool overlapNextVoice = false;
 
 std::unique_ptr<refract::CaptionWindow> captionWindow;
 refract::Captions captions;      // timings for the slide on screen
+refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
 std::unique_ptr<refract::DeckViewWindow> deckView;
 std::unique_ptr<refract::BuildPanel> buildPanel;
 std::unique_ptr<refract::SlideEditor> slideEditor;
@@ -121,6 +123,7 @@ bool captionsEditing();
 void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
+fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void toggleDeckView();
 void toggleBuildPanel();
 void toggleSlideEditor();
@@ -273,19 +276,45 @@ void noteSlideShown() {
     if (app.deck.empty() || !app.timing.recording()) return;
     const auto& slide = app.deck.at(g.currentIndex);
 
-    app.timing.mark(slide.file, app.clock.elapsed);
+    app.timing.mark(slide.sourceKey(), slide.file, app.clock.elapsed);
 
     if (recorder) {
         // Straight to where playback will look for it, so a recorded talk replays with
         // --auto-voice and no renaming in between.
+        // The wav is named for the slide's position, as it always was — the transcription
+        // and the web export both read them by number and expect NN.txt beside NN.wav. What
+        // is written down is which *block* each one belongs to, so the pairing survives the
+        // deck being reordered afterwards.
         fs::path wav = voicePathFor(slide.entry);
         if (wav.empty()) {
             std::cerr << "audio: " << slide.file << " has no leading number to key a wav by\n";
             recorder->stop();
         } else {
             recorder->start(wav.string());
+            voiceIndex.record(slide.sourceKey(), wav.stem().string());
         }
     }
+}
+
+// The narration for a slide — the wav the recorder wrote for it, whatever number it has
+// since been given.
+//
+// rcplayer derives the path from the slide's own number, which is right up until the deck is
+// reordered: refract renumbers every slide after a move, and the wavs do not move with them.
+// The index the recorder writes says which wav belongs to which *block*, and a block is what
+// a reorder moves. Without an index — a recording made before there was one, on a deck nobody
+// has reordered — the number is used, exactly as before.
+fs::path voiceFileFor(int slide, const char* extension) {
+    if (app.deck.empty()) return {};
+    const auto& entry = app.deck.at(slide);
+    const fs::path positional = voicePathFor(entry.entry);
+    if (positional.empty()) return {};
+
+    const std::string stem = voiceIndex.stemFor(entry.sourceKey());
+    fs::path path = stem.empty() ? positional
+                                 : positional.parent_path() / (stem + ".wav");
+    if (std::string(extension) != ".wav") path.replace_extension(extension);
+    return path;
 }
 
 // Start this slide's narration, then open the *next* slide's file so the following change
@@ -299,17 +328,19 @@ void playSlideAudio(double startAt) {
     if (!voice || app.deck.empty()) return;
     voicePlaying = false;
 
-    captions.loadFor(app.deck.at(g.currentIndex).entry);
+    // Captions live beside the wav (NN.words.json), so they follow it through a reorder for
+    // the same reason and by the same route.
+    captions.loadForVoice(voiceFileFor(g.currentIndex));
 
     const bool overlap = overlapNextVoice;
     overlapNextVoice = false;
 
-    const fs::path wav = voicePathFor(app.deck.at(g.currentIndex).entry);
+    const fs::path wav = voiceFileFor(g.currentIndex);
     if (!wav.empty()) voicePlaying = voice->play(wav.string(), overlap, startAt);
     else if (!overlap) voice->stop();
 
     if (g.currentIndex + 1 < app.deck.size()) {
-        const fs::path next = voicePathFor(app.deck.at(g.currentIndex + 1).entry);
+        const fs::path next = voiceFileFor(g.currentIndex + 1);
         if (!next.empty()) voice->preload(next.string());
     }
 }
@@ -479,91 +510,152 @@ bool reloadDeck() {
     refract::clearThumbCache();
     g.currentIndex = app.deck.clamp(g.currentIndex);
     loadCurrentFile();
-    // The rehearsal trace and the recorded narration are keyed to slide *numbers*, and the
-    // numbers have just changed. Reloading them would pair the wrong audio with the wrong
-    // slide silently, so they are left alone and the mismatch is said out loud instead.
-    if (!app.timing.empty() || !g.voiceDirOverride.empty()) {
-        std::cerr << "refractplayer: the deck order changed — the rehearsal timings and any "
-                     "recorded narration still follow the old order\n";
-    }
+    // Nothing to fix up for the trace or the narration: both are keyed by the block a slide
+    // was written in rather than by its number, so they follow their slides through the
+    // reorder that has just renumbered every file underneath them.
     return true;
 }
 
-// Move a slide by rewriting the markdown behind it, then rebuild and reload. The markdown
-// belongs to refract, not to the player, so the edit is made by the tool that owns the
-// grammar; this only decides which slide goes where and puts the result back on screen.
-bool moveSlideInSource(int from, int to, std::string* status) {
+// ── Editing the deck's source ────────────────────────────────────────
+//
+// Reordering a slide, moving a section and saving an edit are all the same shape: run a tool
+// that rewrites the markdown and re-runs refract, then reload the deck. refract takes seconds
+// on a big deck, so none of it happens on the main thread — the window would stop dead in the
+// middle of the drag that started it. One job at a time: two of them writing into the same
+// out/ is the reliable way to get a deck that is neither.
+std::thread editThread;
+std::atomic<bool> editRunning{false};
+std::mutex editMutex;
+struct EditResult {
+    bool done = false;      // a job finished and the loop has not picked it up yet
+    bool ok = true;
+    bool changed = false;
+    std::string status;
+};
+EditResult editResult;
+std::function<void(bool ok, const std::string& status)> editReport;
+
+// True while the deck's source is being rewritten. Nothing else may start one.
+bool sourceEditRunning() { return editRunning; }
+
+// Run `reorder.py` or `slide.py` off the main thread and report back through `report`, which
+// is called on the main thread once the deck has been reloaded.
+bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
+                     std::string doneMessage,
+                     std::function<void(bool, const std::string&)> report,
+                     std::string* status) {
+    if (editRunning) {
+        *status = "already working — one at a time";
+        return false;
+    }
     const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
     if (out.empty()) {
-        *status = "this deck cannot be reordered (no directory to write to)";
+        *status = "this deck has no markdown to write to";
         return false;
     }
-    std::string output;
-    const int rc = runTool("reorder.py", {out.parent_path().string(),
-                                          "--move", std::to_string(from),
-                                          "--to", std::to_string(to),
-                                          "--json"}, &output);
-    // The tool reports in JSON so the difference between "nothing to do", "the markdown was
-    // rewritten but refract could not rebuild it" and "refused" survives the process
-    // boundary. A failed rebuild in particular has already changed the file on disk, and
-    // saying so is the difference between a puzzle and a one-line fix in the terminal.
-    auto result = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    const bool parsed = !result.is_discarded() && result.is_object();
-    if (rc != 0 || (parsed && !result.value("ok", false))) {
-        *status = parsed && result.contains("error")
-                      ? result["error"].get<std::string>()
-                      : "reorder failed — see the terminal";
-        if (parsed && result.value("changed", false) && !result.value("rebuilt", false)) {
-            *status = "the markdown was reordered but the rebuild failed: "
-                      + *status;
+    args.insert(args.begin(), out.parent_path().string());
+    args.push_back("--json");
+
+    if (editThread.joinable()) editThread.join();
+    editRunning = true;
+    editReport = std::move(report);
+    editThread = std::thread([tool, args, doneMessage]() {
+        std::string output;
+        const int rc = runTool(tool, args, &output);
+        // The tools report in JSON so the difference between "nothing to do", "the markdown
+        // was rewritten but refract could not rebuild it" and "refused" survives the process
+        // boundary. A failed rebuild in particular has already changed the file on disk, and
+        // saying so is the difference between a puzzle and a one-line fix in the terminal.
+        auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+        const bool parsed = !doc.is_discarded() && doc.is_object();
+
+        EditResult result;
+        result.done = true;
+        result.ok = rc == 0 && (!parsed || doc.value("ok", false));
+        result.changed = parsed && doc.value("changed", false);
+        if (!result.ok) {
+            result.status = parsed && doc.contains("error")
+                                ? doc["error"].get<std::string>()
+                                : "failed — see the terminal";
+            if (result.changed && parsed && !doc.value("rebuilt", false)) {
+                result.status = "the markdown was written but the rebuild failed: "
+                                + result.status;
+            }
+        } else {
+            result.status = result.changed ? doneMessage : "no change";
         }
-        return false;
-    }
-    if (parsed && !result.value("changed", false)) {
-        *status = "already there";
-        return true;
-    }
-    deckReloadPending = true;
-    *status = "moved slide " + std::to_string(from + 1);
+        {
+            std::lock_guard<std::mutex> lock(editMutex);
+            editResult = result;
+        }
+        editRunning = false;
+    });
+    *status = "working…";
     return true;
+}
+
+// Picked up at the top of the frame: the deck is reloaded here, on the main thread, and only
+// then is the caller told — so whatever it does next sees the new deck.
+void collectSourceEdit() {
+    EditResult result;
+    {
+        std::lock_guard<std::mutex> lock(editMutex);
+        if (!editResult.done || editRunning) return;
+        result = editResult;
+        editResult = {};
+    }
+    if (result.ok && result.changed) deckReloadPending = true;
+    if (editReport) {
+        auto report = editReport;
+        editReport = nullptr;
+        report(result.ok, result.status);
+    }
+}
+
+// Move a slide by rewriting the markdown behind it. The markdown belongs to refract, not to
+// the player, so the edit is made by the tool that owns the grammar; this only decides which
+// slide goes where.
+bool moveSlideInSource(int from, int to, std::string* status) {
+    return startSourceEdit("reorder.py",
+                           {"--move", std::to_string(from), "--to", std::to_string(to)},
+                           "moved slide " + std::to_string(from + 1),
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
 }
 
 // The same rewrite, for a whole run: a section, or an included sub-deck. The view has worked
 // out which block range that is and where it goes; this only carries it to the tool.
 bool moveRunInSource(const std::string& file, int first, int last, int dst,
                      std::string* status) {
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        *status = "this deck cannot be reordered (no directory to write to)";
-        return false;
-    }
-    std::string output;
-    const int rc = runTool("reorder.py", {out.parent_path().string(),
-                                          "--file", file,
-                                          "--chunks", std::to_string(first),
-                                          std::to_string(last),
-                                          "--to-chunk", std::to_string(dst),
-                                          "--json"}, &output);
-    auto result = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    const bool parsed = !result.is_discarded() && result.is_object();
-    if (rc != 0 || (parsed && !result.value("ok", false))) {
-        *status = parsed && result.contains("error")
-                      ? result["error"].get<std::string>()
-                      : "reorder failed — see the terminal";
-        if (parsed && result.value("changed", false) && !result.value("rebuilt", false)) {
-            *status = "the markdown was reordered but the rebuild failed: " + *status;
-        }
-        return false;
-    }
-    if (parsed && !result.value("changed", false)) {
-        *status = "already there";
-        return true;
-    }
-    deckReloadPending = true;
     const int blocks = last - first + 1;
-    *status = "moved " + std::to_string(blocks)
-              + (blocks == 1 ? " block" : " blocks");
-    return true;
+    return startSourceEdit("reorder.py",
+                           {"--file", file, "--chunks", std::to_string(first),
+                            std::to_string(last), "--to-chunk", std::to_string(dst)},
+                           "moved " + std::to_string(blocks)
+                               + (blocks == 1 ? " block" : " blocks"),
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
+}
+
+// Add an empty slide next to this one, or take one out. Both are block-level edits to the
+// markdown, so they go through the same runner as a reorder and the same tool.
+bool addSlideInSource(int slide, bool before, std::string* status) {
+    std::vector<std::string> args{"--slide", std::to_string(slide), "--new"};
+    if (before) args.push_back("--before");
+    return startSourceEdit("slide.py", args, "added a slide",
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
+}
+
+bool deleteSlideInSource(int slide, std::string* status) {
+    return startSourceEdit("slide.py",
+                           {"--slide", std::to_string(slide), "--delete"}, "deleted",
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
 }
 
 void openDeckView() {
@@ -573,6 +665,8 @@ void openDeckView() {
     deckView->setOnOpenSlide([](int index) { goToSlide(index); });
     deckView->setOnMoveSlide(moveSlideInSource);
     deckView->setOnMoveRun(moveRunInSource);
+    deckView->setOnAddSlide(addSlideInSource);
+    deckView->setOnDeleteSlide(deleteSlideInSource);
     // The view takes the keys it uses to walk the grid; everything else still drives the
     // talk, so the deck can be run from this window like any other.
     glfwSetKeyCallback(deckView->window(),
@@ -654,6 +748,29 @@ refract::BuildOptions optionsFromManifest() {
     return options;
 }
 
+// The newest modification time across the deck's markdown, its settings and its includes —
+// everything refract reads. Cheap enough to check once a second; refract's own --watch looks
+// at the same set.
+double deckSourceMtime() {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) return 0.0;
+    const fs::path deckDir = out.parent_path().parent_path();
+    double newest = 0.0;
+    auto note = [&newest](const fs::path& path) {
+        std::error_code ec;
+        const auto when = fs::last_write_time(path, ec);
+        if (!ec) newest = std::max(newest, static_cast<double>(when.time_since_epoch().count()));
+    };
+    for (const char* name : {"slides.md", "settings.toml"}) note(deckDir / name);
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(deckDir / "includes", ec), end; it != end;
+         it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_directory(ec)) note(it->path());
+    }
+    return newest;
+}
+
 void openBuildPanel() {
     if (buildPanel) return;
     buildPanel = refract::BuildPanel::Create(300, 760);
@@ -705,14 +822,11 @@ bool loadSlideSource(int slide, std::string* text, std::string* file, int* share
     return true;
 }
 
-// Write it back and rebuild. The text goes through a temp file rather than an argument: a
-// slide's markdown contains newlines, quotes and whatever else the author typed.
+// Write it back and rebuild, off the main thread. The text goes through a temp file rather
+// than an argument: a slide's markdown contains newlines, quotes and whatever else the author
+// typed. The file outlives this call — the worker is still reading it — so it is named for
+// the job and removed when the job reports back.
 bool saveSlideSource(int slide, const std::string& text, std::string* error) {
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        *error = "this deck has no markdown behind it";
-        return false;
-    }
     const fs::path scratch = fs::temp_directory_path()
                              / ("refractplayer_slide_" + std::to_string(::getpid()) + ".md");
     {
@@ -724,25 +838,15 @@ bool saveSlideSource(int slide, const std::string& text, std::string* error) {
         file << text;
         if (!text.empty() && text.back() != '\n') file << "\n";
     }
-    std::string output;
-    const int rc = runTool("slide.py", {out.parent_path().string(),
-                                        "--slide", std::to_string(slide),
-                                        "--write", scratch.string(), "--json"}, &output);
-    std::error_code ec;
-    fs::remove(scratch, ec);
-
-    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    const bool parsed = !doc.is_discarded() && doc.is_object();
-    if (rc != 0 || (parsed && !doc.value("ok", false))) {
-        *error = parsed && doc.contains("error") ? doc["error"].get<std::string>()
-                                                 : "save failed — see the terminal";
-        if (parsed && doc.value("changed", false) && !doc.value("rebuilt", false)) {
-            *error = "the markdown was saved but the rebuild failed: " + *error;
-        }
-        return false;
-    }
-    if (parsed && doc.value("changed", false)) deckReloadPending = true;
-    return true;
+    const std::string path = scratch.string();
+    return startSourceEdit("slide.py",
+                           {"--slide", std::to_string(slide), "--write", path},
+                           "saved",
+                           [path](bool ok, const std::string& done) {
+                               std::error_code ec;
+                               fs::remove(path, ec);
+                               if (slideEditor) slideEditor->saveFinished(ok, done);
+                           }, error);
 }
 
 void openSlideEditor() {
@@ -1196,6 +1300,10 @@ int main(int argc, char* argv[]) {
               << "\n";
 
     // ── Rehearsal ────────────────────────────────────────────────────
+    // Which wav belongs to which slide. Loaded before anything plays, because after a reorder
+    // the numbers on the files are no longer the numbers on the slides.
+    if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
+
     if (record) {
         fs::path tracePathFor = refract::deckSidecarPath(input, "timing.json");
         if (tracePathFor.empty()) {
@@ -1214,6 +1322,14 @@ int main(int argc, char* argv[]) {
             // captured until startRunIfArmed() opens the first slide's wav.
             recorder = refract::AudioRecorder::Create();
             if (!recorder) std::cerr << "refractplayer: continuing without audio\n";
+            // The recording writes its own index as it goes, so a run that is killed part
+            // way still leaves the slides it did record correctly paired.
+            const fs::path first = voicePathFor(g.files.front());
+            if (!first.empty()) {
+                std::error_code ec;
+                fs::create_directories(first.parent_path(), ec);
+                voiceIndex.setPath(first.parent_path() / "index.json");
+            }
             // Playing the previous take back through the speakers while recording the next
             // one puts it straight into the new wav. Both playback paths go: the library's
             // and the one this player just took over.
@@ -1308,6 +1424,11 @@ int main(int argc, char* argv[]) {
     double lastCaptionDraw = -1.0;
     double lastDeckViewDraw = -1.0;
     double lastBuildDraw = -1.0;
+    // Watching the deck's sources. Sampled on a timer rather than every frame: it is a walk
+    // of includes/, and a second's latency on a rebuild nobody asked for is not felt.
+    double lastWatchCheck = -1.0;
+    double watchedMtime = 0.0;
+    constexpr double kWatchInterval = 1.0;
     double lastEditorDraw = -1.0;
     // A finished build is acted on once, not every frame it stays finished.
     bool buildReloaded = true;
@@ -1327,6 +1448,8 @@ int main(int argc, char* argv[]) {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        collectSourceEdit();
 
         if (deckReloadPending) {
             deckReloadPending = false;
@@ -1379,7 +1502,8 @@ int main(int argc, char* argv[]) {
                 // microphone permission was still being granted. With a trace loaded, fall
                 // back to the time that run spent on the slide, so a recorded talk replays
                 // end to end whether or not every slide got audio.
-                const auto* entry = app.timing.find(app.deck.at(g.currentIndex).file);
+                const auto* entry = app.timing.find(app.deck.at(g.currentIndex).sourceKey(),
+                                                    app.deck.at(g.currentIndex).file);
                 double dwell = (entry && entry->duration > 0.0) ? entry->duration
                                                                 : voicelessDwell();
                 if (app.sinceSlideChange >= dwell) step(1);
@@ -1487,6 +1611,19 @@ int main(int argc, char* argv[]) {
                 }
                 if (state.running) buildReloaded = false;
                 buildPanel->setState(state);
+
+                // Rebuild when the markdown moves under us. The first sample after the
+                // switch is turned on only records where things stand — turning it on is
+                // not itself a change.
+                if (buildPanel->watching() && !state.running && !editRunning
+                    && elapsed - lastWatchCheck >= kWatchInterval) {
+                    lastWatchCheck = elapsed;
+                    const double now = deckSourceMtime();
+                    if (watchedMtime != 0.0 && now > watchedMtime) startBuild(buildPanel->options());
+                    watchedMtime = now;
+                } else if (!buildPanel->watching()) {
+                    watchedMtime = 0.0;
+                }
                 // The column sits against whichever panel window is open, and floats free
                 // when neither is.
                 buildPanel->setHost(deckView ? deckView->window()
@@ -1540,6 +1677,7 @@ int main(int argc, char* argv[]) {
     buildPanel.reset();
     slideEditor.reset();
     if (buildThread.joinable()) buildThread.join();
+    if (editThread.joinable()) editThread.join();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

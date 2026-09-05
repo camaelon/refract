@@ -108,6 +108,83 @@ class ReplaceChunk(unittest.TestCase):
                          ["One", "Three", "Edited"])
 
 
+class InsertAndDeleteChunk(unittest.TestCase):
+    """Adding and removing whole blocks — a slide's worth of markdown at a time."""
+
+    PADDED = "# A\n\n---\n\n# B\n\n---\n\n# C\n"
+    TIGHT = "# A\n---\n# B\n---\n# C\n"
+
+    def titles(self, text):
+        return [s.get("title") for s in md.parse_markdown(text)]
+
+    def test_insert_in_the_middle(self):
+        out = chunks.insert_chunk(self.PADDED, 1, "# New")
+        self.assertEqual(self.titles(out), ["A", "New", "B", "C"])
+
+    def test_insert_at_each_end(self):
+        self.assertEqual(self.titles(chunks.insert_chunk(self.PADDED, 0, "# New")),
+                         ["New", "A", "B", "C"])
+        self.assertEqual(self.titles(chunks.insert_chunk(self.PADDED, 3, "# New")),
+                         ["A", "B", "C", "New"])
+
+    def test_the_deck_s_own_spacing_is_kept(self):
+        # A deck written with a blank line either side of every `---` keeps them, and one
+        # written tight stays tight: adding a slide should read as a slide in the diff, not
+        # as a reformat.
+        for i in range(4):
+            with self.subTest(at=i):
+                padded = chunks.insert_chunk(self.PADDED, i, "# New")
+                self.assertNotIn("---\n# ", padded)
+                self.assertNotIn("\n\n\n", padded)
+                tight = chunks.insert_chunk(self.TIGHT, i, "# New")
+                self.assertNotIn("\n\n", tight)
+
+    def test_a_file_never_starts_or_ends_blank(self):
+        for text in (self.PADDED, self.TIGHT):
+            for i in range(4):
+                out = chunks.insert_chunk(text, i, "# New")
+                self.assertFalse(out.startswith("\n"), out)
+                self.assertFalse(out.endswith("\n\n"), out)
+
+    def test_insert_then_delete_restores_the_file(self):
+        for text in (self.PADDED, self.TIGHT):
+            for i in range(chunks.count_chunks(text) + 1):
+                with self.subTest(text=text, at=i):
+                    grown = chunks.insert_chunk(text, i, "# New")
+                    self.assertEqual(chunks.delete_chunk(grown, i), text)
+
+    def test_an_empty_new_block_produces_no_slide(self):
+        out = chunks.insert_chunk(self.PADDED, 1, "")
+        self.assertEqual(chunks.count_chunks(out), 4)
+        self.assertEqual(self.titles(out), ["A", "B", "C"])
+
+    def test_delete(self):
+        self.assertEqual(self.titles(chunks.delete_chunk(self.PADDED, 0)), ["B", "C"])
+        self.assertEqual(self.titles(chunks.delete_chunk(self.PADDED, 1)), ["A", "C"])
+        self.assertEqual(self.titles(chunks.delete_chunk(self.PADDED, 2)), ["A", "B"])
+
+    def test_the_last_slide_cannot_be_deleted(self):
+        # A deck of no slides is not a deck, and there would be nothing left to put one back
+        # into: the file would have no blocks to address.
+        with self.assertRaises(ValueError):
+            chunks.delete_chunk("# Only\n", 0)
+
+    def test_out_of_range(self):
+        for i in (-1, 4, 99):
+            with self.subTest(at=i):
+                with self.assertRaises(IndexError):
+                    chunks.insert_chunk(self.PADDED, i, "x")
+        for i in (-1, 3, 99):
+            with self.subTest(at=i):
+                with self.assertRaises(IndexError):
+                    chunks.delete_chunk(self.PADDED, i)
+
+    def test_the_neighbouring_blocks_are_untouched(self):
+        out = chunks.insert_chunk(self.PADDED, 1, "# New")
+        for i, want in ((0, "# A"), (2, "# B"), (3, "# C")):
+            self.assertEqual(chunks.read_chunk(out, i), want)
+
+
 class Tool(unittest.TestCase):
     """The CLI the editor shells out to."""
 
@@ -232,6 +309,45 @@ class Tool(unittest.TestCase):
         p = self.run_tool("--slide", "0", "--read")
         self.assertEqual(p.returncode, 1)
         self.assertIn("src_index", json.loads(p.stdout)["error"])
+
+    def test_new_slide_after_and_before(self):
+        p = self.run_tool("--slide", "0", "--new", "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(json.loads(p.stdout)["ok"])
+        self.assertEqual(self.titles()[:2], ["Hello", "New slide"])
+
+        p = self.run_tool("--slide", "0", "--new", "--before", "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.titles()[0], "New slide")
+
+    def test_delete_a_slide(self):
+        p = self.run_tool("--slide", "4", "--delete", "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertTrue(result["ok"] and result["rebuilt"])
+        self.assertEqual(result["removed"], 1)
+        self.assertNotIn("Last", self.titles())
+
+    def test_deleting_an_expanded_slide_removes_all_of_its_steps(self):
+        # One block, three slides. Removing the block removes all three, and says how many
+        # so the view can warn before it happens rather than after.
+        p = self.run_tool("--slide", "2", "--delete", "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["removed"], 3)
+        self.assertEqual(self.titles(), ["Hello", "Last"])
+
+    def test_the_last_slide_cannot_be_deleted(self):
+        for _ in range(2):
+            self.run_tool("--slide", "0", "--delete", "--json")
+        self.assertEqual(len(self.titles()), 1)
+        p = self.run_tool("--slide", "0", "--delete", "--json")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("at least one", json.loads(p.stdout)["error"])
+
+    def test_only_one_mode_at_a_time(self):
+        p = self.run_tool("--slide", "0", "--new", "--delete")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("exactly one", p.stderr)
 
     def test_a_round_trip_through_the_tool_is_byte_identical(self):
         for slide in range(len(self.titles())):

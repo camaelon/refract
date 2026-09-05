@@ -84,15 +84,20 @@ class ParseSlide(unittest.TestCase):
         s = md.parse_slide("<widget.rc | fit=fit stagger>")
         self.assertEqual(s["blocks"][0]["opts"], {"fit": "fit", "stagger": True})
 
-    def test_notes_equals_marker(self):
-        s = md.parse_slide("# Title\n- a bullet\n===\nPresenter note here.")
+    def test_notes_marker(self):
+        s = md.parse_slide("# Title\n- a bullet\n???\nPresenter note here.")
         self.assertEqual(s["notes"], "Presenter note here.")
         self.assertEqual(len(s["blocks"]), 1)           # notes are not a content block
         self.assertEqual(s["blocks"][0]["kind"], "bullets")
 
-    def test_notes_question_marker_still_works(self):
-        s = md.parse_slide("# Title\n???\nlegacy note")
-        self.assertEqual(s["notes"], "legacy note")
+    def test_equals_is_a_stacked_section_not_a_note(self):
+        # `===` marked notes at one point and the grammar went the other way: it splits a
+        # slide into stacked sections, and `???` is what starts the notes. A test asserting
+        # the old meaning outlived the change, which is what this one is here to prevent.
+        s = md.parse_slide("# Title\ntop\n===\nbottom")
+        self.assertIsNone(s["notes"])
+        self.assertEqual(len(s["sections"]), 2)
+        self.assertEqual(s["sections"][1]["blocks"], [{"kind": "text", "text": "bottom"}])
 
     def test_no_notes(self):
         s = md.parse_slide("# Title\n- a bullet")

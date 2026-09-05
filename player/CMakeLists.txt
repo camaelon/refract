@@ -81,6 +81,7 @@ set(REFRACTPLAYER_SOURCES
     src/Thumbs.cpp
     src/Timing.cpp
     src/Ui.cpp
+    src/VoiceIndex.cpp
     src/main.cpp
 )
 
@@ -112,3 +113,10 @@ add_test(NAME deck_order COMMAND deck_order_test)
 add_executable(text_buffer_test tests/text_buffer_test.cpp src/TextBuffer.cpp)
 target_include_directories(text_buffer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME text_buffer COMMAND text_buffer_test)
+
+# The rehearsal trace and the slide identity it is keyed by. Needs rcplayer for the sidecar
+# reader, but no window and no GPU.
+add_executable(timing_test tests/timing_test.cpp src/Timing.cpp src/Deck.cpp src/DeckOrder.cpp)
+target_include_directories(timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(timing_test PRIVATE rcplayer nlohmann_json::nlohmann_json)
+add_test(NAME timing COMMAND timing_test)

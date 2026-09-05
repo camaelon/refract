@@ -355,7 +355,8 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                              barY + 18, font, ui::kDim) + 14;
         }
         double delta = 0.0;
-        if (!deck.empty() && paceDelta(app.timing, deck.at(app.current()).file,
+        if (!deck.empty() && paceDelta(app.timing, deck.at(app.current()).sourceKey(),
+                                       deck.at(app.current()).file,
                                        app.clock.elapsed, app.timeOnSlide(), &delta)) {
             PaceLabel label = paceLabel(delta, app.timing.total());
             drawText(canvas, label.text, subX, barY + 18, uiFont(11, true), label.color);
