@@ -4,15 +4,16 @@
 // on its own raster surface, so it never touches the live document or the window surface.
 //
 // It is also expensive, and expensive in the worst possible place: a slide's opening
-// transition animates *from* the previous slide, so a still has to step the document
-// through real frames before it shows the slide rather than the one before it. Doing that
-// in one go costs a second or more on a heavy slide, and the player is single-threaded —
-// which is a frozen deck at exactly the moment the presenter pressed a key.
+// transition animates *from* the previous slide, so a still has to step the document through
+// real frames before it shows the slide rather than the one before it. On a heavy slide that
+// is over a second — a second in which the deck would be frozen, at exactly the moment
+// somebody scrolled the deck view or pressed a key.
 //
-// So a still is built incrementally: requestThumb() starts a job, pumpThumbs() advances the
-// jobs by a small time budget each frame, and thumbIfReady() returns the picture once it is
-// finished. Callers ask for a slide long before they need it (the next slide is requested
-// as soon as the current one loads), so by the time it is on screen it is usually done.
+// So stills are rendered on a worker thread. requestThumb() reads the file and queues the
+// work; the worker renders it; collectThumbs() picks up whatever finished and puts it in the
+// cache. Nothing blocks the frame. Callers ask for a slide long before they need it (the next
+// slide is requested as soon as the current one loads), so it is usually there by the time it
+// is looked at, and a card that is not yet drawn simply has no picture for a moment.
 #pragma once
 
 #include "include/core/SkImage.h"
@@ -35,12 +36,19 @@ void requestThumb(const std::string& entry, int width, int height);
 // any job could finish.
 sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height);
 
-// Advance outstanding jobs by up to `budgetSeconds` of work. Call once per frame. A single
-// document paint cannot be interrupted, so one paint can overrun the budget — the budget
-// bounds how many paints happen per frame, not the length of the longest one.
-void pumpThumbs(double budgetSeconds);
+// Move whatever the worker finished into the cache. Call once per frame; it takes a lock
+// and a move, and does no rendering.
+void collectThumbs();
 
-// Drop every cached and in-flight still. Called on reload, when the files may have changed.
+// True while there is work queued or waiting to be collected — for a caller that wants to
+// keep redrawing until the pictures have arrived.
+bool thumbsPending();
+
+// Drop every cached and in-flight still. Called on reload, when the files may have changed;
+// anything the worker is part-way through is discarded rather than delivered.
 void clearThumbCache();
+
+// Stop the worker and wait for it. Called once, at shutdown.
+void stopThumbs();
 
 }  // namespace refract

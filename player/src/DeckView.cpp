@@ -60,6 +60,10 @@ struct DeckViewWindow::Impl {
     float scroll = 0.0f;
     float scrollMax = 0.0f;
     int   cursor = 0;               // the *cell* the keyboard cursor is on
+    // Set when the cursor is *moved*, and cleared by the render that scrolls to it. Without
+    // this the view scrolls to the cursor on every frame, which quietly undoes the wheel:
+    // scrolling away from the selection lasts until the next redraw and no longer.
+    bool  followCursor = false;
     int   hover = -1;               // cell under the pointer
 
     double mouseX = 0, mouseY = 0;
@@ -133,6 +137,10 @@ struct DeckViewWindow::Impl {
             if (slide >= cells[i].firstSlide && slide <= cells[i].lastSlide) return int(i);
         }
         return -1;
+    }
+    void setCursor(int cell) {
+        cursor = cell;
+        followCursor = true;
     }
     bool isFolded(const RunBar& bar) const { return folded.count(bar.key) > 0; }
     void toggleFold(const RunBar& bar) {
@@ -223,13 +231,15 @@ std::unique_ptr<DeckViewWindow> DeckViewWindow::Create(int width, int height) {
             // there means "this whole run", not "the slide it happens to sit below".
             impl.pressBar = impl.barAt(impl.pressX, impl.pressY);
             if (impl.pressBar >= 0) {
-                impl.cursor = impl.cellOfSlide(impl.bars[impl.pressBar].firstSlide);
+                impl.setCursor(impl.cellOfSlide(impl.bars[impl.pressBar].firstSlide));
                 return;
             }
             for (size_t i = 0; i < impl.cards.size(); i++) {
                 if (!impl.cards[i].contains(impl.pressX, impl.pressY)) continue;
                 impl.pressCell = static_cast<int>(i);
                 impl.pressSlide = impl.slideOfCell(impl.pressCell);
+                // Clicking a card selects it but does not scroll to it: it is already under
+                // the pointer, and jolting the grid on a click is how a drag misses.
                 impl.cursor = impl.pressCell;
                 // A folded run is picked up by its card: the card *is* the run, so dragging
                 // it is dragging the whole thing.
@@ -433,7 +443,7 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
 
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
     auto moveCursor = [&](int delta) {
-        impl.cursor = std::max(0, std::min(last, impl.cursor + delta));
+        impl.setCursor(std::max(0, std::min(last, impl.cursor + delta)));
     };
 
     switch (key) {
@@ -445,8 +455,8 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
             return true;
         case GLFW_KEY_UP:    moveCursor(-impl.columns); return true;
         case GLFW_KEY_DOWN:  moveCursor(impl.columns);  return true;
-        case GLFW_KEY_HOME:  impl.cursor = 0;    return true;
-        case GLFW_KEY_END:   impl.cursor = last; return true;
+        case GLFW_KEY_HOME:  impl.setCursor(0);    return true;
+        case GLFW_KEY_END:   impl.setCursor(last); return true;
         case GLFW_KEY_PAGE_UP:
             impl.scroll = std::max(0.0f, impl.scroll - impl.height * 0.8f);
             return true;
@@ -628,9 +638,11 @@ void DeckViewWindow::render(App& app) {
     const float viewH = h - headerH;
     impl.scrollMax = std::max(0.0f, contentH - viewH + pad);
 
-    // Keep the cursor on screen — the keyboard moves it off the bottom otherwise, and the
-    // view would show the same rows while the selection walked away.
-    {
+    // Scroll to the cursor when it has just been *moved* — the keyboard walks it off the
+    // bottom otherwise, and the view would show the same rows while the selection left. Only
+    // then: doing it every frame is doing it to the wheel as well.
+    if (impl.followCursor) {
+        impl.followCursor = false;
         const int row = impl.cursor / columns;
         const float top = row * (cardH + gutter);
         if (top < impl.scroll) impl.scroll = top;
@@ -650,7 +662,7 @@ void DeckViewWindow::render(App& app) {
     // The selection follows a moved run once the rebuilt deck has been laid out.
     if (impl.pendingSelectSlide >= 0) {
         const int cell = impl.cellOfSlide(std::min(impl.pendingSelectSlide, deck.size() - 1));
-        if (cell >= 0) impl.cursor = cell;
+        if (cell >= 0) impl.setCursor(cell);
         impl.pendingSelectSlide = -1;
     }
     impl.cursor = std::max(0, std::min(cellCount - 1, impl.cursor));

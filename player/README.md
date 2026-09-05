@@ -31,10 +31,18 @@ saying the audience cannot see it.
 
 The "next" still is a full render of that slide, which is not cheap: a slide's opening
 transition animates *from* the previous one, so the document has to be stepped through real
-frames before it shows the right slide. That work is spread across frames on a small
-per-frame budget, and held off until the slide you just put up has finished animating in —
-so it never lands on a transition. A still that is not finished yet shows "rendering…"
-instead of stalling the deck to wait for it.
+frames before it shows the right slide, and on a heavy slide that is over a second. It
+happens on a **worker thread**, so none of it is on the frame: the main thread reads the file,
+queues the work, and picks up finished pictures. A still that is not there yet is simply not
+drawn for a moment, and nothing waits for it.
+
+Making that safe needed four small fixes in the RemoteCompose engine, since it had never been
+asked to render two documents at once: the per-pass layout flags (`sSawStateLayout`,
+`sSawActiveAnim`) and the detached layout-animation store are now `thread_local` — they are
+cleared at the start of a pass and read at the end, so a second thread clearing them mid-pass
+would have made a slide that *is* animating cache as settled; the opcode tables build under
+`std::call_once`; the Java-compatible RNG is per thread; and `StillHosts`' label font no longer
+hands out a reference to a static it reassigns on the next call.
 
 Embedded content previews too: `rc:` sub-documents render for real and `video:` embeds show
 a poster frame. An embedded **web page** cannot be drawn off-screen at all — it is a native
@@ -254,9 +262,30 @@ highlighting so much as making a slide's *shape* visible at a glance.
 | `cmd`+`S` | save and rebuild |
 | `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo |
 | `cmd`+`A`, `cmd`+`C`/`X`/`V` | select all, clipboard |
-| `shift`+arrows, shift-click | select |
+| `cmd`+`←`/`→` | start (then margin) / end of the line |
+| `cmd`+`↑`/`↓` | start / end of the slide |
+| `option`+`←`/`→` | a word at a time |
+| `shift`+arrows, shift-click, drag | select |
+| `option`+`shift`+arrows, `option`+drag | select a **frame** — a rectangle, not a run |
+| click | put the caret there |
+| double / triple / quadruple click | the word, the line, the paragraph |
 | `Tab` | indent two spaces |
 | `Esc` | close (refuses while there are unsaved changes) |
+
+A fifth click in the same place goes back to a plain caret. A repeat click has to be in the
+same place as well as soon after, so moving to another word and clicking is two first clicks
+rather than a double.
+
+**Frame selection.** Hold `option` while extending and the selection becomes a rectangle:
+every line between the anchor and the caret, cut at the two columns they sit in, rather than a
+run flowing through the line breaks. It is how you take a column out of a markdown table, or
+the indent down a bullet list. Copy, cut and delete all work on the rectangle, and the lines
+stay where they are rather than being joined; typing replaces it and lands at its top-left.
+
+The cut is at a *display* column — characters, not bytes — so the rectangle stays square over
+a line with an accent in it, and the frame is drawn over its full column span with the parts
+where a line stops short washed rather than selected. Option is live: let go and extend again
+and you have an ordinary selection back.
 
 **It edits a block, not a slide.** A stepped bullet list is one `---` block and four rendered
 slides, so editing any of them edits the source they share — the header says "one block, 4

@@ -23,6 +23,8 @@ constexpr float kFontSize = 13.0f;
 constexpr float kLineGap  = 4.0f;
 constexpr float kGutterW  = 38.0f;    // line numbers
 constexpr float kHeaderH  = 62.0f;
+// How close together two clicks have to be to count as one gesture.
+constexpr double kDoubleClickSec = 0.4;
 constexpr float kFooterH  = 44.0f;
 
 // The colours markdown is read by. Not a highlighter — refract's grammar is small enough that
@@ -71,6 +73,12 @@ struct SlideEditor::Impl {
     double mouseX = 0, mouseY = 0;
     SkRect saveButton = SkRect::MakeEmpty();
     SkRect revertButton = SkRect::MakeEmpty();
+    bool dragging = false;          // the pointer is sweeping out a selection
+    // Successive clicks in the same place take more each time: a word, then the line, then
+    // the paragraph, then back to a plain caret.
+    int    clickCount = 0;
+    double lastClickAt = -1.0;
+    float  lastClickX = 0, lastClickY = 0;
     double caretBlinkFrom = 0.0;
 
     // Set while drawing, so a click can be turned into a caret position.
@@ -78,6 +86,18 @@ struct SlideEditor::Impl {
     SkFont mono = uiMonoFont(kFontSize);
 
     void setStatus(const std::string& text, bool error) { status = text; statusError = error; }
+
+    // The caret position under a point in the window.
+    Caret caretAt(float x, float y) const {
+        // `textTop + i * lineHeight` is line i's *baseline*; its box runs from one line
+        // higher. Measuring from the baseline put every click a line above where it was
+        // aimed, which is the sort of thing you feel long before you can name it.
+        const float top = textTop - lineHeight + kLineGap;
+        const float row = (y - top + scrollY) / std::max(1.0f, lineHeight);
+        const int line = std::max(0, std::min(buffer.lineCount() - 1,
+                                              static_cast<int>(std::floor(row))));
+        return {line, columnAt(buffer.line(line), x)};
+    }
 
     // The byte column in `line` nearest to an x in window coordinates. Measured prefix by
     // prefix rather than divided by a character width: the fallback face may not be mono.
@@ -118,8 +138,16 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
     glfwSetCursorPosCallback(window, [](GLFWwindow* w, double x, double y) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
-        self->mImpl->mouseX = x;
-        self->mImpl->mouseY = y;
+        Impl& impl = *self->mImpl;
+        impl.mouseX = x;
+        impl.mouseY = y;
+        // Sweeping out a selection. The mode was decided at the press, so an option-drag
+        // stays a rectangle even if the key is released half way.
+        if (impl.dragging && impl.lineHeight > 0) {
+            impl.buffer.setCaret(impl.caretAt(static_cast<float>(x), static_cast<float>(y)),
+                                 /*select=*/true);
+            impl.caretBlinkFrom = glfwGetTime();
+        }
     });
     glfwSetScrollCallback(window, [](GLFWwindow* w, double dx, double dy) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
@@ -129,22 +157,45 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int mods) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
-        if (!self || !self->mImpl || button != GLFW_MOUSE_BUTTON_LEFT
-            || action != GLFW_PRESS) {
+        if (!self || !self->mImpl || button != GLFW_MOUSE_BUTTON_LEFT) return;
+        Impl& impl = *self->mImpl;
+        if (action == GLFW_RELEASE) {
+            impl.dragging = false;
             return;
         }
-        Impl& impl = *self->mImpl;
+        if (action != GLFW_PRESS) return;
         const float x = static_cast<float>(impl.mouseX), y = static_cast<float>(impl.mouseY);
         if (impl.saveButton.contains(x, y)) { self->save(); return; }
         if (impl.revertButton.contains(x, y)) { self->revert(); return; }
         if (y < impl.textTop - impl.lineHeight || impl.lineHeight <= 0) return;
 
-        const int line = std::max(0, std::min(impl.buffer.lineCount() - 1,
-            static_cast<int>((y - impl.textTop + impl.scrollY) / impl.lineHeight)));
-        Caret caret{line, impl.columnAt(impl.buffer.line(line), x)};
+        // Option held makes whatever is swept out a rectangle rather than a run.
+        impl.buffer.setBlockMode((mods & GLFW_MOD_ALT) != 0);
         // Shift-click extends, the way a shifted arrow does.
-        impl.buffer.setCaret(caret, (mods & GLFW_MOD_SHIFT) != 0);
+        const bool extending = (mods & GLFW_MOD_SHIFT) != 0;
+        impl.buffer.setCaret(impl.caretAt(x, y), extending);
         impl.caretBlinkFrom = glfwGetTime();
+
+        // A repeat click has to be in the same place as well as soon after: moving the
+        // pointer to another word and clicking is two first clicks, not a double.
+        const double now = glfwGetTime();
+        const bool repeat = !extending && now - impl.lastClickAt < kDoubleClickSec
+                            && std::fabs(x - impl.lastClickX) < 4
+                            && std::fabs(y - impl.lastClickY) < 4;
+        impl.clickCount = repeat ? impl.clickCount + 1 : 1;
+        impl.lastClickAt = now;
+        impl.lastClickX = x;
+        impl.lastClickY = y;
+
+        switch (impl.clickCount % 4) {
+            case 2: impl.buffer.selectWord(); break;
+            case 3: impl.buffer.selectLine(); break;
+            case 0: impl.buffer.selectParagraph(); break;
+            default: break;      // a single click is the caret, and starts a drag
+        }
+        // Only a plain click sweeps: a double-click followed by a twitch should keep the
+        // word it just took rather than collapse it to a caret.
+        impl.dragging = impl.clickCount % 4 == 1;
     });
 
     glfwMakeContextCurrent(window);
@@ -245,6 +296,10 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     const bool cmd = (mods & GLFW_MOD_CONTROL) != 0;
 #endif
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
+    // Option turns an extend into a frame — a rectangle down the lines, cut at the caret's
+    // column, rather than a run through them. Live: it applies for as long as the key is
+    // held, and letting go and extending again gives an ordinary selection back.
+    impl.buffer.setBlockMode((mods & GLFW_MOD_ALT) != 0);
 
     if (cmd) {
         switch (key) {
@@ -264,17 +319,27 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
                 if (const char* text = glfwGetClipboardString(mWindow)) impl.buffer.insert(text);
                 return true;
             }
+            // The Mac's own bindings: command for the ends of the line and the document.
             case GLFW_KEY_UP:   impl.buffer.moveDocStart(shift); return true;
             case GLFW_KEY_DOWN: impl.buffer.moveDocEnd(shift); return true;
             case GLFW_KEY_LEFT: impl.buffer.moveHome(shift); return true;
             case GLFW_KEY_RIGHT: impl.buffer.moveEnd(shift); return true;
-            default: return false;
+            default: return true;   // no other command key belongs to the player either
         }
     }
 
+    // Option and a plain arrow steps a word, as it does everywhere else on the platform.
+    // With shift it is the frame extend instead — option means "by column" there, and the
+    // two never overlap because one of them needs shift and the other must not have it.
+    const bool word = (mods & GLFW_MOD_ALT) != 0 && !shift;
+
     switch (key) {
-        case GLFW_KEY_LEFT:      impl.buffer.moveLeft(shift); return true;
-        case GLFW_KEY_RIGHT:     impl.buffer.moveRight(shift); return true;
+        case GLFW_KEY_LEFT:
+            if (word) impl.buffer.moveWordLeft(false); else impl.buffer.moveLeft(shift);
+            return true;
+        case GLFW_KEY_RIGHT:
+            if (word) impl.buffer.moveWordRight(false); else impl.buffer.moveRight(shift);
+            return true;
         case GLFW_KEY_UP:        impl.buffer.moveUp(shift); return true;
         case GLFW_KEY_DOWN:      impl.buffer.moveDown(shift); return true;
         case GLFW_KEY_HOME:      impl.buffer.moveHome(shift); return true;
@@ -406,6 +471,27 @@ void SlideEditor::render(App& app) {
 
     const auto [selFrom, selTo] = impl.buffer.selection();
     const bool selecting = impl.buffer.hasSelection();
+    const bool framed = impl.buffer.blockSelection();
+    // The frame's two edges, measured once: every line it crosses is cut at the same x, and
+    // measuring per line would let a line with an accent in it bend the rectangle.
+    //
+    // Measured against the longest line the frame crosses, because a shorter one does not
+    // reach the right-hand column and would draw the rectangle too narrow. (With a truly
+    // monospaced face any line would do; the fallback face on a machine with no mono font
+    // is not one, and this is what keeps the frame square there too.)
+    float frameLeftX = 0, frameRightX = 0;
+    if (framed) {
+        const auto [left, right] = impl.buffer.blockColumns();
+        int ruler = selFrom.line, longest = -1;
+        for (int i = selFrom.line; i <= selTo.line; i++) {
+            const int chars = impl.buffer.displayColumn(
+                i, static_cast<int>(impl.buffer.line(i).size()));
+            if (chars > longest) { longest = chars; ruler = i; }
+        }
+        const std::string& text = impl.buffer.line(ruler);
+        frameLeftX = textWidth(mono, text.substr(0, impl.buffer.byteColumn(ruler, left)));
+        frameRightX = textWidth(mono, text.substr(0, impl.buffer.byteColumn(ruler, right)));
+    }
     SkFont gutterFont = uiMonoFont(kFontSize - 2);
     bool inFence = false;
 
@@ -427,15 +513,37 @@ void SlideEditor::render(App& app) {
 
         // Selection, clipped to this line.
         if (selecting && i >= selFrom.line && i <= selTo.line) {
-            const int from = i == selFrom.line ? selFrom.col : 0;
-            const int to = i == selTo.line ? selTo.col : static_cast<int>(text.size());
-            const float x0 = impl.textLeft - impl.scrollX + textWidth(mono, text.substr(0, from));
-            float x1 = impl.textLeft - impl.scrollX + textWidth(mono, text.substr(0, to));
-            // A selected line break shows as a sliver past the end, so a multi-line
-            // selection does not look like it stops at the last character.
-            if (i < selTo.line) x1 += textWidth(mono, " ");
-            fillRect(canvas, SkRect::MakeLTRB(x0, y - lineHeight + kLineGap, x1, y + kLineGap),
-                     withAlpha(ui::kAccent, 0x44));
+            const float top = y - lineHeight + kLineGap, bottom = y + kLineGap;
+            if (framed) {
+                // The frame is drawn over the whole column span, on every line it crosses —
+                // that is what makes it read as a rectangle rather than as a run that
+                // happens to be ragged. Where a line stops short there is nothing to take,
+                // so that part is a wash rather than a selection.
+                const auto [from, to] = impl.buffer.blockRangeOn(i);
+                const float x0 = impl.textLeft - impl.scrollX + frameLeftX;
+                const float x1 = impl.textLeft - impl.scrollX + frameRightX;
+                fillRect(canvas, SkRect::MakeLTRB(x0, top, x1, bottom),
+                         withAlpha(ui::kAccent, 0x1E));
+                if (to > from) {
+                    const float t0 = impl.textLeft - impl.scrollX
+                                     + textWidth(mono, text.substr(0, from));
+                    const float t1 = impl.textLeft - impl.scrollX
+                                     + textWidth(mono, text.substr(0, to));
+                    fillRect(canvas, SkRect::MakeLTRB(t0, top, t1, bottom),
+                             withAlpha(ui::kAccent, 0x44));
+                }
+            } else {
+                const int from = i == selFrom.line ? selFrom.col : 0;
+                const int to = i == selTo.line ? selTo.col : static_cast<int>(text.size());
+                const float x0 = impl.textLeft - impl.scrollX
+                                 + textWidth(mono, text.substr(0, from));
+                float x1 = impl.textLeft - impl.scrollX + textWidth(mono, text.substr(0, to));
+                // A selected line break shows as a sliver past the end, so a multi-line
+                // selection does not look like it stops at the last character.
+                if (i < selTo.line) x1 += textWidth(mono, " ");
+                fillRect(canvas, SkRect::MakeLTRB(x0, top, x1, bottom),
+                         withAlpha(ui::kAccent, 0x44));
+            }
         }
 
         drawText(canvas, text, impl.textLeft - impl.scrollX, y, mono, tone);

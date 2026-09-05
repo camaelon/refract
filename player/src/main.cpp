@@ -1519,18 +1519,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Build pending stills a slice at a time. The budget is what keeps a heavy slide
-        // from stalling the deck: without it one still is a second of frozen window,
-        // landing exactly when a key was pressed.
-        //
-        // A single document paint cannot be split, so the first one — the expensive one,
-        // with shader compilation and a cold layout — will overrun the budget whenever it
-        // lands. Hold off until the slide that was just put up has finished animating in,
-        // and it lands on a still frame nobody is watching instead of in the middle of the
-        // transition. The navigator is the exception: it is waiting on a preview now.
-        if (app.navOpen || deckView || app.sinceSlideChange > kTransitionQuietSec) {
-            refract::pumpThumbs(0.004);
-        }
+        // Collect whatever the still worker finished. The rendering itself is on its own
+        // thread — a heavy slide takes over a second, and that used to be a second of frozen
+        // window landing exactly when a key was pressed — so this is a lock and a move.
+        refract::collectThumbs();
     }
 
     // An edit in progress is finished rather than dropped: it is saved on leaving edit mode,
@@ -1542,6 +1534,7 @@ int main(int argc, char* argv[]) {
     recorder.reset();
     if (voice) voice->stop();
     voice.reset();
+    refract::stopThumbs();
     captionWindow.reset();
     deckView.reset();
     buildPanel.reset();

@@ -45,11 +45,28 @@ final class JvmImagePlatform implements RcPlatformServices {
 
     private Loaded load(Object image) {
         String ref = String.valueOf(image);
-        Loaded hit = cache.get(ref);
+        String key = ref.length() > 512 ? ref.length() + ":" + ref.substring(0, 256).hashCode()
+                                        + ":" + ref.substring(ref.length() - 256).hashCode() : ref;
+        Loaded hit = cache.get(key);
         if (hit != null) {
             return hit;
         }
         try {
+            // If the source is already a compressed image the player can decode, embed its bytes
+            // verbatim -- re-encoding a JPEG as PNG threw away the whole point of a lossy layer
+            // (a 2.2 KB JPEG became a 20 KB document).
+            byte[] raw = rawBytes(ref);
+            if (raw != null) {
+                BufferedImage probe = ImageIO.read(new java.io.ByteArrayInputStream(raw));
+                if (probe != null && Math.max(probe.getWidth(), probe.getHeight()) <= MAX_DIM) {
+                    Loaded direct = new Loaded();
+                    direct.png = raw;
+                    direct.width = probe.getWidth();
+                    direct.height = probe.getHeight();
+                    cache.put(key, direct);
+                    return direct;
+                }
+            }
             BufferedImage src = read(ref);
             if (src == null) {
                 throw new IOException("unsupported or missing image");
@@ -61,18 +78,52 @@ final class JvmImagePlatform implements RcPlatformServices {
             loaded.png = out.toByteArray();
             loaded.width = img.getWidth();
             loaded.height = img.getHeight();
-            cache.put(ref, loaded);
+            cache.put(key, loaded);
             return loaded;
         } catch (IOException e) {
             throw new RuntimeException("image load failed for '" + ref + "': " + e.getMessage(), e);
         }
     }
 
+    /** Raw bytes of an already-compressed source (PNG or JPEG), or null if it is neither. */
+    private static byte[] rawBytes(String ref) throws IOException {
+        byte[] b;
+        if (ref.startsWith("data:")) {
+            int comma = ref.indexOf(',');
+            if (comma < 0) return null;
+            b = java.util.Base64.getMimeDecoder().decode(ref.substring(comma + 1));
+        } else if (ref.contains("://")) {
+            return null;
+        } else {
+            File f = new File(ref);
+            if (!f.isFile()) return null;
+            b = java.nio.file.Files.readAllBytes(f.toPath());
+        }
+        if (b.length > 8 && (b[0] & 0xFF) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return b;
+        if (b.length > 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8) return b;   // JPEG SOI
+        return null;
+    }
+
     private static BufferedImage read(String ref) throws IOException {
+        // data:<mime>;base64,<payload> (or a bare base64 blob) lets a document carry its own
+        // pixels without depending on a file next to it.
+        if (ref.startsWith("data:")) {
+            int comma = ref.indexOf(',');
+            if (comma < 0) throw new IOException("malformed data URI");
+            return decodeBase64(ref.substring(comma + 1));
+        }
+        if (ref.length() > 256 && ref.matches("[A-Za-z0-9+/=\\s]+")) {
+            return decodeBase64(ref);
+        }
         if (ref.contains("://")) {
             return ImageIO.read(URI.create(ref).toURL());
         }
         return ImageIO.read(new File(ref));
+    }
+
+    private static BufferedImage decodeBase64(String payload) throws IOException {
+        byte[] raw = java.util.Base64.getMimeDecoder().decode(payload);
+        return ImageIO.read(new java.io.ByteArrayInputStream(raw));
     }
 
     private static BufferedImage downscale(BufferedImage src) {

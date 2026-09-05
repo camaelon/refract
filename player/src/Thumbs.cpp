@@ -17,8 +17,12 @@
 #include "include/core/SkSurface.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -49,10 +53,14 @@ struct Key {
     }
 };
 
-// A still part-way through being built. Member order matters: the paint context refers to
-// the remote context, which refers to the document, so they must be destroyed in reverse.
+// A still being built, entirely on the worker thread. Member order matters: the paint
+// context refers to the remote context, which refers to the document, so they must be
+// destroyed in reverse.
 struct Job {
     Key key;
+    std::vector<uint8_t> bytes;   // read on the main thread — see enqueue
+    std::string mediaPath;        // a real file for AVFoundation, when the still is a video
+    bool mediaTemp = false;       // ...and it was spilled out of a zip
     std::unique_ptr<rccore::CoreDocument> doc;
     std::unique_ptr<rcplayer::StillHosts> hosts;
     std::unique_ptr<rccore::RemoteContext> ctx;
@@ -81,32 +89,23 @@ double nowSec() {
 
 // Videos and animated images contribute their first frame — enough to recognise the slide,
 // and cheap enough to do in one go.
-sk_sp<SkImage> renderMedia(const std::string& entry, const std::string& ext,
-                           int width, int height) {
+sk_sp<SkImage> renderMedia(const std::string& ext, const std::vector<uint8_t>& bytes,
+                           const std::string& path, int width, int height) {
     auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width, height));
     if (!surface) return nullptr;
     SkCanvas* canvas = surface->getCanvas();
     canvas->clear(SK_ColorBLACK);
 
     if (rcplayer::isCodecVideoExt(ext)) {
-        std::vector<uint8_t> bytes;
-        if (!rcplayer::readFileBytes(entry, bytes)) return nullptr;
+        if (bytes.empty()) return nullptr;
         auto player = rcplayer::WebpPlayer::LoadFromData(bytes);
         if (!player) return nullptr;
         player->paint(canvas, 0.0, width, height);
         return surface->makeImageSnapshot();
     }
 
-    // AVFoundation needs a real file, so a clip inside a zip is spilled to a temp path.
-    std::string path = entry;
-    std::string temp;
-    if (rcplayer::g.zip) {
-        temp = "/tmp/refractplayer_thumb_" + rcplayer::baseName(entry);
-        if (!rcplayer::g.zip->extractToFile(entry, temp)) return nullptr;
-        path = temp;
-    }
+    if (path.empty()) return nullptr;
     auto frame = AvfVideoPlayer::ExtractFirstFrame(path);
-    if (!temp.empty()) std::remove(temp.c_str());
     if (!frame) return nullptr;
 
     float scale = std::min(static_cast<float>(width) / frame->width(),
@@ -121,11 +120,10 @@ sk_sp<SkImage> renderMedia(const std::string& entry, const std::string& ext,
 // private state — the live document has touch state, a bound canvas and running media, and
 // none of that should move because a still was requested.
 bool startRcJob(Job& job) {
-    std::vector<uint8_t> bytes;
-    if (!rcplayer::readFileBytes(job.key.entry, bytes) || bytes.empty()) return false;
+    if (job.bytes.empty()) return false;
 
     job.doc = std::make_unique<rccore::CoreDocument>();
-    rccore::WireBuffer buffer(bytes.data(), bytes.size());
+    rccore::WireBuffer buffer(job.bytes.data(), job.bytes.size());
     if (!job.doc->initFromBuffer(buffer)) return false;
 
     const int docW = job.doc->getWidth()  > 0 ? job.doc->getWidth()  : job.key.w;
@@ -189,57 +187,139 @@ bool advanceRcJob(Job& job) {
     return ++job.step >= kSettleSteps;
 }
 
-// The most jobs worth keeping in flight. Scrolling the navigator asks for a still per row
-// it passes, and building all of them would spend the machine on previews nobody stopped
-// on. Beyond this, the ones that have not started yet are dropped from the back.
-constexpr size_t kMaxJobs = 4;
-
 bool sameKey(const Key& a, const Key& b) {
     return a.entry == b.entry && a.w == b.w && a.h == b.h;
 }
 
-// Queue a job for `key` unless the still is already cached. A job that is queued but has
-// not started is moved to the front: the caller is asking for it now, and whatever was
-// queued before it is speculative.
+// ── The worker ───────────────────────────────────────────────────────
+//
+// One thread, one queue. A still is a full document render — parse, lay out, compile the
+// shaders, then step through eight frames of the opening animation — and on a heavy slide
+// that is over a second. Doing it on the main thread meant the deck froze for exactly as
+// long, at exactly the moment somebody had scrolled or pressed a key, which is the worst
+// possible time. So it happens over here, and the main thread only ever picks up finished
+// pictures.
+//
+// What crosses the boundary is deliberately small: bytes in, an SkImage out. Every request is
+// read from disk on the main thread (a zip archive is one shared handle and cannot be read
+// from two threads), and the raster SkImage that comes back is immutable.
+struct Queue {
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::deque<Job> pending;
+    std::vector<std::pair<Key, sk_sp<SkImage>>> done;
+    // Bumped by clearThumbCache. Anything a worker finishes from an older generation is
+    // dropped: the deck it was rendering no longer exists.
+    uint64_t generation = 0;
+    bool stopping = false;
+    bool started = false;
+    std::thread thread;
+};
+
+Queue& queue() {
+    static Queue q;
+    return q;
+}
+
+void renderJob(Job& job, sk_sp<SkImage>* out) {
+    const std::string ext = rcplayer::getExt(job.key.entry);
+    if (!rcplayer::isRcExt(ext)) {
+        *out = renderMedia(ext, job.bytes, job.mediaPath, job.key.w, job.key.h);
+        // A clip spilled out of a zip so AVFoundation could open it has served its purpose.
+        if (job.mediaTemp) std::remove(job.mediaPath.c_str());
+        return;
+    }
+    if (!startRcJob(job)) {
+        *out = nullptr;                       // a failure is cached, not retried every frame
+        return;
+    }
+    while (!advanceRcJob(job)) {}
+    *out = job.surface->makeImageSnapshot();
+}
+
+void workerLoop() {
+    Queue& q = queue();
+    for (;;) {
+        Job job;
+        uint64_t generation = 0;
+        {
+            std::unique_lock<std::mutex> lock(q.mutex);
+            q.wake.wait(lock, [&q] { return q.stopping || !q.pending.empty(); });
+            if (q.stopping) return;
+            job = std::move(q.pending.front());
+            q.pending.pop_front();
+            generation = q.generation;
+        }
+        sk_sp<SkImage> image;
+        renderJob(job, &image);
+        {
+            std::lock_guard<std::mutex> lock(q.mutex);
+            // Dropped rather than delivered when the deck was reloaded underneath it.
+            if (generation == q.generation) q.done.push_back({job.key, std::move(image)});
+        }
+    }
+}
+
+void ensureWorker() {
+    Queue& q = queue();
+    if (q.started) return;
+    q.started = true;
+    q.thread = std::thread(workerLoop);
+}
+
+// Queue a still unless it is cached or already queued. `urgent` moves an existing request to
+// the front: the caller is looking at that pane now, and what was queued before it is
+// speculative.
 void enqueue(const Key& key, bool urgent) {
     if (key.entry.empty() || key.w <= 0 || key.h <= 0) return;
     if (cache().count(key)) return;
-    for (size_t i = 0; i < jobs().size(); i++) {
-        if (!sameKey(jobs()[i].key, key)) continue;
-        if (urgent && i > 0 && jobs()[i].step == 0) {
-            Job job = std::move(jobs()[i]);
-            jobs().erase(jobs().begin() + i);
-            jobs().push_front(std::move(job));
+
+    Queue& q = queue();
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        for (size_t i = 0; i < q.pending.size(); i++) {
+            if (!sameKey(q.pending[i].key, key)) continue;
+            if (urgent && i > 0) {
+                Job job = std::move(q.pending[i]);
+                q.pending.erase(q.pending.begin() + i);
+                q.pending.push_front(std::move(job));
+            }
+            return;
         }
-        return;
     }
 
-    const std::string ext = rcplayer::getExt(key.entry);
-    if (!rcplayer::isRcExt(ext)) {
-        // Media stills are one extract, not a settle loop — no point deferring them.
-        cache()[key] = renderMedia(key.entry, ext, key.w, key.h);
-        return;
-    }
-
+    // Read here, on the main thread. The bytes may come from a zip archive, which is one
+    // shared handle with a read cursor — the one thing in this path that cannot be touched
+    // from two threads at once.
     Job job;
     job.key = key;
-    if (!startRcJob(job)) {
-        cache()[key] = nullptr;   // remember the failure so it isn't retried every frame
-        return;
-    }
-    if (urgent) jobs().push_front(std::move(job));
-    else        jobs().push_back(std::move(job));
-
-    // Trim speculative work. Never drop the job at the front — it may be half-built, and
-    // throwing that away would mean starting it over the next time it is asked for.
-    while (jobs().size() > kMaxJobs) {
-        auto victim = jobs().end();
-        for (auto it = jobs().begin() + 1; it != jobs().end(); ++it) {
-            if (it->step == 0) victim = it;
+    const std::string ext = rcplayer::getExt(key.entry);
+    if (rcplayer::isRcExt(ext) || rcplayer::isCodecVideoExt(ext)) {
+        if (!rcplayer::readFileBytes(key.entry, job.bytes) || job.bytes.empty()) {
+            cache()[key] = nullptr;
+            return;
         }
-        if (victim == jobs().end()) break;
-        jobs().erase(victim);
+    } else {
+        // AVFoundation needs a real file, so a clip inside a zip is spilled to a temp path
+        // before the worker ever sees it.
+        job.mediaPath = key.entry;
+        if (rcplayer::g.zip) {
+            job.mediaPath = "/tmp/refractplayer_thumb_" + rcplayer::baseName(key.entry);
+            if (!rcplayer::g.zip->extractToFile(key.entry, job.mediaPath)) {
+                cache()[key] = nullptr;
+                return;
+            }
+            job.mediaTemp = true;
+        }
     }
+
+    ensureWorker();
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        if (urgent) q.pending.push_front(std::move(job));
+        else        q.pending.push_back(std::move(job));
+    }
+    q.wake.notify_one();
 }
 
 }  // namespace
@@ -261,21 +341,43 @@ void requestThumb(const std::string& entry, int width, int height) {
     enqueue(Key{entry, width, height}, /*urgent=*/false);
 }
 
-void pumpThumbs(double budgetSeconds) {
-    if (jobs().empty()) return;
-    const double deadline = nowSec() + budgetSeconds;
-    do {
-        Job& job = jobs().front();
-        if (advanceRcJob(job)) {
-            cache()[job.key] = job.surface->makeImageSnapshot();
-            jobs().pop_front();
-        }
-    } while (!jobs().empty() && nowSec() < deadline);
+void collectThumbs() {
+    Queue& q = queue();
+    std::vector<std::pair<Key, sk_sp<SkImage>>> finished;
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        if (q.done.empty()) return;
+        finished.swap(q.done);
+    }
+    for (auto& [key, image] : finished) cache()[key] = std::move(image);
+}
+
+bool thumbsPending() {
+    Queue& q = queue();
+    std::lock_guard<std::mutex> lock(q.mutex);
+    return !q.pending.empty() || !q.done.empty();
 }
 
 void clearThumbCache() {
+    Queue& q = queue();
     cache().clear();
-    jobs().clear();
+    std::lock_guard<std::mutex> lock(q.mutex);
+    q.pending.clear();
+    q.done.clear();
+    // Whatever the worker is rendering right now belongs to the deck that just went away.
+    q.generation++;
+}
+
+void stopThumbs() {
+    Queue& q = queue();
+    if (!q.started) return;
+    {
+        std::lock_guard<std::mutex> lock(q.mutex);
+        q.stopping = true;
+    }
+    q.wake.notify_all();
+    if (q.thread.joinable()) q.thread.join();
+    q.started = false;
 }
 
 }  // namespace refract

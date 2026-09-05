@@ -48,6 +48,28 @@ public:
     void selectAll();
     void clearSelection() { mSelecting = false; }
 
+    // ── Frame selection ──────────────────────────────────────────────
+    //
+    // A rectangle rather than a run: every line between the anchor and the caret, cut at the
+    // two columns they sit in. Holding option while extending switches to it, which is how a
+    // column of a markdown table or the indent down a bullet list gets selected at all.
+    //
+    // The rectangle is measured in *display* columns — characters, not bytes — because that
+    // is what lines up on screen in a monospaced font, and a byte column would slice a
+    // rectangle crooked the moment a line above had an accent in it.
+    void setBlockMode(bool block) { mBlockMode = block; }
+    bool blockMode() const { return mBlockMode; }
+    bool blockSelection() const { return mBlock && hasSelection(); }
+
+    // The rectangle's column span, in display columns, left first.
+    std::pair<int, int> blockColumns() const;
+    // The byte range of the rectangle on `line` — empty when the line stops short of it.
+    std::pair<int, int> blockRangeOn(int line) const;
+
+    // Characters before `byteCol` on `line`, and the inverse. Clamped to the line.
+    int displayColumn(int line, int byteCol) const;
+    int byteColumn(int line, int displayCol) const;
+
     // Every one of these replaces the selection first, which is what makes typing over a
     // selection work without each caller remembering to.
     void insert(const std::string& utf8);
@@ -66,6 +88,16 @@ public:
     void moveEnd(bool select);
     void moveDocStart(bool select);
     void moveDocEnd(bool select);
+    // A word at a time, the way option+arrow does on a Mac. Stops at the far edge of the
+    // word it passes through, so repeated presses walk word by word rather than landing
+    // between every run of punctuation.
+    void moveWordLeft(bool select);
+    void moveWordRight(bool select);
+
+    // What the successive clicks of a multi-click select. Each is around the caret.
+    void selectWord();
+    void selectLine();       // the line's text, without its break
+    void selectParagraph();  // the run of non-blank lines the caret is in
 
     bool undo();
     bool redo();
@@ -89,13 +121,20 @@ private:
     Caret clamp(Caret caret) const;
     int stepLeft(int line, int col) const;    // one character back, in bytes
     int stepRight(int line, int col) const;
+    // The word around `col`, as a byte range. A run of word characters, or — when the caret
+    // is not in one — the single character it is on.
+    std::pair<int, int> wordAt(int line, int col) const;
 
     std::vector<std::string> mLines;
     Caret mCaret;
     Caret mAnchor;
     bool  mSelecting = false;
+    bool  mBlock = false;             // this selection is a rectangle
+    bool  mBlockMode = false;         // ...and the next extend will be one too
     bool  mDirty = false;
-    int   mGoalCol = -1;              // remembered column for up/down across short lines
+    // Remembered *display* column for up/down across short lines. Display, not bytes: moving
+    // down a line with an accent in it would otherwise drift sideways.
+    int   mGoalCol = -1;
 
     std::vector<Snapshot> mUndo;
     std::vector<Snapshot> mRedo;
