@@ -26,6 +26,8 @@ prebuilt/refractplayer examples/deck/out       # present it (→ steps, Tab jump
 Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
 `prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
 
+EXPERIMENTAL JSON operations (compact path resources, paint blur, variable-width strokes) are described in `json2rc/EXPERIMENTAL.md`; they need the json2rc built from source and the rcX C++ player.
+
 **`refractplayer`** is the deck player, and it is where a deck is presented *and* edited:
 
 | | | |

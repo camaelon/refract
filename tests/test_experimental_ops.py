@@ -61,6 +61,15 @@ class ExperimentalOps(unittest.TestCase):
         self.assertGreater(abs(a - b).max(), 40, "the blur must change edge pixels")
         self.assertLess(abs(a[60, 90] - b[60, 90]).max(), 3, "the interior keeps its colour")
 
+    def test_compact_gradient_is_smaller_and_identical(self):
+        import numpy as np
+        cols = ["#F4FF62", "#F5FF6B", "#F6F888", "#F9F0B2", "#FEFEFF", "#F4CC60", "#BD7528", "#7A1E00"]; st = [0, .2, .4, .6, .8, .9, .96, 1.0]
+        def grad(x): return [{"paint": {"ops": [{"style": "fill"}, {"radialGradient": {"centerX": 90, "centerY": 65, "radius": 70, "colors": cols, "stops": st, **({"xcompact": True} if x else {})}}]}}, {"drawPath": "@paths.p"},
+                             {"paint": {"ops": [{"style": "fill"}, {"linearGradient": {"x1": 0, "y1": 0, "x2": 180, "y2": 130, "colors": ["#80FF0000", "#000000FF"], "stops": [0, 1], **({"xcompact": True} if x else {})}}]}}, {"drawPath": "@paths.p"}]
+        n0, a = self.compile(doc([{"p": OPS}], grad(False)), "grad"); n1, b = self.compile(doc([{"p": OPS}], grad(True)), "gradx")
+        self.assertLess(n1, n0 - 40, f"compact gradients {n1} B should be well under {n0} B")
+        self.assertLess(np.sqrt(((a - b) ** 2).mean()), 1.0, "compact and standard gradients render the same")
+
     def test_path_strip_width_follows_diameters(self):
         import numpy as np
         line = [{"type": "moveTo", "x": 15, "y": 65}, {"type": "lineTo", "x": 165, "y": 65}]
