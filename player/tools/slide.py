@@ -37,7 +37,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from refractkit import chunks, history, manifest
+    from refractkit import chunks, history, keys, manifest
 except ImportError:  # pragma: no cover - only when the script is copied out of the repo
     sys.stderr.write(f"slide.py: cannot import refractkit from {_ROOT}\n")
     raise
@@ -55,6 +55,29 @@ def locate(deck: dict, index: int) -> tuple:
                          "rebuild the deck so its slides can be edited")
     shared = sum(1 for s in slides if s.get("src") == src and s.get("src_index") == block)
     return src, int(block), shared
+
+
+def follow_keys(deck_dir: str, out_dir: str, src: str, moved: dict) -> list:
+    """Move the keys in the narration index and the rehearsal trace, reporting both sides so
+    the whole edit undoes as one. See refractkit.keys."""
+    paths = [keys.voice_index_path(deck_dir), keys.timing_path(out_dir)]
+    before = []
+    for path in paths:
+        try:
+            with open(path) as f:
+                before.append(f.read())
+        except OSError:
+            before.append("")
+    keys.follow(deck_dir, out_dir, src, moved)
+    extra = []
+    for path, was in zip(paths, before):
+        try:
+            with open(path) as f:
+                now = f.read()
+        except OSError:
+            now = ""
+        extra.append((os.path.relpath(path, deck_dir), was, now))
+    return extra
 
 
 def rebuild(deck_dir: str, deck: dict) -> int:
@@ -156,9 +179,25 @@ def main() -> int:
         except (ValueError, OSError) as e:
             return fail(str(e), as_json)
 
+        # Every one of these moves blocks, so everything keyed by block position moves too.
+        # Adding a slide and splitting one both open a gap; deleting and merging both close
+        # one — a merge closes the gap where the block it absorbed used to be.
+        blocks = chunks.count_chunks(text)
+        if args.new:
+            order = chunks.insert_order(blocks, at)
+        elif args.duplicate:
+            order = chunks.insert_order(blocks, block + 1)
+        elif args.split is not None:
+            order = chunks.insert_order(blocks, block + 1)
+        elif args.merge:
+            order = chunks.delete_order(blocks, block + 1)
+        else:
+            order = chunks.delete_order(blocks, block)
+        extra = follow_keys(deck_dir, out_dir, src, chunks.permutation(order))
+
         with open(md_path) as f:
             on_disk = f.read()
-        history.record(out_dir, src, on_disk, new_text, what)
+        history.record(out_dir, src, on_disk, new_text, what, extra)
         tmp = md_path + ".edit.tmp"
         with open(tmp, "w") as f:
             f.write(new_text)

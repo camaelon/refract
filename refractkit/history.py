@@ -61,13 +61,23 @@ def save(out_dir: str, doc: dict) -> bool:
         return False
 
 
-def record(out_dir: str, file: str, before: str, after: str, description: str) -> None:
+def record(out_dir: str, file: str, before: str, after: str, description: str,
+           extra: list | None = None) -> None:
     """Note an edit that has just been made to `file` (a path relative to the deck).
+
+    `extra` is any other file the same edit rewrote, as (path, before, after) — the narration
+    index and the rehearsal trace, whose keys move when blocks do. They belong in the same
+    entry because they were one edit: undoing the markdown without them would leave a deck
+    whose recording pointed at the wrong slides.
 
     Anything ahead of the cursor is dropped: editing after an undo means the redone future no
     longer happened, which is what every undo stack does and what anyone expects.
     """
-    if before == after:
+    files = [{"file": file, "before": before, "after": after}]
+    for path, was, now in (extra or []):
+        if was != now:
+            files.append({"file": path, "before": was, "after": now})
+    if all(f["before"] == f["after"] for f in files):
         return
     doc = load(out_dir)
     doc["entries"] = doc["entries"][:doc["cursor"]]
@@ -75,6 +85,7 @@ def record(out_dir: str, file: str, before: str, after: str, description: str) -
         "file": file,
         "before": before,
         "after": after,
+        "files": files,
         "description": description,
         "at": round(time.time(), 3),
     })
@@ -100,25 +111,48 @@ class Conflict(Exception):
     """The file is not what the history last left it as — somebody else has edited it."""
 
 
-def _apply(deck_dir: str, entry: dict, want: str, put: str) -> str:
-    """Put `put` into the entry's file, having checked it currently holds `want`.
+def _files(entry: dict) -> list:
+    """The files an entry covers. Entries written before an edit could touch more than one
+    carry only the markdown, and still read correctly."""
+    if isinstance(entry.get("files"), list) and entry["files"]:
+        return entry["files"]
+    return [{"file": entry["file"], "before": entry["before"], "after": entry["after"]}]
+
+
+def _apply(deck_dir: str, entry: dict, want: str, put: str) -> list:
+    """Put `put` into each of the entry's files, having checked they currently hold `want`.
+
+    Every file is checked before any is written, so a conflict on the second leaves the first
+    alone: half an undo is worse than none.
 
     The check is the point. A slides.md edited in a terminal while the player was open is a
-    perfectly ordinary thing to have happened, and undo must not silently throw that away."""
-    path = os.path.join(deck_dir, entry["file"])
-    try:
-        with open(path) as f:
-            current = f.read()
-    except OSError:
-        raise Conflict(f"cannot read {entry['file']}")
-    if _digest(current) != _digest(entry[want]):
-        raise Conflict(f"{entry['file']} has changed outside the player — "
-                       f"nothing was undone")
-    tmp = path + ".undo.tmp"
-    with open(tmp, "w") as f:
-        f.write(entry[put])
-    os.replace(tmp, path)
-    return path
+    perfectly ordinary thing to have happened, and undo must not silently throw that away.
+    """
+    plan = []
+    for part in _files(entry):
+        path = os.path.join(deck_dir, part["file"])
+        try:
+            with open(path) as f:
+                current = f.read()
+        except OSError:
+            # A file the edit created and something has since removed — the narration index
+            # of a deck whose recording was deleted, say. Nothing to put back.
+            if part[want]:
+                raise Conflict(f"cannot read {part['file']}")
+            current = ""
+        if _digest(current) != _digest(part[want]):
+            raise Conflict(f"{part['file']} has changed outside the player — "
+                           f"nothing was undone")
+        plan.append((path, part[put]))
+
+    written = []
+    for path, text in plan:
+        tmp = path + ".undo.tmp"
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        written.append(path)
+    return written
 
 
 def undo(out_dir: str, deck_dir: str) -> dict | None:

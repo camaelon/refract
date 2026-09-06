@@ -263,6 +263,10 @@ all run on their own:
 | `tools/slide.py` | read, rewrite, add or delete one slide's markdown |
 | `tools/build.py` | rebuild with a given set of options, and report what it did |
 | `tools/history.py` | undo and redo those edits |
+
+Each of them moves the narration index and the rehearsal trace along with the blocks it moves,
+in the same write and as one undoable edit — see the note on recordings under
+[Rehearsing](#rehearsing).
 | `tools/captions.py` | transcribe the narration and align it into per-word timings |
 | `tools/web.py` | assemble the deck, its audio and its captions into a web page |
 
@@ -573,19 +577,25 @@ see the level before committing to one.
 This could not have worked before the change below: the wavs are named for the slide's
 position, so a re-record after any reorder would have written over another slide's narration.
 
-**A recording survives the deck being reordered.** A slide's filename carries its number, so
+**A recording survives the deck being edited.** A slide's filename carries its number, so
 moving one slide renames every slide after it — and a trace or a set of narration wavs keyed
 by name would quietly line up with the wrong slides the first time anything moved, which is
-one drag in the deck view. So both are keyed by the *markdown block* a slide was written in,
-which is what a reorder moves rather than renames:
+one drag in the deck view. So both are keyed by the *markdown block* a slide was written in:
 
 - `timing.json` records a `key` alongside the filename. A trace written before keys existed
   still matches by name, and a keyed trace never falls back to one — a filename match after a
   reorder is a different slide's timing.
-- The wavs keep their numbered names, because `--transcribe` and `--web` read them by number
-  and expect `NN.txt` and `NN.words.json` beside them. What moves is a small
+- The wavs keep their numbered names, because `--transcribe` reads them by number and expects
+  `NN.txt` and `NN.words.json` beside them. What identifies them is a small
   **`voice/index.json`** the recorder writes as it goes, saying which wav belongs to which
-  block. Captions follow the wav.
+  block. Captions follow the wav, and so does the web export.
+
+A block's index is its *position*, though, so moving one block renumbers every block after it
+just as it renumbers the files — the key is stable against a slide's title changing, and not
+against the deck being rearranged. What makes it hold is that **the tool doing the moving
+moves the keys with it**: `reorder.py` and `slide.py` know exactly which block went where, and
+apply that same permutation to the index and the trace in the same write. It goes into the
+undo history as one edit, so taking a reorder back takes the narration back with it.
 
 A recorded run is timed from its **first** slide, not from the first advance — the opening
 slide is part of the talk.

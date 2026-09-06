@@ -64,7 +64,7 @@ and adds `--screenshot` / `--frames` for single-file headless capture.
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
   voice/             # one NN.wav per slide          (refractplayer --record-audio)
-  voice/index.json   # which wav belongs to which slide, so a reorder does not break it
+  voice/index.json   # which wav belongs to which slide; moved by the tools that reorder
   voice/NN.txt       # its transcript                (refractplayer --transcribe)
   voice/NN.words.json# per-word caption timings      (refractplayer --transcribe)
 ```
@@ -692,6 +692,7 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `buildcache`  | what the last build produced, so an unchanged slide is not recompiled |
 | `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
 | `history`     | undo and redo for every edit that rewrites a deck's markdown |
+| `keys`        | the block a slide was written in, and keeping it pointing there when blocks move |
 
 `refract.py` itself is the CLI plus the build: `slide_style` (the theme a slide renders with),
 `render_slide` (which of the seven ways it is drawn) and `manifest_record` (what a player is

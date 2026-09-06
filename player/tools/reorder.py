@@ -35,10 +35,33 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from refractkit import history, manifest, reorder
+    from refractkit import chunks, history, keys, manifest, reorder
 except ImportError:  # pragma: no cover - only when the script is copied out of the repo
     sys.stderr.write(f"reorder.py: cannot import refractkit from {_ROOT}\n")
     raise
+
+
+def follow_keys(deck_dir: str, out_dir: str, src: str, moved: dict) -> list:
+    """Move the keys in the narration index and the rehearsal trace, and report what changed
+    either side, so the whole edit can be undone as one."""
+    paths = [keys.voice_index_path(deck_dir), keys.timing_path(out_dir)]
+    before = []
+    for path in paths:
+        try:
+            with open(path) as f:
+                before.append(f.read())
+        except OSError:
+            before.append("")
+    keys.follow(deck_dir, out_dir, src, moved)
+    extra = []
+    for path, was in zip(paths, before):
+        try:
+            with open(path) as f:
+                now = f.read()
+        except OSError:
+            now = ""
+        extra.append((os.path.relpath(path, deck_dir), was, now))
+    return extra
 
 
 def rebuild(deck_dir: str, deck: dict) -> int:
@@ -136,10 +159,19 @@ def main() -> int:
         result["dst"] = args.to_chunk
 
     if not args.dry_run and changed:
-        # Recorded before it happens, so it can be taken back. See refractkit.history.
+        # Anything keyed by block position has to move with the blocks: the narration index
+        # and the rehearsal trace both name slides by where they were written, and a block's
+        # index is its position. See refractkit.keys.
+        blocks = chunks.count_chunks(text)
+        order = (chunks.move_range_order(blocks, from_chunk, to_chunk, args.to_chunk) if run
+                 else chunks.move_order(blocks, from_chunk, to_chunk))
+        extra = follow_keys(deck_dir, out_dir, src, chunks.permutation(order))
+
+        # Recorded before it happens, so it can be taken back — the markdown and the files
+        # that moved with it, as one edit. See refractkit.history.
         history.record(out_dir, src, text, new_text,
                        (f"move blocks {from_chunk}-{to_chunk}" if run
-                        else f"move slide {args.move + 1}"))
+                        else f"move slide {args.move + 1}"), extra)
         # Written via a temp file in the same directory then renamed, so an interrupted write
         # can never leave a half-rewritten slides.md behind.
         tmp = md_path + ".reorder.tmp"

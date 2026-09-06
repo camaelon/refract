@@ -203,6 +203,53 @@ def duplicate_chunk(text: str, index: int) -> str:
     return insert_chunk(text, index + 1, read_chunk(text, index))
 
 
+# ── Where each block went ────────────────────────────────────────────
+#
+# Every edit above is a list manipulation, and anything keyed by block position has to follow
+# it: a rehearsal trace and the narration index both name slides by the block they were
+# written in, and a block's index is its *position*, which moving one changes for every block
+# after it.
+#
+# Each of these returns the new order as a list of old indices — `None` where a block was
+# added and had no previous life. :func:`permutation` turns that into old -> new.
+
+def permutation(order: list) -> dict:
+    """old block index -> new one, given the new order written as old indices."""
+    return {old: new for new, old in enumerate(order) if old is not None}
+
+
+def move_order(n: int, src: int, dst: int) -> list:
+    """The order after :func:`move_chunk`."""
+    order = list(range(n))
+    order.insert(dst, order.pop(src))
+    return order
+
+
+def move_range_order(n: int, first: int, last: int, dst: int) -> list:
+    """The order after :func:`move_chunks`."""
+    order = list(range(n))
+    block = order[first:last + 1]
+    del order[first:last + 1]
+    order[dst:dst] = block
+    return order
+
+
+def insert_order(n: int, at: int) -> list:
+    """The order after a block is added at `at` — :func:`insert_chunk`, and the second half of
+    a :func:`split_chunk` (which adds a block after the one it splits)."""
+    order = list(range(n))
+    order.insert(at, None)
+    return order
+
+
+def delete_order(n: int, at: int) -> list:
+    """The order after a block is removed — :func:`delete_chunk`, and the block that is
+    absorbed by a :func:`merge_chunk` (the one *after* the block being merged into)."""
+    order = list(range(n))
+    del order[at]
+    return order
+
+
 def _padding(chunks: list[list[str]]) -> list[str]:
     """The blank line a deck puts either side of its ``---``, or nothing if it does not.
 

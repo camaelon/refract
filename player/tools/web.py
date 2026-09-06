@@ -56,7 +56,7 @@ def voice_dir_for(out_dir: str) -> str | None:
 
 
 def slide_number(filename: str) -> str:
-    """The leading digits a slide's narration is keyed by — "07_a_graph.rc" -> "07"."""
+    """The leading digits of a slide's filename — "07_a_graph.rc" -> "07"."""
     stem = os.path.basename(filename)
     digits = ""
     for c in stem:
@@ -65,6 +65,42 @@ def slide_number(filename: str) -> str:
         else:
             break
     return digits
+
+
+def voice_stems(deck: dict, voice_dir: str | None) -> dict:
+    """Which wav belongs to each slide, by the slide's filename.
+
+    The wavs are named for the slide's *position* at the time they were recorded, and a deck
+    reordered since then has renumbered its slides out from under them. `voice/index.json`
+    says which narration belongs to which markdown block, which is what the player follows;
+    this follows it too, so a reordered deck exports the audio it plays.
+
+    Without an index — a recording made before there was one, on a deck nobody has
+    reordered — the position is the answer, exactly as it always was.
+    """
+    stems = {}
+    index = {}
+    if voice_dir:
+        try:
+            with open(os.path.join(voice_dir, "index.json")) as f:
+                doc = json.load(f)
+            if isinstance(doc.get("slides"), dict):
+                index = doc["slides"]
+        except (OSError, ValueError):
+            index = {}
+
+    for rec in deck.get("slides", []):
+        name = rec.get("file")
+        if not name:
+            continue
+        key = None
+        if rec.get("src") and rec.get("src_index") is not None:
+            # `.0` is the first slide a block produced; the steps after it share its audio,
+            # because they share the block it was recorded against.
+            key = f"{rec['src']}#{rec['src_index']}.0"
+        stem = index.get(key) if key else None
+        stems[name] = stem or slide_number(name)
+    return stems
 
 
 def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> int:
@@ -89,6 +125,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
 
     # Titles and sections, when the deck was built with a manifest.
     titles, sections = {}, {}
+    manifest = {}
     manifest_path = os.path.join(out_dir, "deck.json")
     if os.path.isfile(manifest_path):
         with open(manifest_path) as f:
@@ -111,6 +148,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
     # Narration and captions, copied under the slide's own name so the page needs no
     # knowledge of the numbering rule.
     voice_dir = voice_dir_for(out_dir)
+    stems = voice_stems(manifest, voice_dir)
     audio_dir = os.path.join(web_dir, "audio")
     entries = []
     have_audio = 0
@@ -137,7 +175,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
         if os.path.splitext(name)[1].lower() not in MEDIA_EXTS:
             with open(os.path.join(out_dir, name), "rb") as f:
                 entry["data"] = base64.b64encode(f.read()).decode("ascii")
-        number = slide_number(name)
+        number = stems.get(name) or slide_number(name)
         if voice_dir and number:
             wav = os.path.join(voice_dir, number + ".wav")
             if os.path.isfile(wav):
