@@ -13,6 +13,8 @@
 // So it lives here, with no Skia and no window behind it, and is tested directly.
 #pragma once
 
+#include <string>
+
 namespace refract {
 
 struct Box {
@@ -71,6 +73,12 @@ Grid layoutGrid(const GridSpec& spec, int cells);
 // always is the bug this is written down to prevent: the view then follows the cursor on
 // every redraw, which quietly undoes the wheel a fiftieth of a second after it turns.
 float settleScroll(const Grid& grid, float scroll, int cursor, bool cursorMoved);
+
+// ── Finding a slide by name ──────────────────────────────────────────
+//
+// A sixty-slide deck has no other way to answer "where is the one about the render loop".
+// Case-insensitive substring, which is what anybody types and what nobody has to learn.
+bool matchesFilter(const std::string& title, const std::string& filter);
 
 // ── The slide editor's lines ─────────────────────────────────────────
 

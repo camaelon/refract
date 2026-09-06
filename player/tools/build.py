@@ -29,29 +29,6 @@ except ImportError:  # pragma: no cover - only when the script is copied out of 
     sys.stderr.write(f"build.py: cannot import refractkit from {_ROOT}\n")
     raise
 
-# What a build produces and may replace. A file outside this set is none of its business.
-BUILT_EXTS = (".rc", ".notes", ".mp4", ".mov", ".m4v", ".webm")
-
-
-def outputs(out_dir: str) -> dict:
-    """Every generated file under out/, with its modification time."""
-    found = {}
-    for directory in (out_dir, os.path.join(out_dir, "media")):
-        try:
-            names = os.listdir(directory)
-        except OSError:
-            continue
-        for name in names:
-            if not name.endswith(BUILT_EXTS):
-                continue
-            path = os.path.join(directory, name)
-            try:
-                found[os.path.relpath(path, out_dir)] = os.stat(path).st_mtime_ns
-            except OSError:
-                pass
-    return found
-
-
 def refract_args(args, deck: dict) -> list:
     """The options to build with: the panel's choices, over the deck's own size."""
     return manifest.build_args(deck, transitions=args.transitions, debug=args.debug,
@@ -97,7 +74,7 @@ def main() -> int:
             sys.stderr.write(f"build.py: {message}\n")
         return 1
 
-    before = outputs(out_dir)
+    before = manifest.outputs(out_dir)
     started = time.time()
     # refract's log goes to stderr: with --json the caller parses stdout, and the panel does.
     proc = subprocess.run([sys.executable, script, deck_dir, *refract_args(args, deck)],
@@ -106,9 +83,9 @@ def main() -> int:
     elapsed = time.time() - started
     if proc.stderr:
         sys.stderr.write(proc.stderr)
-    after = outputs(out_dir)
+    after = manifest.outputs(out_dir)
 
-    rebuilt = [name for name, stamp in after.items() if before.get(name) != stamp]
+    rebuilt = manifest.changed_since(before, out_dir)
     result = {
         "ok": proc.returncode == 0,
         "seconds": round(elapsed, 2),
@@ -116,6 +93,9 @@ def main() -> int:
         "reused": len(after) - len(rebuilt),
         "removed": len([name for name in before if name not in after]),
         "slides": len(deck.get("slides") or []),
+        # Named, not just counted: the player drops the slide stills for these and keeps the
+        # rest, instead of re-rendering a whole deck because one word changed.
+        "changed": rebuilt,
     }
     if proc.returncode != 0:
         # The last line of refract's own error is the useful one; the panel has room for

@@ -120,20 +120,25 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `R` | reload the slide |
 | `D` | debug overlay |
 | `S` | screenshot to `/tmp/refractplayer.png` |
+| `shift`+`R` | re-record this slide's narration |
 | `H` | key card |
 | `Esc` | back out of whatever is on top — never quits |
 | `Q` | quit |
 
-**Opening a window**
+**Opening a window** — also in the **Window** menu, with a tick beside whatever is open
 
-| Key | |
-|---|---|
-| `Tab` `G` | navigator |
-| `P` | presenter |
-| `V` | deck view |
-| `E` | slide editor |
-| `M` | build panel |
-| `C` | captions |
+| Key | Menu | |
+|---|---|---|
+| `Tab` `G` | `cmd`+`6` | navigator (`/` finds a slide by name) |
+| `P` | `cmd`+`1` | presenter |
+| `V` | `cmd`+`2` | deck view |
+| `E` | `cmd`+`3` | slide editor |
+| `M` | `cmd`+`4` | build panel |
+| `C` | `cmd`+`5` | captions |
+
+The panels are the useful half of this program and every one of them used to be a single
+letter — fine once you know, invisible until you do. They are at the top of the Window menu,
+above Minimize, because opening one is what that menu is mostly for here.
 
 **In the deck view**
 
@@ -144,8 +149,11 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `shift`+`←`/`→` | nudge the slide one place |
 | `option`+`shift`+`←`/`→` | move the whole section or sub-deck |
 | `N` / `shift`+`N` | add a slide after / before the cursor |
+| `shift`+`D` | duplicate it |
+| `J` | join it with the slide after it |
 | `⌫` | delete the slide (press twice) |
 | `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo the last edit to the deck |
+| `/` | find a slide by name |
 | `Z` / `shift`+`Z` | fold the run at the cursor / the whole deck |
 
 **In the slide editor** — every other key is a character
@@ -158,6 +166,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `option`+`←`/`→` | a word at a time |
 | `option`+`shift`+arrows, `option`+drag | select a frame — a rectangle, not a run |
 | double / triple / quadruple click | word, line, paragraph |
+| `cmd`+`Enter` | split the slide here |
 
 **In the caption window**
 
@@ -168,7 +177,10 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 
 The presenter window has a **play/pause button** beside the clock, doing the same thing as
 `T` — which is also what starts an armed recording, so a rehearsal can be driven without the
-keyboard. The deck view and the build panel have their own buttons for folding and building.
+keyboard — and a **record button** under the notes for re-recording the slide on screen. The
+deck view and the build panel have their own buttons for folding and building, and the slide
+editor has Save, Revert and an auto-save toggle. Nothing in the player is reachable only by a
+key.
 
 `Esc` deliberately does not quit: it closes the help card, then a pending jump, then
 un-blanks, then leaves fullscreen. Losing the deck to a stray `Esc` mid-talk is not worth
@@ -297,6 +309,17 @@ number under such a card reads `4-6` rather than `4`.
 `N` adds an empty slide after the cursor (`shift`+`N` before it) and `⌫` removes the one it is
 on — twice, because deleting a slide is not a small thing. Deleting the source of an expanded
 slide takes every slide it produced, and the confirmation says how many.
+
+**Splitting and joining.** `cmd`+`Enter` in the slide editor breaks the slide at the caret —
+the buffer goes with it, so a slide can be split while it is still being edited, as one edit
+rather than a save and then a split. `J` in the deck view joins a slide with the one after it,
+and `shift`+`D` duplicates one to start the next from. A heading in the joined half is demoted
+to plain text: a slide has one title, and its first line is the only place a title can be.
+
+**Finding a slide.** `/` opens a filter in the deck view and in the navigator; typing narrows
+it, `↑`/`↓` walk the matches, `Enter` goes to the first and `Esc` clears it. Slides that do not
+match are dimmed rather than hidden — the grid keeps its shape, so a deck stays in the place
+you have learnt it is in and dragging still means what it meant.
 
 **`cmd`+`Z` undoes the deck**, not the text: reordering, adding, deleting, and a slide saved
 from the editor — every edit that rewrote `slides.md`. (The editor's own `cmd`+`Z` undoes
@@ -433,6 +456,10 @@ refuses too; save or revert first.
 are the file's spacing rather than the slide's, so they are kept out of the editor and put
 back on save. A visit that changed nothing leaves no diff.
 
+**Auto-save** (the toggle beside Save) saves once typing has stopped for a moment, so the deck
+follows the editor without anybody pressing anything. Off by default — a rebuild is a real
+thing to have happen, and it should be asked for the first time.
+
 Saving replays the deck's own build options, the same way the reorder does, so editing a slide
 in a transitioned deck does not quietly build it without transitions.
 
@@ -490,6 +517,10 @@ one reliable way to get a deck that is neither.
 builds when any of them moves — the deck on the projector then follows an editor in another
 window without anybody pressing anything.
 
+After a build the player drops only the slide stills the build actually rewrote — the tool
+reports their names, not just how many — so editing one word no longer re-renders a sixty-slide
+deck, and cards do not blink back to empty around a save.
+
 **Reading the result.** Builds are incremental, so the interesting number is how much was
 *not* rebuilt. The counts come from the outputs' modification times taken either side of the
 build rather than from refract's log: that is exact, and it stays right under `force full
@@ -524,6 +555,23 @@ that slide in the trace; starting by advancing past it does not.
 `--record` writes **`timing.json`** beside the slides: when each slide came up, measured
 from the first one, and how long it held. It is written after every slide change and refreshed
 every few seconds, so a rehearsal that ends by being killed still leaves a usable trace.
+
+**Re-recording one slide.** A rehearsal is recorded in one pass, and a slide that came out
+badly used to cost the whole take. The presenter window has a **record button** under the
+notes — `● re-record slide 12` — which becomes `● keep take` with a pulsing dot while the
+microphone is open, and grows a **discard** button beside it. `shift`+`R` does the same thing,
+and `Esc` discards.
+
+The new take goes to a temporary file and only replaces the old one when you keep it, or when
+you leave the slide. Discarding leaves the old one untouched. Its transcript and word timings
+are removed once a take is kept, since they were made from what has just been replaced —
+re-run `--transcribe` for them.
+
+The input meter comes up for a single-slide take as well as for a whole rehearsal, so you can
+see the level before committing to one.
+
+This could not have worked before the change below: the wavs are named for the slide's
+position, so a re-record after any reorder would have written over another slide's narration.
 
 **A recording survives the deck being reordered.** A slide's filename carries its number, so
 moving one slide renames every slide after it — and a trace or a set of narration wavs keyed
@@ -810,6 +858,27 @@ existed just needs a re-run of `refract.py`.
 Zip decks work the same way, as long as `deck.json` and the `.notes` files are in the
 archive — except for editing, which needs the markdown a zip does not carry.
 
+## What it remembers
+
+Where the deck's own window was, which panels were open and where *they* were, what the build
+panel was set to, whether the editor was auto-saving, and which runs the deck view had folded
+away — all per deck, in `out/.refract-session.json`. Arrange the slides and the presenter
+across two screens, quit, and next time they are back where you left them.
+
+Anything asked for explicitly outranks the memory: a flag opens a panel the session had
+closed, and a `[width height]` or a `--display` places the slide window where the session
+would have.
+
+Fullscreen is deliberately *not* remembered — a player that took over the screen the moment it
+opened would be startling, and `--fullscreen` and `F` are how you ask for that. What is kept
+while fullscreen is where the window was *windowed*, which is where `F` puts it back.
+
+It is written whenever it changes rather than only on the way out, because the way out is not
+always taken — a player killed from the terminal would otherwise forget the arrangement
+somebody just spent a minute making. Window geometry moves without any toggle to notice it, so
+it is also checked on a four-second timer, and written only when it has actually moved. None of
+it is required: a missing or unreadable session is the same as a fresh one.
+
 ## How it holds together
 
 Two things happen off the main thread, and both are there because the alternative was a
@@ -848,8 +917,16 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Three C++ suites, none of which needs Skia, a window or a GPU — they build and run in a
-second:
+Four C++ suites, none of which needs a window or a GPU. Three of them need nothing but their
+own source and configure on their own, which is what CI builds — configuring the player pulls
+in the engine and fetches Skia, and none of that is needed to check that a click lands on the
+line it is over:
+
+```sh
+cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
+```
+
+All four, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -888,6 +965,8 @@ python3 -m unittest discover -s tests
 | `src/SlideEditor.{h,cpp}` | the slide editor window |
 | `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
 | `src/BuildPanel.{h,cpp}` | the build panel |
+| `src/AppMenu.{h,mm}` | the panels in the menu bar (Cocoa; a no-op elsewhere) |
+| `src/Session.{h,cpp}` | what was open and where, remembered per deck |
 | `src/Timing.{h,cpp}` | the rehearsal trace |
 | `src/VoiceIndex.{h,cpp}` | which narration belongs to which slide, across a reorder |
 | `src/Thumbs.{h,cpp}` | off-screen slide stills, rendered on a worker and cached |

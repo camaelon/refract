@@ -185,6 +185,112 @@ class InsertAndDeleteChunk(unittest.TestCase):
             self.assertEqual(chunks.read_chunk(out, i), want)
 
 
+class SplitMergeDuplicate(unittest.TestCase):
+    """Breaking a slide in two, joining two back, and copying one."""
+
+    DECK = "# A\n\n---\n\n# B\nline one\nline two\n\n---\n\n# C\n"
+
+    def titles(self, text):
+        return [s.get("title") for s in md.parse_markdown(text)]
+
+    def test_split(self):
+        out = chunks.split_chunk(self.DECK, 1, 1)
+        self.assertEqual(chunks.count_chunks(out), 4)
+        self.assertEqual(chunks.read_chunk(out, 1), "# B")
+        self.assertEqual(chunks.read_chunk(out, 2), "line one\nline two")
+        self.assertEqual(self.titles(out), ["A", "B", None, "C"])
+
+    def test_split_anywhere_in_the_middle(self):
+        out = chunks.split_chunk(self.DECK, 1, 2)
+        self.assertEqual(chunks.read_chunk(out, 1), "# B\nline one")
+        self.assertEqual(chunks.read_chunk(out, 2), "line two")
+
+    def test_split_at_an_end_is_refused(self):
+        # Splitting before the first line or after the last would make a slide out of
+        # nothing, which is what `N` is for.
+        for line in (0, 3, 99, -1):
+            with self.subTest(line=line):
+                with self.assertRaises(ValueError):
+                    chunks.split_chunk(self.DECK, 1, line)
+
+    def test_split_leaves_the_neighbours_alone(self):
+        out = chunks.split_chunk(self.DECK, 1, 1)
+        self.assertEqual(chunks.read_chunk(out, 0), "# A")
+        self.assertEqual(chunks.read_chunk(out, 3), "# C")
+
+    def test_merge(self):
+        out = chunks.merge_chunk(self.DECK, 1)
+        self.assertEqual(chunks.count_chunks(out), 2)
+        self.assertEqual(chunks.read_chunk(out, 1), "# B\nline one\nline two\n\nC")
+        self.assertEqual(self.titles(out), ["A", "B"])
+
+    def test_the_second_heading_is_demoted(self):
+        # A slide has one title. The second half's heading becomes body text — which is also
+        # what keeps the result buildable, since a `#` line in body breaks json2rc.
+        out = chunks.merge_chunk("# A\nbody\n---\n# B\nmore\n", 0)
+        self.assertEqual(chunks.read_chunk(out, 0), "# A\nbody\n\nB\nmore")
+        self.assertEqual(self.titles(out), ["A"])
+
+    def test_a_heading_is_demoted_even_with_no_title_above_it(self):
+        # A title has to be a slide's first line, so once this half is body its heading could
+        # never be a title again — and left as `#` it would break the build.
+        out = chunks.merge_chunk("no title\n---\n# B\nmore\n", 0)
+        self.assertEqual(chunks.read_chunk(out, 0), "no title\n\nB\nmore")
+
+    def test_merge_puts_a_blank_line_where_the_separator_was(self):
+        # Two paragraphs that were two slides are still two paragraphs; run together they
+        # would be one.
+        out = chunks.merge_chunk("first para\n---\nsecond para\n", 0)
+        self.assertEqual(chunks.read_chunk(out, 0), "first para\n\nsecond para")
+
+    def test_merge_at_the_end_is_refused(self):
+        with self.assertRaises(ValueError):
+            chunks.merge_chunk(self.DECK, 2)
+        with self.assertRaises(IndexError):
+            chunks.merge_chunk(self.DECK, 9)
+
+    def test_split_then_merge_puts_the_slides_back(self):
+        # Byte-for-byte only up to the blank line merge leaves behind, which it cannot know
+        # was not there before — so the check is that the deck is the same deck.
+        out = chunks.merge_chunk(chunks.split_chunk(self.DECK, 1, 1), 1)
+        self.assertEqual(chunks.count_chunks(out), chunks.count_chunks(self.DECK))
+        self.assertEqual(self.titles(out), self.titles(self.DECK))
+        self.assertEqual(chunks.read_chunk(out, 1).split(),
+                         chunks.read_chunk(self.DECK, 1).split())
+
+    def test_duplicate(self):
+        out = chunks.duplicate_chunk(self.DECK, 1)
+        self.assertEqual(chunks.count_chunks(out), 4)
+        self.assertEqual(chunks.read_chunk(out, 1), chunks.read_chunk(out, 2))
+        self.assertEqual(self.titles(out), ["A", "B", "B", "C"])
+
+    def test_duplicate_the_last_slide(self):
+        out = chunks.duplicate_chunk(self.DECK, 2)
+        self.assertEqual(self.titles(out), ["A", "B", "C", "C"])
+
+    def test_duplicate_then_delete_restores_the_file(self):
+        for i in range(3):
+            with self.subTest(block=i):
+                self.assertEqual(
+                    chunks.delete_chunk(chunks.duplicate_chunk(self.DECK, i), i + 1),
+                    self.DECK)
+
+    def test_a_tight_deck_stays_tight(self):
+        tight = "# A\n---\n# B\nbody\n---\n# C\n"
+        for out in (chunks.split_chunk(tight, 1, 1), chunks.duplicate_chunk(tight, 1)):
+            self.assertNotIn("\n\n\n", out)
+            self.assertFalse(out.startswith("\n"))
+            self.assertFalse(out.endswith("\n\n"))
+
+    def test_out_of_range(self):
+        for i in (-1, 3, 99):
+            with self.subTest(block=i):
+                with self.assertRaises(IndexError):
+                    chunks.split_chunk(self.DECK, i, 1)
+                with self.assertRaises(IndexError):
+                    chunks.duplicate_chunk(self.DECK, i)
+
+
 class Tool(unittest.TestCase):
     """The CLI the editor shells out to."""
 

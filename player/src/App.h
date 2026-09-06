@@ -37,6 +37,11 @@ struct App {
     // The rehearsal trace: being recorded this run, loaded from a previous one, or empty.
     Timing    timing;
     bool      recordAudio = false;
+    // A single slide's narration is being recorded over — see refractplayer's shift+R and the
+    // presenter's record button. Distinct from a whole rehearsal: nothing is timed, and the
+    // take replaces one wav rather than starting a run.
+    bool      reRecording = false;
+    int       reRecordSlide = -1;
     // --record was given and the talk has not started yet. Nothing is written and the
     // microphone stays idle until it does — a trace should not include the minutes spent
     // getting the projector working, and neither should the narration.
@@ -60,6 +65,11 @@ struct App {
 
     // Digits typed for a "jump to slide N" (committed on Enter, dropped on Esc).
     std::string jumpDigits;
+
+    // Finding a slide by name in the navigator. `/` opens it and typing narrows it; rows that
+    // do not match are dimmed rather than removed, so the deck keeps the shape you know.
+    bool navFiltering = false;
+    std::string navFilter;
 
     bool showHelp = false;
 

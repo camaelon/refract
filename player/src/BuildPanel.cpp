@@ -145,6 +145,8 @@ void BuildPanel::setHost(GLFWwindow* host) { mImpl->host = host; }
 
 bool BuildPanel::watching() const { return mImpl->watch; }
 
+void BuildPanel::setWatching(bool watch) { mImpl->watch = watch; }
+
 bool BuildPanel::handleKey(int key, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return false;
     Impl& impl = *mImpl;

@@ -33,9 +33,17 @@ struct PresenterWindow::Impl {
     int fbWidth = 0, fbHeight = 0;
 
     std::function<void()> onToggleClock;
+    std::function<void()> onRecordSlide;
+    std::function<void()> onDiscardTake;
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
+    SkRect recordButton = SkRect::MakeEmpty();
+    SkRect discardButton = SkRect::MakeEmpty();
     bool buttonHot = false;                     // pointer is over it
     double mouseX = 0, mouseY = 0;
+
+    bool over(const SkRect& box) const {
+        return box.contains(static_cast<float>(mouseX), static_cast<float>(mouseY));
+    }
 
     // Recent input levels, oldest first — a few seconds of history drawn as a waveform.
     // A meter that shows only the current level tells you nothing about whether you have
@@ -78,11 +86,10 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
-        if (self->mImpl->clockButton.contains(static_cast<float>(self->mImpl->mouseX),
-                                              static_cast<float>(self->mImpl->mouseY))
-            && self->mImpl->onToggleClock) {
-            self->mImpl->onToggleClock();
-        }
+        Impl& impl = *self->mImpl;
+        if (impl.over(impl.clockButton) && impl.onToggleClock) impl.onToggleClock();
+        else if (impl.over(impl.recordButton) && impl.onRecordSlide) impl.onRecordSlide();
+        else if (impl.over(impl.discardButton) && impl.onDiscardTake) impl.onDiscardTake();
     });
 
     glfwMakeContextCurrent(window);
@@ -100,6 +107,12 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
 
 void PresenterWindow::setOnToggleClock(std::function<void()> action) {
     mImpl->onToggleClock = std::move(action);
+}
+
+void PresenterWindow::setOnRecordSlide(std::function<void()> record,
+                                       std::function<void()> discard) {
+    mImpl->onRecordSlide = std::move(record);
+    mImpl->onDiscardTake = std::move(discard);
 }
 
 void PresenterWindow::pushAudioLevel(float average, float peak) {
@@ -429,9 +442,14 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     // ── Notes ────────────────────────────────────────────────────────
     const float notesTop = panesTop + panesH + std::round(h * 0.055f);
     const float progressH = 6.0f;
-    const bool showLevels = app.timing.recording() && app.recordAudio;
+    // The meter is up whenever the microphone is: for a whole rehearsal, and for a single
+    // slide being recorded over.
+    const bool showLevels = (app.timing.recording() && app.recordAudio) || app.reRecording;
     const float levelsH = showLevels ? 34.0f : 0.0f;
-    const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f);
+    // Room for the record button under the notes, and for the meter when it is up.
+    const bool showRecord = !app.timing.recording();
+    const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f)
+                              - (showRecord ? 34.0f : 0.0f);
     SkRect notesBox = SkRect::MakeLTRB(pad, notesTop, w - pad, notesBottom);
     if (notesBox.height() > 40) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
@@ -465,6 +483,53 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
             SkFont font = uiFont(10, true);
             drawTextRight(canvas, "CLIPPING", box.right() - 8,
                           box.top() + 12, font, ui::kOver);
+        }
+    }
+
+    // ── Re-record this slide ─────────────────────────────────────────
+    // A take over one slide's narration. It is here rather than only on a key because it
+    // overwrites a recording: what it will do should be visible before it is done, and what
+    // it is doing should be unmistakable while it happens.
+    mImpl->recordButton = SkRect::MakeEmpty();
+    mImpl->discardButton = SkRect::MakeEmpty();
+    if (mImpl->onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
+        SkFont label = uiFont(12, true);
+        const std::string text = app.reRecording
+            ? "keep take"
+            : "re-record slide " + std::to_string(app.current() + 1);
+        const float bw = textWidth(label, text) + 44;
+        const float by = notesBottom + 6;
+        mImpl->recordButton = SkRect::MakeXYWH(pad, by, bw, 26);
+
+        const bool hot = mImpl->over(mImpl->recordButton);
+        const SkColor tone = app.reRecording ? ui::kOver : (hot ? ui::kText : ui::kDim);
+        fillRoundRect(canvas, mImpl->recordButton, 13, ui::kPanel);
+        strokeRoundRect(canvas, mImpl->recordButton, 13,
+                        app.reRecording ? ui::kOver : (hot ? ui::kDim : ui::kLine), 1.0f);
+
+        // A filled dot, drawn rather than written: the chrome has one typeface and a record
+        // glyph would come out as an empty box. It pulses while the take is running.
+        SkPaint dot;
+        dot.setAntiAlias(true);
+        dot.setColor(app.reRecording ? ui::kOver : tone);
+        if (app.reRecording) {
+            dot.setAlphaf(0.45f + 0.55f * static_cast<float>(
+                0.5 + 0.5 * std::sin(glfwGetTime() * 4.0)));
+        }
+        canvas->drawCircle(mImpl->recordButton.left() + 17,
+                           mImpl->recordButton.centerY(), 5.5f, dot);
+        drawText(canvas, text, mImpl->recordButton.left() + 30,
+                 mImpl->recordButton.centerY() + 4, label, tone);
+
+        if (app.reRecording) {
+            const float dw = textWidth(label, "discard") + 24;
+            mImpl->discardButton =
+                SkRect::MakeXYWH(mImpl->recordButton.right() + 8, by, dw, 26);
+            const bool dhot = mImpl->over(mImpl->discardButton);
+            fillRoundRect(canvas, mImpl->discardButton, 13, ui::kPanel);
+            strokeRoundRect(canvas, mImpl->discardButton, 13, dhot ? ui::kDim : ui::kLine, 1.0f);
+            drawTextCentred(canvas, "discard", mImpl->discardButton, label,
+                            dhot ? ui::kText : ui::kDim);
         }
     }
 

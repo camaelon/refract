@@ -200,6 +200,17 @@ static void testScrollFollowsTheCaret() {
     CHECK(refract::scrollToShowLine(l, 2, 500, viewH) >= 0, "never negative");
 }
 
+static void testFilter() {
+    CHECK(refract::matchesFilter("A graph", "graph"), "a substring matches");
+    CHECK(refract::matchesFilter("A graph", "GRAPH"), "whatever its case");
+    CHECK(refract::matchesFilter("A GRAPH", "graph"), "or the title's");
+    CHECK(refract::matchesFilter("A graph", ""), "an empty filter matches everything");
+    CHECK(refract::matchesFilter("A graph", "a g"), "spaces are not special");
+    CHECK(!refract::matchesFilter("A graph", "chart"), "and a miss is a miss");
+    CHECK(!refract::matchesFilter("", "graph"), "an untitled slide matches nothing typed");
+    CHECK(refract::matchesFilter("", ""), "but still matches nothing at all");
+}
+
 int main() {
     testGridShape();
     testCardPositions();
@@ -208,6 +219,7 @@ int main() {
     testAClickLandsOnTheLineItIsOver();
     testLineHitTestingEdges();
     testScrollFollowsTheCaret();
+    testFilter();
 
     if (failures == 0) std::fprintf(stderr, "view_geometry_test: all checks passed\n");
     else std::fprintf(stderr, "view_geometry_test: %d failure(s)\n", failures);

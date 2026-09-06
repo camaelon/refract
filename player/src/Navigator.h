@@ -22,6 +22,9 @@ void drawNavigator(SkCanvas* canvas, App& app, int width, int height);
 // Move the highlight. `delta` is in rows; the cursor clamps at the ends rather than wrapping,
 // because wrapping from the last slide to the title mid-talk is never what was meant.
 void navMove(App& app, int delta);
+
+// True when a slide's title passes the navigator's filter (or there isn't one).
+bool navMatches(const App& app, int slide);
 // Move to the previous / next section heading.
 void navMoveSection(App& app, int direction);
 

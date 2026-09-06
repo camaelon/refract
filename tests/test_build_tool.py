@@ -55,13 +55,11 @@ class BuildArgs(unittest.TestCase):
 
 
 class Outputs(unittest.TestCase):
-    """What the tool counts as a build product."""
+    """What counts as a build product, and what a build changed."""
 
     def setUp(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("build_tool", TOOL)
-        self.tool = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.tool)
+        from refractkit import manifest
+        self.tool = manifest
         self.out = tempfile.mkdtemp()
         os.makedirs(os.path.join(self.out, "media"))
 
@@ -84,6 +82,16 @@ class Outputs(unittest.TestCase):
         shutil.rmtree(os.path.join(self.out, "media"))
         self.touch("01_one.rc")
         self.assertEqual(list(self.tool.outputs(self.out)), ["01_one.rc"])
+
+    def test_changed_since_names_what_a_build_replaced(self):
+        self.touch("01_one.rc", "02_two.rc")
+        before = self.tool.outputs(self.out)
+        self.assertEqual(self.tool.changed_since(before, self.out), [])
+        # One rewritten and one new; the untouched one is not named.
+        os.utime(os.path.join(self.out, "01_one.rc"), (1, 1))
+        self.touch("03_three.rc")
+        self.assertEqual(self.tool.changed_since(before, self.out),
+                         ["01_one.rc", "03_three.rc"])
 
 
 class EndToEnd(unittest.TestCase):
@@ -110,6 +118,14 @@ class EndToEnd(unittest.TestCase):
             return json.loads(p.stdout)
         except ValueError:
             self.fail(f"no JSON on stdout: {p.stdout!r} / {p.stderr[-300:]!r}")
+
+    def test_the_changed_files_are_named(self):
+        with open(self.md, "w") as f:
+            f.write(self.SLIDES.replace("beta", "beta changed"))
+        result = self.build()
+        # The player drops the stills for exactly these, and keeps the rest.
+        self.assertEqual(result["changed"], ["02_two.rc"])
+        self.assertEqual(result["rebuilt"], len(result["changed"]))
 
     def test_a_first_build_builds_everything(self):
         # setUp built into an empty directory, so the second build has everything to reuse.

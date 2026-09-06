@@ -1,5 +1,7 @@
 #include "Navigator.h"
 
+#include "ViewGeometry.h"
+
 #include "Thumbs.h"
 #include "Ui.h"
 
@@ -34,9 +36,25 @@ Layout layoutFor(int width, int height) {
 
 }  // namespace
 
+bool navMatches(const App& app, int slide) {
+    return app.navFilter.empty()
+           || matchesFilter(app.deck.at(slide).title, app.navFilter);
+}
+
 void navMove(App& app, int delta) {
     if (app.deck.empty()) return;
-    app.navCursor = std::max(0, std::min(app.navCursor + delta, app.deck.size() - 1));
+    if (app.navFilter.empty()) {
+        app.navCursor = std::max(0, std::min(app.navCursor + delta, app.deck.size() - 1));
+        return;
+    }
+    // With a filter up, the arrows walk the matches: stepping through forty dimmed rows to
+    // reach the next one is not what was asked for by typing a name.
+    const int step = delta < 0 ? -1 : 1;
+    for (int i = 1; i <= app.deck.size(); i++) {
+        const int at = app.navCursor + i * step;
+        if (at < 0 || at >= app.deck.size()) break;
+        if (navMatches(app, at)) { app.navCursor = at; return; }
+    }
 }
 
 void navMoveSection(App& app, int direction) {
@@ -58,6 +76,22 @@ void drawNavigator(SkCanvas* canvas, App& app, int width, int height) {
     // ── Header ───────────────────────────────────────────────────────
     drawText(canvas, app.deck.name(), l.panel.left() + 24, l.panel.top() + 40,
              uiFont(20, true), ui::kText);
+    if (app.navFiltering || !app.navFilter.empty()) {
+        int found = 0;
+        for (int i = 0; i < app.deck.size(); i++) found += navMatches(app, i) ? 1 : 0;
+        SkFont typing = uiFont(14, true);
+        const float x = l.panel.left() + 24;
+        char summary[96];
+        std::snprintf(summary, sizeof(summary), "%d of %d", found, app.deck.size());
+        const float typed = drawText(canvas, "/" + app.navFilter, x,
+                                     l.panel.top() + 62, typing, ui::kAccent);
+        if (app.navFiltering) {
+            fillRect(canvas, SkRect::MakeXYWH(x + typed + 3, l.panel.top() + 50, 1.5f, 15),
+                     ui::kAccent);
+        }
+        drawTextRight(canvas, summary, l.panel.right() - 24, l.panel.top() + 62, uiFont(13),
+                      found ? ui::kDim : ui::kWarn);
+    }
     char counts[96];
     std::snprintf(counts, sizeof(counts), "%d slides   %d sections",
                   app.deck.size(), static_cast<int>(app.deck.sections().size()));
@@ -108,6 +142,8 @@ void drawNavigator(SkCanvas* canvas, App& app, int width, int height) {
 
         const SkFont& font = isSection ? sectionFont : rowFont;
         SkColor color = isSection ? ui::kAccent : (isCursor || isCurrent ? ui::kText : ui::kDim);
+        // A row the filter passed over stays where it is and goes quiet.
+        if (!navMatches(app, i)) color = ui::kLine;
         std::string label = slide.title.empty() ? slide.file : slide.title;
         if (isSection && slide.sectionNumber > 0)
             label = std::to_string(slide.sectionNumber) + ".  " + label;
@@ -196,6 +232,8 @@ const HelpRow kHelp[] = {
     {"V", "deck view (drag to reorder)"},
     {"Z  /  Shift Z", "fold a run / all of them (deck view)"},
     {"M", "build panel (rebuild the deck)"},
+    {"/", "find a slide by name (navigator, deck view)"},
+    {"Shift R", "re-record this slide's narration"},
     {"E", "slide editor (edit the markdown)"},
     {"T  /  Shift T", "start-pause timer / reset it"},
     {"B  W", "blank to black / white"},

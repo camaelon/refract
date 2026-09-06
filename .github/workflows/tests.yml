@@ -1,0 +1,44 @@
+# What runs on every push. Two jobs, both of which finish in about a minute.
+#
+# Neither builds the RemoteCompose engine. That is deliberate: configuring the player fetches
+# Skia, which is a large download and several minutes of compiling, and none of it is needed
+# to check the things that actually break — the markdown grammar, the incremental build, the
+# tools that rewrite a deck, and the arithmetic behind clicking and scrolling.
+#
+# The cost is that the end-to-end tests skip here, because they need `json2rc` to turn a
+# document into a `.rc` and that is built from a local androidx checkout. About sixty of the
+# five hundred tests are in that group; they are the ones that run a real build, and they run
+# locally. Everything else runs here.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: refract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # the oldest refract supports: stdlib tomllib
+      - name: Install graphviz
+        # Graph slides lay out through `dot`; without it those tests have nothing to measure.
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+      - name: Run the suite
+        run: python3 -m unittest discover -s tests -v
+
+  player:
+    name: player logic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        # player/tests configures on its own — see the note at the top of its CMakeLists.
+        run: cmake -B build -S player/tests -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Run the suites
+        run: ctest --test-dir build --output-on-failure

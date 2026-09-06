@@ -229,6 +229,165 @@ def resolve_same_types(slides: list) -> list:
     return out
 
 
+def manifest_record(slide: dict, index: int, rc_path: str, deck_dir: str) -> dict:
+    """One slide's entry in out/deck.json — what a player knows about it without opening it.
+
+    `file` is filled in by whichever branch actually writes the slide; a passthrough video is
+    not a `.rc`, and the caller corrects it.
+    """
+    record = {
+        "index": index,
+        "file": os.path.basename(rc_path),
+        "type": slide_type(slide),
+        "title": slide.get("title") or "",
+        "notes": bool(slide.get("notes")),
+    }
+    if slide.get("section_number"):
+        record["section"] = slide["section_number"]
+    # Provenance: which markdown file this slide was parsed from, and which
+    # `---`-separated chunk of it. Several rendered slides can share one chunk
+    # (fragments, scroll pages, stagger steps); the deck view reorders whole chunks.
+    if slide.get("src_file"):
+        record["src"] = os.path.relpath(slide["src_file"], os.path.abspath(deck_dir))
+    if slide.get("src_index") is not None:
+        record["src_index"] = slide["src_index"]
+    # For a slide an `:: include` spliced in, the chain of include lines that pulled it
+    # here, outermost first. `src`/`src_index` above move the slide within the deck it is
+    # written in; these move the sub-deck itself, within the deck that includes it.
+    if slide.get("src_via"):
+        record["src_via"] = [
+            {"src": os.path.relpath(via["src"], os.path.abspath(deck_dir)),
+             "src_index": via["src_index"]}
+            for via in slide["src_via"]]
+    smeta = slide.get("meta") or {}
+    if smeta.get("author"):
+        record["author"] = smeta["author"]
+    if smeta.get("params"):
+        record["speaker"] = smeta["params"]
+    return record
+
+
+def render_slide(slide: dict, blocks: list, stheme, prev, prev_theme,
+                 width: int, height: int, i: int, total: int, debug: bool,
+                 *, transitions: bool, style: str, push_dur: float):
+    """The component document for one slide, and a word for the log saying which way it went.
+
+    Every slide is one of these: a step of a staggered reveal, a scroll page, a `:: same`
+    diff, a graph magic-move, a push, a crossfade, or a slide on its own. Which one depends on
+    what it is *and* on what came before it, which is why this takes `prev` — the first slide
+    of a deck has nothing to animate in from and neither does one after a passthrough video.
+    """
+    meta = slide.get("meta") or {}
+    sp = meta.get("scroll_page")
+    scroll_static = {"viewport": sp["viewport"], "y": 0.0} if sp else None
+    # `:: same` (now type-resolved, flagged `_same`), or a stepped-reveal step — both animate
+    # only the changed content in place, independent of --transitions.
+    is_same = bool(meta.get("_same")) or bool(meta.get("reveal_step"))
+    if meta.get("stagger_step"):
+        # A stagger reveal step renders statically (no whole-slide transition) so the
+        # unchanged surrounding content is identical to the prior step; the newly-revealed
+        # embed fades in on its own (see _apply_reveal). animate=False suppresses the
+        # content-reveal entrance so the carried-over elements appear already present
+        # rather than fading in again.
+        doc = build_doc(slide, blocks, stheme, width, height, i, debug, total,
+                        animate=False)
+        tag = "stagger"
+    elif sp and sp.get("prev_offset") is not None:
+        doc = build_scroll_doc(slide, blocks, stheme, width, height, i, debug, total,
+                               sp["prev_offset"], sp["offset"], sp["viewport"])
+        tag = f"scroll {sp['index'] + 1}/{sp['count']}"
+    elif is_same and prev is not None:
+        # Scroll-aware `:: same`: a manual per-slide offset (viewport fractions) that
+        # scrolls the (overflowing) content from the previous same-slide's offset. The
+        # scroll animates on the same $__st progress as the content diff. Presence of the
+        # `scroll` key on either slide (even `scroll=0`) opts the content into clipping.
+        prev_meta = prev[0].get("meta") or {}
+        has_scroll = ("scroll" in (meta.get("overrides") or {})
+                      or "scroll" in (prev_meta.get("overrides") or {}))
+        same_scroll = None
+        if has_scroll:
+            _, vp, _ = content_metrics(slide, stheme, width, height)
+            same_scroll = scroll_spec(_same_scroll_frac(prev_meta) * vp,
+                                      _same_scroll_frac(meta) * vp, vp)
+        # An explicit `:: same` keeps autosize so it matches the (autosized) base slide it
+        # continues; a stepped-reveal keeps it off so bullets don't resize between steps.
+        doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, debug, total,
+                             scroll=same_scroll, autosize_ok=not meta.get("reveal_step"))
+        tag = "step" if meta.get("reveal_step") else "same"
+    elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
+        doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, debug, total)
+        tag = "graph-morph"
+    elif transitions and prev is not None and style in ("push", "slide", "slide-left"):
+        doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, debug, total, duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
+        tag = "push"
+    elif transitions and prev is not None and style in ("slide-up", "push-up"):
+        doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, debug, total, axis="y", duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
+        tag = "push-up"
+    elif transitions and prev is not None:
+        doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, debug, total, scroll=scroll_static, prev_theme=prev_theme)
+        tag = "transition"
+    else:
+        # No previous slide (e.g. the title): render statically — the first slide
+        # has nothing to transition in from; its "out" is animated by the next slide.
+        doc = build_doc(slide, blocks, stheme, width, height, i, debug, total,
+                        scroll=scroll_static)
+        tag = slide_type(slide)
+    # A `freeze` slide records its context so a second pass (after media is copied) can
+    # render a frozen snapshot and rebuild its transition around it. The normal doc is still
+    # written now, so the slide is valid even if the snapshot pass is skipped.
+
+    return doc, tag
+
+
+def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
+    """The theme this slide renders with, and how it transitions in.
+
+    Three things layered onto the deck's theme, in this order: who is speaking (a named
+    speaker or an ``@author`` colours the slide), what the slide type asks for, and what the
+    slide's own ``::`` line overrides. Returns (theme, transition style, push duration).
+    """
+    meta = slide.get("meta") or {}
+    overrides = meta.get("overrides", {})
+    changes = {}
+
+    speaker = meta.get("params", "")
+    if speaker in speakers:
+        changes["accent"] = speakers[speaker]
+    # ``@author`` attribution: use that author's colour as this slide's accent
+    # and surface the name in the chrome.
+    author = meta.get("author")
+    if author:
+        changes["slide_author"] = author
+        if author in theme.authors:
+            changes["accent"] = theme.authors[author]
+    # Per-slide content-reveal override: `reveal=stagger` / `reveal=immediate`.
+    reveal_ov = overrides.get("reveal")
+    if reveal_ov:
+        changes["content_reveal"] = reveal_ov.lower()
+
+    # Per-slide-type transition defaults live in [transition.<type>] (e.g.
+    # [transition.section] style="slide-up" duration=0.9 fx=true). Precedence for every
+    # knob: per-slide `transition*=` override > [transition.<type>] > [transition] > default.
+    type_trans = trans_cfg.get(slide_type(slide), {})
+    if not isinstance(type_trans, dict):
+        type_trans = {}
+    # Transition overlay FX (the [shader.transition] shader) is opt-in: a slide draws it
+    # only when it — or its slide-type default — requests fx.
+    fx_raw = overrides.get("transition_fx")
+    fx_on = (str(fx_raw).lower() in ("on", "true", "1", "yes")) if fx_raw is not None \
+            else bool(type_trans.get("fx", False))
+    if not fx_on:
+        changes["transition_shader"] = ""
+    changes.update(theme_overrides(overrides, theme))
+
+    style = (overrides.get("transition") or type_trans.get("style")
+             or trans_cfg.get("style", "fade"))
+    # Push/slide duration (seconds); larger = slower.
+    push_dur = float(overrides.get("transition_duration",
+                     type_trans.get("duration", trans_cfg.get("duration", PUSH_DURATION))))
+    return (replace(theme, **changes) if changes else theme), style, push_dur
+
+
 def is_skipped(slide: dict) -> bool:
     """True if a slide is marked to be dropped from the deck — the ``skip`` keyword anywhere on
     the ``::`` line (``:: content skip`` *or* ``:: skip content``: as the first token it parses
@@ -584,38 +743,7 @@ def run_once(args) -> int:
         rc_path = os.path.join(out_dir, name + ".rc")
         if slide.get("notes"):
             notes.append((i + 1, slide.get("title") or f"Slide {i + 1}", slide["notes"]))
-        # One manifest record per slide, in deck order. The player reads out/deck.json to
-        # show titles, jump to sections and pull up notes; `file` is filled in below by
-        # whichever branch actually writes the slide (a passthrough video is not a .rc).
-        record = {
-            "index": i,
-            "file": os.path.basename(rc_path),
-            "type": slide_type(slide),
-            "title": slide.get("title") or "",
-            "notes": bool(slide.get("notes")),
-        }
-        if slide.get("section_number"):
-            record["section"] = slide["section_number"]
-        # Provenance: which markdown file this slide was parsed from, and which
-        # `---`-separated chunk of it. Several rendered slides can share one chunk
-        # (fragments, scroll pages, stagger steps); the deck view reorders whole chunks.
-        if slide.get("src_file"):
-            record["src"] = os.path.relpath(slide["src_file"], os.path.abspath(deck_dir))
-        if slide.get("src_index") is not None:
-            record["src_index"] = slide["src_index"]
-        # For a slide an `:: include` spliced in, the chain of include lines that pulled it
-        # here, outermost first. `src`/`src_index` above move the slide within the deck it is
-        # written in; these move the sub-deck itself, within the deck that includes it.
-        if slide.get("src_via"):
-            record["src_via"] = [
-                {"src": os.path.relpath(via["src"], os.path.abspath(deck_dir)),
-                 "src_index": via["src_index"]}
-                for via in slide["src_via"]]
-        smeta = slide.get("meta") or {}
-        if smeta.get("author"):
-            record["author"] = smeta["author"]
-        if smeta.get("params"):
-            record["speaker"] = smeta["params"]
+        record = manifest_record(slide, i, rc_path, deck_dir)
         manifest.append(record)
 
         # A lone video (no title, nothing else) is a whole-slide passthrough the viewer
@@ -679,46 +807,9 @@ def run_once(args) -> int:
                     pending[media_rc] = embed_fp
                 b.update(kind="rc_include", json=None, src=f"media/{stem}.rc")
 
-        # Per-slide theme: speaker accent + author attribution + inline overrides.
         meta = slide.get("meta") or {}
-        changes = {}
-        speaker = meta.get("params", "")
-        if speaker in speakers:
-            changes["accent"] = speakers[speaker]
-        # ``@author`` attribution: use that author's colour as this slide's accent
-        # and surface the name in the chrome.
-        author = meta.get("author")
-        if author:
-            changes["slide_author"] = author
-            if author in theme.authors:
-                changes["accent"] = theme.authors[author]
-        # Per-slide content-reveal override: `reveal=stagger` / `reveal=immediate`.
-        reveal_ov = meta.get("overrides", {}).get("reveal")
-        if reveal_ov:
-            changes["content_reveal"] = reveal_ov.lower()
-        # Per-slide-type transition defaults live in [transition.<type>] (e.g.
-        # [transition.section] style="slide-up" duration=0.9 fx=true). Precedence for every
-        # knob: per-slide `transition*=` override > [transition.<type>] > [transition] > default.
-        stype = slide_type(slide)
-        type_trans = trans_cfg.get(stype, {})
-        if not isinstance(type_trans, dict):
-            type_trans = {}
-        # Transition overlay FX (the [shader.transition] shader) is opt-in: a slide draws it
-        # only when it — or its slide-type default — requests fx.
-        fx_raw = meta.get("overrides", {}).get("transition_fx")
-        fx_on = (str(fx_raw).lower() in ("on", "true", "1", "yes")) if fx_raw is not None \
-                else bool(type_trans.get("fx", False))
-        if not fx_on:
-            changes["transition_shader"] = ""
-        changes.update(theme_overrides(meta.get("overrides", {}), theme))
-        stheme = replace(theme, **changes) if changes else theme
-
+        stheme, style, push_dur = slide_style(slide, theme, speakers, trans_cfg)
         total = len(slides)
-        style = (meta.get("overrides", {}).get("transition")
-                 or type_trans.get("style") or trans_cfg.get("style", "fade"))
-        # Push/slide duration (seconds); larger = slower.
-        push_dur = float(meta.get("overrides", {}).get("transition_duration",
-                         type_trans.get("duration", trans_cfg.get("duration", PUSH_DURATION))))
         # `:: same` (now type-resolved, flagged `_same`), or a stepped-reveal step — both
         # animate only the changed content in place, independent of --transitions.
         is_same = bool(meta.get("_same")) or bool(meta.get("reveal_step"))
@@ -727,58 +818,10 @@ def run_once(args) -> int:
         # viewport (scroll_static), so overflow past the first window stays hidden.
         sp = meta.get("scroll_page")
         scroll_static = {"viewport": sp["viewport"], "y": 0.0} if sp else None
-        if meta.get("stagger_step"):
-            # A stagger reveal step renders statically (no whole-slide transition) so the
-            # unchanged surrounding content is identical to the prior step; the newly-revealed
-            # embed fades in on its own (see _apply_reveal). animate=False suppresses the
-            # content-reveal entrance so the carried-over elements appear already present
-            # rather than fading in again.
-            doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total,
-                            animate=False)
-            tag = "stagger"
-        elif sp and sp.get("prev_offset") is not None:
-            doc = build_scroll_doc(slide, blocks, stheme, width, height, i, args.debug, total,
-                                   sp["prev_offset"], sp["offset"], sp["viewport"])
-            tag = f"scroll {sp['index'] + 1}/{sp['count']}"
-        elif is_same and prev is not None:
-            # Scroll-aware `:: same`: a manual per-slide offset (viewport fractions) that
-            # scrolls the (overflowing) content from the previous same-slide's offset. The
-            # scroll animates on the same $__st progress as the content diff. Presence of the
-            # `scroll` key on either slide (even `scroll=0`) opts the content into clipping.
-            prev_meta = prev[0].get("meta") or {}
-            has_scroll = ("scroll" in (meta.get("overrides") or {})
-                          or "scroll" in (prev_meta.get("overrides") or {}))
-            same_scroll = None
-            if has_scroll:
-                _, vp, _ = content_metrics(slide, stheme, width, height)
-                same_scroll = scroll_spec(_same_scroll_frac(prev_meta) * vp,
-                                          _same_scroll_frac(meta) * vp, vp)
-            # An explicit `:: same` keeps autosize so it matches the (autosized) base slide it
-            # continues; a stepped-reveal keeps it off so bullets don't resize between steps.
-            doc = build_same_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total,
-                                 scroll=same_scroll, autosize_ok=not meta.get("reveal_step"))
-            tag = "step" if meta.get("reveal_step") else "same"
-        elif transitions and prev is not None and is_graph_slide(prev[1]) and is_graph_slide(blocks):
-            doc = build_graph_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total)
-            tag = "graph-morph"
-        elif transitions and prev is not None and style in ("push", "slide", "slide-left"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
-            tag = "push"
-        elif transitions and prev is not None and style in ("slide-up", "push-up"):
-            doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, axis="y", duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
-            tag = "push-up"
-        elif transitions and prev is not None:
-            doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, args.debug, total, scroll=scroll_static, prev_theme=prev_theme)
-            tag = "transition"
-        else:
-            # No previous slide (e.g. the title): render statically — the first slide
-            # has nothing to transition in from; its "out" is animated by the next slide.
-            doc = build_doc(slide, blocks, stheme, width, height, i, args.debug, total,
-                            scroll=scroll_static)
-            tag = slide_type(slide)
-        # A `freeze` slide records its context so a second pass (after media is copied) can
-        # render a frozen snapshot and rebuild its transition around it. The normal doc is still
-        # written now, so the slide is valid even if the snapshot pass is skipped.
+        doc, tag = render_slide(slide, blocks, stheme, prev, prev_theme,
+                                width, height, i, total, args.debug,
+                                transitions=transitions, style=style, push_dur=push_dur)
+
         freezing = (transitions and prev is not None and tag in ("push", "push-up")
                     and wants_freeze(meta))
 

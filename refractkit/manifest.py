@@ -29,6 +29,40 @@ def source_dir(out_dir: str, deck: dict) -> str:
     return os.path.abspath(os.path.join(out_dir, deck.get("deck_dir", "..")))
 
 
+# What a build produces and may replace. A file outside this set is none of its business.
+BUILT_EXTS = (".rc", ".notes", ".mp4", ".mov", ".m4v", ".webm")
+
+
+def outputs(out_dir: str) -> dict:
+    """Every generated file under ``out/``, with its modification time.
+
+    Taken either side of a build, the difference is exactly what was rebuilt. That is worth
+    knowing twice over: it is the number the build panel shows, and it is what lets the player
+    throw away only the slide stills that actually changed instead of all of them.
+    """
+    found = {}
+    for directory in (out_dir, os.path.join(out_dir, "media")):
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(BUILT_EXTS):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                found[os.path.relpath(path, out_dir)] = os.stat(path).st_mtime_ns
+            except OSError:
+                pass
+    return found
+
+
+def changed_since(before: dict, out_dir: str) -> list[str]:
+    """The outputs that a build has just written or replaced, newest state against `before`."""
+    after = outputs(out_dir)
+    return sorted(name for name, stamp in after.items() if before.get(name) != stamp)
+
+
 def build_args(deck: dict, **overrides) -> list[str]:
     """The refract options this deck was built with, to build it the same way again.
 

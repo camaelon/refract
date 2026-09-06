@@ -396,6 +396,27 @@ bool thumbsPending() {
     return !q.pending.empty() || !q.done.empty();
 }
 
+void dropThumbs(const std::vector<std::string>& entries) {
+    if (entries.empty()) return;
+    for (const std::string& entry : entries) {
+        for (auto it = cache().begin(); it != cache().end();) {
+            it = it->first.entry == entry ? cache().erase(it) : std::next(it);
+        }
+    }
+    // Anything queued or finished for those entries is stale too — it was rendered from the
+    // file as it was before the build.
+    Queue& q = queue();
+    std::lock_guard<std::mutex> lock(q.mutex);
+    for (const std::string& entry : entries) {
+        for (auto it = q.pending.begin(); it != q.pending.end();) {
+            it = it->key.entry == entry ? q.pending.erase(it) : std::next(it);
+        }
+        for (auto it = q.done.begin(); it != q.done.end();) {
+            it = it->first.entry == entry ? q.done.erase(it) : std::next(it);
+        }
+    }
+}
+
 void clearThumbCache() {
     Queue& q = queue();
     cache().clear();

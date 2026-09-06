@@ -20,6 +20,7 @@
 #include "include/core/SkRefCnt.h"
 
 #include <string>
+#include <vector>
 
 namespace refract {
 
@@ -44,7 +45,11 @@ void collectThumbs();
 // keep redrawing until the pictures have arrived.
 bool thumbsPending();
 
-// Drop every cached and in-flight still. Called on reload, when the files may have changed;
+// Drop the stills for these playlist entries — the files a build actually rewrote. Editing
+// one word should not re-render sixty slides, and the build says which ones it touched.
+void dropThumbs(const std::vector<std::string>& entries);
+
+// Drop every cached and in-flight still. For a reload that cannot say what changed;
 // anything the worker is part-way through is discarded rather than delivered.
 void clearThumbCache();
 

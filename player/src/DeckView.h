@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -52,6 +53,11 @@ public:
     // inside one slide; this undoes reordering, adding and deleting whole ones.
     void setOnUndo(std::function<bool(bool redo, std::string* status)> action);
 
+    // Copy the slide the cursor is on, or join it with the one after it. The other two
+    // block-level edits; the third, splitting, needs a caret and lives in the editor.
+    void setOnDuplicateSlide(std::function<bool(int slide, std::string* status)> action);
+    void setOnMergeSlide(std::function<bool(int slide, std::string* status)> action);
+
     // The rewrite this view asked for has finished and the deck has been reloaded.
     void editFinished(bool ok, const std::string& status);
 
@@ -63,7 +69,13 @@ public:
 
     // Keys the view claims. False for anything it does not want, so the caller can fall
     // through to the player's bindings and drive the talk from this window too.
+    // Which runs are folded away, by the key that survives a rebuild. Remembered between runs.
+    std::vector<std::string> foldedRuns() const;
+    void setFoldedRuns(const std::vector<std::string>& keys);
+
     bool handleKey(int key, int action, int mods);
+    // Typed characters, while a filter is being entered. False when nothing is being typed.
+    bool handleChar(unsigned int codepoint);
 
     void render(App& app);
 

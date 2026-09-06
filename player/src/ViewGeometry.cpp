@@ -69,6 +69,20 @@ float Grid::clampScroll(float scroll) const {
     return std::max(0.0f, std::min(scrollMax, scroll));
 }
 
+bool matchesFilter(const std::string& title, const std::string& filter) {
+    if (filter.empty()) return true;
+    // Lowercased by hand rather than by locale: a deck's titles and what is typed at them are
+    // the same alphabet, and a locale-aware fold would be a dependency for nothing.
+    auto fold = [](const std::string& text) {
+        std::string out = text;
+        for (char& c : out) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        return out;
+    };
+    return fold(title).find(fold(filter)) != std::string::npos;
+}
+
 float settleScroll(const Grid& grid, float scroll, int cursor, bool cursorMoved) {
     return cursorMoved ? grid.scrollToShow(cursor, scroll) : grid.clampScroll(scroll);
 }

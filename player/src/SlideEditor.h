@@ -38,11 +38,21 @@ public:
     void setLoader(Loader loader);
     void setSaver(Saver saver);
 
+    // Break this slide in two at `line`, applying `text` first — so a slide can be split
+    // while it still has unsaved changes, as one edit rather than a save and then a split.
+    using Splitter = std::function<bool(int slide, const std::string& text, int line,
+                                        std::string* error)>;
+    void setSplitter(Splitter splitter);
+
     // Show this slide's source. Does nothing while there are unsaved changes — the editor
     // holds its ground rather than throwing away an edit because the deck moved on.
     void showSlide(int slide);
     int  slide() const;
     bool dirty() const;
+
+    // Whether saving happens on its own once typing stops. Remembered between runs.
+    bool autoSave() const;
+    void setAutoSave(bool on);
 
     // The save this editor asked for has finished and the deck has been rebuilt.
     void saveFinished(bool ok, const std::string& status);

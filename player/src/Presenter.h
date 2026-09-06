@@ -31,6 +31,11 @@ public:
     // What the play/pause button does. Set once, after Create.
     void setOnToggleClock(std::function<void()> action);
 
+    // The record button: start a take over this slide's narration, then keep it. `discard`
+    // drops the take in progress and leaves the old one alone. Both are the app's, which
+    // owns the microphone and the file.
+    void setOnRecordSlide(std::function<void()> record, std::function<void()> discard);
+
     // Feed the current microphone level (0..1) for the recording meter, or -1 when not
     // recording. Sampled by the caller because the recorder is the app's, not the window's.
     void pushAudioLevel(float average, float peak);

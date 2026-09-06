@@ -65,9 +65,16 @@ struct SlideEditor::Impl {
     std::string status;
     bool statusError = false;
     bool saving = false;
+    // Save on its own once typing stops, so the deck follows the editor without anybody
+    // pressing anything. Off by default: a rebuild is a real thing to have happen, and it
+    // should be asked for the first time.
+    bool autoSave = false;
+    double lastEditAt = -1.0;
+    SkRect autoButton = SkRect::MakeEmpty();
 
     Loader loader;
     Saver  saver;
+    Splitter splitter;
     std::function<void()> onSaved;
 
     float scrollY = 0.0f, scrollX = 0.0f;
@@ -165,6 +172,7 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         }
         if (action != GLFW_PRESS) return;
         const float x = static_cast<float>(impl.mouseX), y = static_cast<float>(impl.mouseY);
+        if (impl.autoButton.contains(x, y)) { impl.autoSave = !impl.autoSave; return; }
         if (impl.saveButton.contains(x, y)) { self->save(); return; }
         if (impl.revertButton.contains(x, y)) { self->revert(); return; }
         if (y < impl.textTop - impl.lineHeight || impl.lineHeight <= 0) return;
@@ -224,9 +232,12 @@ bool SlideEditor::shouldClose() const {
 
 void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); }
 void SlideEditor::setSaver(Saver saver) { mImpl->saver = std::move(saver); }
+void SlideEditor::setSplitter(Splitter splitter) { mImpl->splitter = std::move(splitter); }
 void SlideEditor::setOnSaved(std::function<void()> action) { mImpl->onSaved = std::move(action); }
 
 int  SlideEditor::slide() const { return mImpl->slide; }
+bool SlideEditor::autoSave() const { return mImpl->autoSave; }
+void SlideEditor::setAutoSave(bool on) { mImpl->autoSave = on; }
 bool SlideEditor::dirty() const { return mImpl->buffer.dirty(); }
 
 void SlideEditor::showSlide(int slide) {
@@ -273,7 +284,7 @@ void SlideEditor::save() {
     }
     std::string error;
     if (!impl.saver(impl.slide, impl.buffer.text(), &error)) {
-        impl.setStatus(error.empty() ? "save failed — see the terminal" : error, true);
+        impl.setStatus(error.empty() ? "the save could not be started" : error, true);
         return;
     }
     // The rebuild takes seconds on a big deck and runs on another thread. The buffer is
@@ -296,6 +307,7 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return false;
     Impl& impl = *mImpl;
     impl.caretBlinkFrom = glfwGetTime();
+    impl.lastEditAt = glfwGetTime();
 
     // Command on macOS, Control elsewhere — whichever this platform's shortcuts use.
 #if defined(__APPLE__)
@@ -312,6 +324,22 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     if (cmd) {
         switch (key) {
             case GLFW_KEY_S: save(); return true;
+            case GLFW_KEY_ENTER:
+            case GLFW_KEY_KP_ENTER: {
+                // Break the slide here. The buffer goes with it, so a slide can be split
+                // while it is still being edited — which is when you want to.
+                if (!impl.splitter || impl.slide < 0 || impl.saving) return true;
+                std::string error;
+                if (!impl.splitter(impl.slide, impl.buffer.text(), impl.buffer.caret().line,
+                                   &error)) {
+                    impl.setStatus(error.empty() ? "cannot split here" : error, true);
+                    return true;
+                }
+                impl.saving = true;
+                impl.buffer.markClean();
+                impl.setStatus("splitting…", false);
+                return true;
+            }
             case GLFW_KEY_A: impl.buffer.selectAll(); return true;
             case GLFW_KEY_Z:
                 if (shift) impl.buffer.redo(); else impl.buffer.undo();
@@ -400,6 +428,7 @@ void SlideEditor::handleChar(unsigned int codepoint) {
     }
     mImpl->buffer.insert(utf8);
     mImpl->caretBlinkFrom = glfwGetTime();
+    mImpl->lastEditAt = glfwGetTime();
 }
 
 void SlideEditor::render(App& app) {
@@ -421,6 +450,14 @@ void SlideEditor::render(App& app) {
         impl.backend.onFramebufferResize(fbW, fbH);
         impl.fbWidth = fbW;
         impl.fbHeight = fbH;
+    }
+
+    // Saved once typing has stopped for a moment. The pause is what makes it feel like the
+    // deck is keeping up rather than like something is running while you type.
+    constexpr double kAutoSaveIdleSec = 1.2;
+    if (impl.autoSave && impl.buffer.dirty() && !impl.saving && impl.lastEditAt > 0
+        && glfwGetTime() - impl.lastEditAt >= kAutoSaveIdleSec) {
+        save();
     }
 
     SkCanvas* canvas = impl.backend.canvas();
@@ -590,9 +627,24 @@ void SlideEditor::render(App& app) {
     drawTextCentred(canvas, "Revert", impl.revertButton, buttonFont,
                     impl.buffer.dirty() ? ui::kText : ui::kDim);
 
+    // Auto-save, as a toggle rather than a checkbox: it sits with the two buttons it acts
+    // for, and its state is the whole label.
+    SkFont autoFont = uiFont(11, true);
+    const std::string autoLabel = impl.autoSave ? "auto-save on" : "auto-save";
+    impl.autoButton = SkRect::MakeXYWH(pad + 176, viewBottom + 10,
+                                       textWidth(autoFont, "auto-save on") + 20, 24);
+    const bool autoHot = impl.autoButton.contains(static_cast<float>(impl.mouseX),
+                                                  static_cast<float>(impl.mouseY));
+    fillRoundRect(canvas, impl.autoButton, 12, impl.autoSave ? ui::kPanel : ui::kBg);
+    strokeRoundRect(canvas, impl.autoButton, 12,
+                    impl.autoSave ? ui::kAhead : (autoHot ? ui::kDim : ui::kLine), 1.0f);
+    drawTextCentred(canvas, autoLabel, impl.autoButton, autoFont,
+                    impl.autoSave ? ui::kAhead : ui::kDim);
+
     if (!impl.status.empty()) {
-        drawText(canvas, ellipsize(impl.status, uiFont(12), w - pad * 2 - 190),
-                 pad + 180, viewBottom + 26, uiFont(12),
+        const float from = impl.autoButton.right() + 14;
+        drawText(canvas, ellipsize(impl.status, uiFont(12), w - pad - from - 90),
+                 from, viewBottom + 26, uiFont(12),
                  impl.statusError ? ui::kOver : ui::kAhead);
     }
     drawTextRight(canvas, "cmd+S saves", w - pad, viewBottom + 26, uiFont(11), ui::kDim);

@@ -13,6 +13,7 @@
 // Press H for the key card.
 
 #include "App.h"
+#include "AppMenu.h"
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
 #include "BuildPanel.h"
@@ -21,6 +22,7 @@
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
+#include "Session.h"
 #include "SlideEditor.h"
 #include "VoiceIndex.h"
 #include "Thumbs.h"
@@ -87,6 +89,13 @@ bool overlapNextVoice = false;
 std::unique_ptr<refract::CaptionWindow> captionWindow;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
+
+// What was open, and where, the last time this deck was played.
+refract::Session session;
+std::string sessionOnDisk;       // what was last written, so an unchanged session is not rewritten
+// The deck's own window. The panels each hold theirs; this one belongs to main, and the
+// session captures it from here.
+GLFWwindow* slideWindow = nullptr;
 std::unique_ptr<refract::DeckViewWindow> deckView;
 std::unique_ptr<refract::BuildPanel> buildPanel;
 std::unique_ptr<refract::SlideEditor> slideEditor;
@@ -123,8 +132,19 @@ bool captionsEditing();
 void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
+void captureSession();
+void saveSessionIfChanged();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
+void toggleSlideRecording();
+void stopSlideRecording(bool keep);
+
+// A panel the menu bar has asked for. Menu items fire from inside Cocoa's event handling,
+// and opening or closing a GLFW window from there means creating and destroying an NSWindow
+// while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
+enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator };
+MenuPanel menuRequest = MenuPanel::None;
+
 void toggleDeckView();
 void toggleBuildPanel();
 void toggleSlideEditor();
@@ -173,8 +193,22 @@ fs::path findTool(const std::string& name) {
 // Run one of the Python tools, waiting for it. Its output is the user's, not ours: it goes
 // straight to the terminal — unless `out` is given, in which case stdout is captured for the
 // caller and only what the tool wrote to stderr reaches the terminal.
+// The last line of a tool's error output, or `fallback` when it said nothing useful. What a
+// window shows instead of "see the terminal" — which is no help at all when the player was
+// started from Finder and there is no terminal to see.
+std::string errorTail(const std::string& errors, const std::string& fallback) {
+    size_t end = errors.find_last_not_of(" \t\r\n");
+    if (end == std::string::npos) return fallback;
+    const size_t start = errors.find_last_of('\n', end);
+    std::string line = errors.substr(start == std::string::npos ? 0 : start + 1,
+                                     end - (start == std::string::npos ? 0 : start));
+    // Long enough to say what went wrong, short enough for a status line.
+    if (line.size() > 160) line = line.substr(0, 157) + "...";
+    return line.empty() ? fallback : line;
+}
+
 int runTool(const std::string& name, const std::vector<std::string>& args,
-            std::string* out = nullptr) {
+            std::string* out = nullptr, std::string* errors = nullptr) {
     const fs::path script = findTool(name);
     if (script.empty()) {
         std::cerr << "refractplayer: cannot find tools/" << name << "\n";
@@ -191,11 +225,19 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
     argv.push_back(nullptr);
 
     int pipeFds[2] = {-1, -1};
+    int errFds[2] = {-1, -1};
     if (out && ::pipe(pipeFds) != 0) return 1;
+    // Captured as well as shown: the terminal still gets it (it is the user's output), and a
+    // window gets the last line to put on screen.
+    if (errors && ::pipe(errFds) != 0) {
+        if (out) { ::close(pipeFds[0]); ::close(pipeFds[1]); }
+        return 1;
+    }
 
     pid_t pid = ::fork();
     if (pid < 0) {
         if (out) { ::close(pipeFds[0]); ::close(pipeFds[1]); }
+        if (errors) { ::close(errFds[0]); ::close(errFds[1]); }
         return 1;
     }
     if (pid == 0) {
@@ -204,18 +246,36 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
             ::dup2(pipeFds[1], STDOUT_FILENO);
             ::close(pipeFds[1]);
         }
+        if (errors) {
+            ::close(errFds[0]);
+            ::dup2(errFds[1], STDERR_FILENO);
+            ::close(errFds[1]);
+        }
         ::execvp("python3", argv.data());
         std::cerr << "refractplayer: python3 not found\n";
         ::_exit(127);
     }
-    if (out) {
-        // Drained before waiting: a tool that fills the pipe would block forever otherwise.
-        ::close(pipeFds[1]);
-        out->clear();
+    // Drained before waiting: a tool that fills a pipe would block forever otherwise. Both
+    // are drained together, or one filling up would stall the other.
+    if (out) { ::close(pipeFds[1]); out->clear(); }
+    if (errors) { ::close(errFds[1]); errors->clear(); }
+    while ((out && pipeFds[0] >= 0) || (errors && errFds[0] >= 0)) {
         char buf[4096];
-        ssize_t n = 0;
-        while ((n = ::read(pipeFds[0], buf, sizeof(buf))) > 0) out->append(buf, n);
-        ::close(pipeFds[0]);
+        bool progress = false;
+        if (out && pipeFds[0] >= 0) {
+            const ssize_t n = ::read(pipeFds[0], buf, sizeof(buf));
+            if (n > 0) { out->append(buf, n); progress = true; }
+            else { ::close(pipeFds[0]); pipeFds[0] = -1; }
+        }
+        if (errors && errFds[0] >= 0) {
+            const ssize_t n = ::read(errFds[0], buf, sizeof(buf));
+            if (n > 0) {
+                errors->append(buf, n);
+                std::cerr.write(buf, n);   // still the user's output
+                progress = true;
+            } else { ::close(errFds[0]); errFds[0] = -1; }
+        }
+        if (!progress && pipeFds[0] < 0 && errFds[0] < 0) break;
     }
     int status = 0;
     ::waitpid(pid, &status, 0);
@@ -245,6 +305,8 @@ void goToSlide(int index) {
         std::cerr << "editor: save or revert the slide before changing slides\n";
         return;
     }
+    // A take belongs to the slide it was started on; leaving keeps what was said.
+    stopSlideRecording(/*keep=*/true);
 
     int target = app.deck.clamp(index);
     if (target == g.currentIndex && g.doc) return;
@@ -332,6 +394,85 @@ void refreshVoicePresence() {
         std::error_code ec;
         app.voice[i] = (!wav.empty() && fs::exists(wav, ec)) ? 1 : 0;
     }
+}
+
+// ── Re-recording one slide ───────────────────────────────────────────
+//
+// A rehearsal is recorded in one pass, and until now a slide that came out badly cost the
+// whole take. It could not have worked before: the wavs were named for the slide's position,
+// so a re-record after any reorder wrote over somebody else's narration. Now that the voice
+// index says which wav belongs to which *block*, doing one slide again is well defined.
+//
+// The take goes to a temp file and only replaces the old one when it is stopped deliberately.
+// Nothing is lost by starting a re-record and thinking better of it.
+fs::path reRecordTemp, reRecordTarget;
+
+void stopSlideRecording(bool keep) {
+    if (!app.reRecording) return;
+    app.reRecording = false;
+    if (recorder) recorder->stop();
+
+    std::error_code ec;
+    if (keep && fs::exists(reRecordTemp, ec) && fs::file_size(reRecordTemp, ec) > 0) {
+        fs::rename(reRecordTemp, reRecordTarget, ec);
+        if (ec) fs::copy_file(reRecordTemp, reRecordTarget,
+                              fs::copy_options::overwrite_existing, ec);
+        if (app.reRecordSlide >= 0 && app.reRecordSlide < app.deck.size()) {
+            voiceIndex.record(app.deck.at(app.reRecordSlide).sourceKey(),
+                              reRecordTarget.stem().string());
+            if (app.reRecordSlide < static_cast<int>(app.voice.size())) {
+                app.voice[app.reRecordSlide] = 1;
+            }
+        }
+        // The transcript and the word timings were made from the take that has just been
+        // replaced; leaving them would light the wrong words under the new one.
+        for (const char* ext : {".txt", ".words.json"}) {
+            fs::path stale = reRecordTarget;
+            stale.replace_extension();
+            stale += ext;
+            if (fs::exists(stale, ec)) {
+                fs::remove(stale, ec);
+                std::cerr << "audio: removed " << stale.filename().string()
+                          << " — re-run --transcribe for this slide\n";
+            }
+        }
+        std::cerr << "audio: re-recorded " << reRecordTarget.filename().string() << "\n";
+    } else {
+        fs::remove(reRecordTemp, ec);
+        std::cerr << "audio: re-record cancelled; the old take is untouched\n";
+    }
+    app.reRecordSlide = -1;
+}
+
+void toggleSlideRecording() {
+    if (app.reRecording) { stopSlideRecording(/*keep=*/true); return; }
+    if (app.deck.empty() || app.timing.recording()) {
+        std::cerr << "audio: not while a whole run is being recorded\n";
+        return;
+    }
+    const fs::path wav = voiceFileFor(g.currentIndex);
+    if (wav.empty()) {
+        std::cerr << "audio: this deck has nowhere to keep narration\n";
+        return;
+    }
+    if (!recorder) recorder = refract::AudioRecorder::Create();
+    if (!recorder) return;
+
+    // Playing the old take back through the speakers while recording the new one puts it
+    // straight into the new file.
+    if (voice) voice->stop();
+    voicePlaying = false;
+
+    std::error_code ec;
+    fs::create_directories(wav.parent_path(), ec);
+    reRecordTarget = wav;
+    reRecordTemp = wav;
+    reRecordTemp.replace_extension(".take.wav");
+    app.reRecordSlide = g.currentIndex;
+    app.reRecording = true;
+    recorder->start(reRecordTemp.string());
+    std::cerr << "audio: recording over " << wav.filename().string()
+              << " — shift+R again to keep it, Esc to drop it\n";
 }
 
 // Start this slide's narration, then open the *next* slide's file so the following change
@@ -455,9 +596,18 @@ void openPresenter() {
     presenter = refract::PresenterWindow::Create(1100, 760);
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
+    session.restore("presenter", presenter->window());
+    presenter->setOnRecordSlide(toggleSlideRecording,
+                                [] { stopSlideRecording(/*keep=*/false); });
     // Both windows take the same keys: you should be able to drive the talk from whichever
     // one has focus, and which one that is depends on where you last clicked.
     glfwSetKeyCallback(presenter->window(), playerKeyCallback);
+    glfwSetCharCallback(presenter->window(), [](GLFWwindow*, unsigned int codepoint) {
+        // The navigator draws on this window when it is open, so it is typed into here too.
+        if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
+            app.navFilter.push_back(static_cast<char>(codepoint < 0x80 ? codepoint : '?'));
+        }
+    });
     if (presenterMonitor >= 0) {
         GLFWmonitor* monitor = monitorAt(presenterMonitor);
         int mx, my;
@@ -486,6 +636,7 @@ void openCaptions() {
         if (captionWindow) captionWindow->handleChar(codepoint);
     });
 
+    session.restore("captions", captionWindow->window());
     captionWindow->setOnEditingChanged([](bool editing) {
         if (!voice) return;
         if (editing) {
@@ -507,6 +658,7 @@ void openCaptions() {
 void toggleCaptions() {
     if (captionWindow) captionWindow.reset();
     else openCaptions();
+    saveSessionIfChanged();
 }
 
 // ── Deck view ────────────────────────────────────────────────────────
@@ -515,6 +667,10 @@ void toggleCaptions() {
 // rebuild renames files: there is nothing to patch up, the playlist is simply collected
 // again. The slide on screen is kept by *position*, which after a reorder is what the deck
 // view just moved it to.
+// The outputs the last build actually rewrote, from the tool that ran it. Empty means "no
+// idea", and the reload then drops every still rather than guessing.
+std::vector<std::string> changedOutputs;
+
 bool reloadDeck() {
     if (g.zip || deckInput.empty()) return false;
     std::vector<std::string> files = collectRcFiles(deckInput);
@@ -525,7 +681,18 @@ bool reloadDeck() {
     g.files = std::move(files);
     app.deck.build(g.files, deckInput);
     refreshVoicePresence();
-    refract::clearThumbCache();
+    // Only the slides the build touched. Re-rendering a sixty-slide deck because one word
+    // changed is work nobody asked for, and it is why cards used to blink back to empty.
+    if (changedOutputs.empty()) {
+        refract::clearThumbCache();
+    } else {
+        const fs::path out = refract::deckSidecarPath(deckInput, "deck.json").parent_path();
+        std::vector<std::string> entries;
+        entries.reserve(changedOutputs.size());
+        for (const std::string& name : changedOutputs) entries.push_back((out / name).string());
+        refract::dropThumbs(entries);
+    }
+    changedOutputs.clear();
     g.currentIndex = app.deck.clamp(g.currentIndex);
     loadCurrentFile();
     // Nothing to fix up for the trace or the narration: both are keyed by the block a slide
@@ -549,6 +716,8 @@ struct EditResult {
     bool ok = true;
     bool changed = false;
     std::string status;
+    // The outputs the rebuild rewrote, so the reload can drop only those stills.
+    std::vector<std::string> outputs;
 };
 EditResult editResult;
 std::function<void(bool ok, const std::string& status)> editReport;
@@ -578,8 +747,8 @@ bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
     editRunning = true;
     editReport = std::move(report);
     editThread = std::thread([tool, args, doneMessage]() {
-        std::string output;
-        const int rc = runTool(tool, args, &output);
+        std::string output, errors;
+        const int rc = runTool(tool, args, &output, &errors);
         // The tools report in JSON so the difference between "nothing to do", "the markdown
         // was rewritten but refract could not rebuild it" and "refused" survives the process
         // boundary. A failed rebuild in particular has already changed the file on disk, and
@@ -591,10 +760,14 @@ bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
         result.done = true;
         result.ok = rc == 0 && (!parsed || doc.value("ok", false));
         result.changed = parsed && doc.value("changed", false);
+        // Which outputs the rebuild rewrote, so the reload can drop only those stills.
+        if (parsed && doc.contains("outputs") && doc["outputs"].is_array()) {
+            result.outputs = doc["outputs"].get<std::vector<std::string>>();
+        }
         if (!result.ok) {
             result.status = parsed && doc.contains("error")
                                 ? doc["error"].get<std::string>()
-                                : "failed — see the terminal";
+                                : errorTail(errors, "the edit failed");
             if (result.changed && parsed && !doc.value("rebuilt", false)) {
                 result.status = "the markdown was written but the rebuild failed: "
                                 + result.status;
@@ -626,7 +799,10 @@ void collectSourceEdit() {
         result = editResult;
         editResult = {};
     }
-    if (result.ok && result.changed) deckReloadPending = true;
+    if (result.ok && result.changed) {
+        changedOutputs = result.outputs;
+        deckReloadPending = true;
+    }
     if (editReport) {
         auto report = editReport;
         editReport = nullptr;
@@ -672,6 +848,22 @@ bool addSlideInSource(int slide, bool before, std::string* status) {
                            }, status);
 }
 
+bool duplicateSlideInSource(int slide, std::string* status) {
+    return startSourceEdit("slide.py",
+                           {"--slide", std::to_string(slide), "--duplicate"}, "duplicated",
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
+}
+
+bool mergeSlideInSource(int slide, std::string* status) {
+    return startSourceEdit("slide.py",
+                           {"--slide", std::to_string(slide), "--merge"}, "merged",
+                           [](bool ok, const std::string& done) {
+                               if (deckView) deckView->editFinished(ok, done);
+                           }, status);
+}
+
 bool deleteSlideInSource(int slide, std::string* status) {
     return startSourceEdit("slide.py",
                            {"--slide", std::to_string(slide), "--delete"}, "deleted",
@@ -699,6 +891,10 @@ void openDeckView() {
     deckView->setOnAddSlide(addSlideInSource);
     deckView->setOnDeleteSlide(deleteSlideInSource);
     deckView->setOnUndo(undoSourceEdit);
+    deckView->setFoldedRuns(session.folded);
+    session.restore("deckView", deckView->window());
+    deckView->setOnDuplicateSlide(duplicateSlideInSource);
+    deckView->setOnMergeSlide(mergeSlideInSource);
     // The view takes the keys it uses to walk the grid; everything else still drives the
     // talk, so the deck can be run from this window like any other.
     glfwSetKeyCallback(deckView->window(),
@@ -706,11 +902,72 @@ void openDeckView() {
         if (deckView && deckView->handleKey(key, action, mods)) return;
         playerKeyCallback(w, key, scancode, action, mods);
     });
+    // Only while a filter is being typed; otherwise the letters are the view's own bindings.
+    glfwSetCharCallback(deckView->window(), [](GLFWwindow*, unsigned int codepoint) {
+        if (deckView) deckView->handleChar(codepoint);
+    });
+}
+
+// Read the live windows into the session — what is open, where, and the few settings each
+// panel carries. Cheap: a handful of GLFW queries.
+void captureSession() {
+    // Where the deck itself is. Fullscreen is deliberately not remembered — a player that
+    // took over the screen the moment it opened would be startling, and `--fullscreen` and
+    // `F` are how you ask for that. What is kept is where the window was *windowed*, which
+    // while fullscreen is the geometry `F` would put it back to.
+    if (slideWindow) {
+        if (glfwGetWindowMonitor(slideWindow) && savedGeometry.valid) {
+            session.windows["slides"] = {savedGeometry.x, savedGeometry.y,
+                                         savedGeometry.w, savedGeometry.h};
+        } else if (!glfwGetWindowMonitor(slideWindow)) {
+            session.capture("slides", slideWindow);
+        }
+    }
+
+    session.presenter = presenter != nullptr;
+    session.deckView = deckView != nullptr;
+    session.editor = slideEditor != nullptr;
+    session.build = buildPanel != nullptr;
+    session.captions = captionWindow != nullptr;
+
+    if (presenter) session.capture("presenter", presenter->window());
+    if (captionWindow) session.capture("captions", captionWindow->window());
+    if (deckView) {
+        session.capture("deckView", deckView->window());
+        session.folded = deckView->foldedRuns();
+    }
+    if (slideEditor) {
+        session.capture("editor", slideEditor->window());
+        session.editorAutoSave = slideEditor->autoSave();
+    }
+    if (buildPanel) {
+        session.capture("build", buildPanel->window());
+        session.buildWatch = buildPanel->watching();
+        const refract::BuildOptions& opts = buildPanel->options();
+        session.buildTransitions = opts.transitions;
+        session.buildDebug = opts.debug;
+        session.buildForce = opts.force;
+        session.buildKeepJson = opts.keepJson;
+    }
+}
+
+// Write it, if it is not what is already written.
+//
+// Not only on the way out: the way out is not always taken. A player killed from the terminal
+// or caught by a crash would otherwise forget the whole arrangement, which is the arrangement
+// somebody just spent a minute making.
+void saveSessionIfChanged() {
+    if (deckInput.empty()) return;
+    captureSession();
+    const std::string now = session.serialise();
+    if (now == sessionOnDisk) return;
+    if (session.save(deckInput)) sessionOnDisk = now;
 }
 
 void toggleDeckView() {
     if (deckView) deckView.reset();
     else openDeckView();
+    saveSessionIfChanged();
 }
 
 // ── Build panel ──────────────────────────────────────────────────────
@@ -739,8 +996,8 @@ bool startBuild(const refract::BuildOptions& options) {
     if (buildThread.joinable()) buildThread.join();
     buildRunning = true;
     buildThread = std::thread([args]() {
-        std::string output;
-        const int rc = runTool("build.py", args, &output);
+        std::string output, errors;
+        const int rc = runTool("build.py", args, &output, &errors);
         auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
         const bool parsed = !doc.is_discarded() && doc.is_object();
 
@@ -754,7 +1011,7 @@ bool startBuild(const refract::BuildOptions& options) {
             state.seconds = doc.value("seconds", 0.0);
             if (doc.contains("error")) state.error = doc["error"].get<std::string>();
         }
-        if (!state.ok && state.error.empty()) state.error = "see the terminal";
+        if (!state.ok && state.error.empty()) state.error = errorTail(errors, "build failed");
 
         {
             std::lock_guard<std::mutex> lock(buildMutex);
@@ -807,8 +1064,20 @@ void openBuildPanel() {
     if (buildPanel) return;
     buildPanel = refract::BuildPanel::Create(300, 760);
     if (!buildPanel) return;
-    buildPanel->setOptions(optionsFromManifest());
+    // The options the panel was last showing, or — the first time — how the deck was built.
+    refract::BuildOptions options = optionsFromManifest();
+    if (!sessionOnDisk.empty() || session.build) {
+        // What the panel was last showing, rather than how the deck happens to have been
+        // built — they are different questions once somebody has changed one of them.
+        options.transitions = session.buildTransitions;
+        options.debug = session.buildDebug;
+        options.force = session.buildForce;
+        options.keepJson = session.buildKeepJson;
+    }
+    buildPanel->setOptions(options);
     buildPanel->setOnBuild(startBuild);
+    buildPanel->setWatching(session.buildWatch);
+    session.restore("build", buildPanel->window());
     glfwSetKeyCallback(buildPanel->window(),
                        [](GLFWwindow* w, int key, int scancode, int action, int mods) {
         if (buildPanel && buildPanel->handleKey(key, action, mods)) return;
@@ -819,6 +1088,7 @@ void openBuildPanel() {
 void toggleBuildPanel() {
     if (buildPanel) buildPanel.reset();
     else openBuildPanel();
+    saveSessionIfChanged();
 }
 
 // ── Slide editor ─────────────────────────────────────────────────────
@@ -881,12 +1151,41 @@ bool saveSlideSource(int slide, const std::string& text, std::string* error) {
                            }, error);
 }
 
+// Break the slide in two at `line`, with the editor's unsaved text applied first — one
+// rewrite, one history entry, one rebuild.
+bool splitSlideSource(int slide, const std::string& text, int line, std::string* error) {
+    const fs::path scratch = fs::temp_directory_path()
+                             / ("refractplayer_split_" + std::to_string(::getpid()) + ".md");
+    {
+        std::ofstream file(scratch, std::ios::binary);
+        if (!file) {
+            *error = "cannot write a temporary file";
+            return false;
+        }
+        file << text;
+        if (!text.empty() && text.back() != '\n') file << "\n";
+    }
+    const std::string path = scratch.string();
+    return startSourceEdit("slide.py",
+                           {"--slide", std::to_string(slide), "--write", path,
+                            "--split", std::to_string(line)},
+                           "split",
+                           [path](bool ok, const std::string& done) {
+                               std::error_code ec;
+                               fs::remove(path, ec);
+                               if (slideEditor) slideEditor->saveFinished(ok, done);
+                           }, error);
+}
+
 void openSlideEditor() {
     if (slideEditor) return;
     slideEditor = refract::SlideEditor::Create(560, 620);
     if (!slideEditor) return;
     slideEditor->setLoader(loadSlideSource);
     slideEditor->setSaver(saveSlideSource);
+    slideEditor->setSplitter(splitSlideSource);
+    slideEditor->setAutoSave(session.editorAutoSave);
+    session.restore("editor", slideEditor->window());
     slideEditor->showSlide(g.currentIndex);
     // The editor takes the whole keyboard while it has focus — every key is a character in
     // there, and "b" must not blank the projector mid-sentence.
@@ -903,11 +1202,13 @@ void openSlideEditor() {
 void toggleSlideEditor() {
     if (slideEditor) slideEditor.reset();
     else openSlideEditor();
+    saveSessionIfChanged();
 }
 
 void togglePresenter() {
     if (presenter) presenter.reset();
     else openPresenter();
+    saveSessionIfChanged();
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────
@@ -952,6 +1253,31 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
 
     // ── Navigator ────────────────────────────────────────────────────
     if (app.navOpen) {
+        // A filter being typed owns the keyboard, the same as in the deck view.
+        if (app.navFiltering) {
+            switch (key) {
+                case GLFW_KEY_ESCAPE:
+                    app.navFiltering = false;
+                    app.navFilter.clear();
+                    return;
+                case GLFW_KEY_BACKSPACE:
+                    if (!app.navFilter.empty()) app.navFilter.pop_back();
+                    return;
+                case GLFW_KEY_ENTER:
+                case GLFW_KEY_KP_ENTER:
+                    app.navFiltering = false;
+                    // Leaves the filter showing: the list stays narrowed while you look.
+                    return;
+                case GLFW_KEY_UP:    refract::navMove(app, -1); return;
+                case GLFW_KEY_DOWN:  refract::navMove(app, 1); return;
+                default: return;
+            }
+        }
+        if (key == GLFW_KEY_SLASH) {
+            app.navFiltering = true;
+            app.navFilter.clear();
+            return;
+        }
         switch (key) {
             case GLFW_KEY_UP:    refract::navMove(app, -1); return;
             case GLFW_KEY_DOWN:  refract::navMove(app,  1); return;
@@ -967,6 +1293,9 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
                 goToSlide(app.navCursor);
                 return;
             case GLFW_KEY_ESCAPE:
+                // The filter is cleared first; a second Esc closes the navigator.
+                if (!app.navFilter.empty()) { app.navFilter.clear(); return; }
+                [[fallthrough]];
             case GLFW_KEY_TAB:
             case GLFW_KEY_G:
                 app.navOpen = false;
@@ -1044,8 +1373,12 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             g.videoHost.setPaused(g.paused);
             break;
         case GLFW_KEY_R:
-            refract::clearThumbCache();
-            loadCurrentFile();
+            if (mods & GLFW_MOD_SHIFT) {
+                toggleSlideRecording();
+            } else {
+                refract::clearThumbCache();
+                loadCurrentFile();
+            }
             break;
         case GLFW_KEY_D:
             g.debug = (g.debug + 1) % 3;
@@ -1059,6 +1392,9 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         // Escape backs out of whatever is on top; it never quits. Losing the deck mid-talk
         // to a stray Escape is not a risk worth the convenience.
         case GLFW_KEY_ESCAPE:
+            // A take in progress is dropped first: Esc is "back out of this", and there is
+            // nothing else it could mean while the microphone is open.
+            if (app.reRecording) { stopSlideRecording(/*keep=*/false); break; }
             if (app.showHelp) app.showHelp = false;
             else if (!app.jumpDigits.empty()) app.jumpDigits.clear();
             else if (app.blank) app.blank = 0;
@@ -1373,6 +1709,10 @@ int main(int argc, char* argv[]) {
     }
 
     // ── Window ───────────────────────────────────────────────────────
+    // What was open last time, and where. Read before any window is made, because the first
+    // of them is the deck's own and it wants putting back too.
+    if (session.load(input)) sessionOnDisk = session.serialise();
+
     if (!glfwInit()) {
         std::cerr << "refractplayer: GLFW init failed\n";
         return 1;
@@ -1386,6 +1726,11 @@ int main(int argc, char* argv[]) {
         glfwTerminate();
         return 1;
     }
+    slideWindow = window;
+    // Where it was last time. A size on the command line or a `--display` outranks it, the
+    // same way an explicitly opened panel does: asking for something beats a memory of it.
+    if (positional.size() < 3 && slideMonitor < 0) session.restore("slides", window);
+
     if (slideMonitor >= 0) {
         GLFWmonitor* monitor = monitorAt(slideMonitor);
         int mx, my;
@@ -1423,6 +1768,12 @@ int main(int argc, char* argv[]) {
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
     glfwSetKeyCallback(window, playerKeyCallback);
+    // The only text this window takes: a name typed at the navigator.
+    glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {
+        if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
+            app.navFilter.push_back(static_cast<char>(codepoint < 0x80 ? codepoint : '?'));
+        }
+    });
 
     int fbW = 0, fbH = 0;
     glfwGetFramebufferSize(window, &fbW, &fbH);
@@ -1436,11 +1787,31 @@ int main(int argc, char* argv[]) {
         glfwGetWindowSize(window, &winW, &winH);
         ensureSurface(winW, winH);
     }
-    if (wantPresenter) openPresenter();
-    if (wantCaptions) openCaptions();
-    if (wantDeckView) openDeckView();
-    if (wantBuildPanel) openBuildPanel();
-    if (wantEditor) openSlideEditor();
+    // A flag on the command line still opens a panel the session had closed — asking for
+    // something explicitly outranks a memory of not having wanted it.
+    if (wantPresenter || session.presenter) openPresenter();
+    if (wantCaptions || session.captions) openCaptions();
+    if (wantDeckView || session.deckView) openDeckView();
+    if (wantBuildPanel || session.build) openBuildPanel();
+    if (wantEditor || session.editor) openSlideEditor();
+
+    // The panels, in the menu bar. Chosen from a menu they arrive on Cocoa's thread of
+    // control rather than GLFW's, in the middle of the event pump — so the item only asks,
+    // and the loop opens the window a moment later where every other window is opened.
+    refract::installWindowMenu({
+        {"Presenter",    "1", [] { menuRequest = MenuPanel::Presenter; },
+                              [] { return presenter != nullptr; }},
+        {"Deck View",    "2", [] { menuRequest = MenuPanel::DeckView; },
+                              [] { return deckView != nullptr; }},
+        {"Slide Editor", "3", [] { menuRequest = MenuPanel::Editor; },
+                              [] { return slideEditor != nullptr; }},
+        {"Build",        "4", [] { menuRequest = MenuPanel::Build; },
+                              [] { return buildPanel != nullptr; }},
+        {"Captions",     "5", [] { menuRequest = MenuPanel::Captions; },
+                              [] { return captionWindow != nullptr; }},
+        {"Navigator",    "6", [] { menuRequest = MenuPanel::Navigator; },
+                              [] { return app.navOpen; }},
+    });
 
     refreshVoicePresence();
     loadCurrentFile();
@@ -1459,6 +1830,8 @@ int main(int argc, char* argv[]) {
     double lastBuildDraw = -1.0;
     // Watching the deck's sources. Sampled on a timer rather than every frame: it is a walk
     // of includes/, and a second's latency on a rebuild nobody asked for is not felt.
+    double lastSessionCheck = -1.0;
+    constexpr double kSessionInterval = 4.0;
     double lastWatchCheck = -1.0;
     double watchedMtime = 0.0;
     constexpr double kWatchInterval = 1.0;
@@ -1482,6 +1855,21 @@ int main(int argc, char* argv[]) {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
+        // A panel asked for from the menu bar.
+        if (menuRequest != MenuPanel::None) {
+            const MenuPanel want = menuRequest;
+            menuRequest = MenuPanel::None;
+            switch (want) {
+                case MenuPanel::Presenter: togglePresenter(); break;
+                case MenuPanel::DeckView:  toggleDeckView(); break;
+                case MenuPanel::Editor:    toggleSlideEditor(); break;
+                case MenuPanel::Build:     toggleBuildPanel(); break;
+                case MenuPanel::Captions:  toggleCaptions(); break;
+                case MenuPanel::Navigator: app.navOpen = !app.navOpen; break;
+                case MenuPanel::None:      break;
+            }
+        }
+
         collectSourceEdit();
 
         if (deckReloadPending) {
@@ -1496,6 +1884,13 @@ int main(int argc, char* argv[]) {
         double elapsed = std::chrono::duration<double>(now - startTime).count();
         double dt = elapsed - lastFrame;
         lastFrame = elapsed;
+
+        // Window geometry moves without any toggle to notice it, so the session is looked at
+        // on a slow timer too. It is written only when it has actually changed.
+        if (elapsed - lastSessionCheck >= kSessionInterval) {
+            lastSessionCheck = elapsed;
+            saveSessionIfChanged();
+        }
 
         if (!g.paused) {
             g.animTime += dt;
@@ -1604,7 +1999,8 @@ int main(int argc, char* argv[]) {
             } else if (elapsed - lastPresenterDraw >= kPresenterInterval) {
                 // Sampled here rather than inside the window: the recorder belongs to the
                 // app, and the level is only wanted at the rate the meter is drawn.
-                if (recorder) {
+                const bool listening = recorder && (app.timing.recording() || app.reRecording);
+                if (listening) {
                     recorder->updateLevels();
                     presenter->pushAudioLevel(recorder->averageLevel(), recorder->peakLevel());
                 } else {
@@ -1699,12 +2095,40 @@ int main(int argc, char* argv[]) {
     // and quitting mid-word should not be the one way to lose it.
     if (captionWindow && captionWindow->isEditing()) captionWindow->finishEditing();
 
+    stopSlideRecording(/*keep=*/true);
     if (app.timing.recording()) app.timing.finish(app.clock.elapsed);
     if (recorder) recorder->stop();
     recorder.reset();
     if (voice) voice->stop();
     voice.reset();
     refract::stopThumbs();
+    // What is still open at the end is what was open, so it comes back next time.
+    session.presenter = presenter != nullptr;
+    session.deckView = deckView != nullptr;
+    session.editor = slideEditor != nullptr;
+    session.build = buildPanel != nullptr;
+    session.captions = captionWindow != nullptr;
+    if (presenter) session.capture("presenter", presenter->window());
+    if (captionWindow) session.capture("captions", captionWindow->window());
+    if (deckView) {
+        session.capture("deckView", deckView->window());
+        session.folded = deckView->foldedRuns();
+    }
+    if (slideEditor) {
+        session.capture("editor", slideEditor->window());
+        session.editorAutoSave = slideEditor->autoSave();
+    }
+    if (buildPanel) {
+        session.capture("build", buildPanel->window());
+        session.buildWatch = buildPanel->watching();
+        const refract::BuildOptions& opts = buildPanel->options();
+        session.buildTransitions = opts.transitions;
+        session.buildDebug = opts.debug;
+        session.buildForce = opts.force;
+        session.buildKeepJson = opts.keepJson;
+    }
+    session.save(deckInput);
+
     captionWindow.reset();
     deckView.reset();
     buildPanel.reset();

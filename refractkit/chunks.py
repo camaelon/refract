@@ -118,6 +118,91 @@ def replace_chunk(text: str, index: int, replacement: str) -> str:
     return out + "\n" if trailing else out
 
 
+def split_chunk(text: str, index: int, line: int) -> str:
+    """Break block ``index`` in two at ``line``, which is a line of what `read_chunk` returns.
+
+    The commonest edit a nearly-finished deck needs — "this slide is too long" — and the one
+    the player could not make at all. Everything from `line` down becomes the next slide.
+    """
+    n = count_chunks(text)
+    if not 0 <= index < n:
+        raise IndexError(f"block {index} out of range (deck has {n} blocks)")
+
+    trailing = text.endswith("\n")
+    body = text[:-1] if trailing else text
+    chunks, seps = split_chunks(body)
+    pad = _padding(chunks)
+
+    raw = chunks[index]
+    lead, tail = _leading_blanks(raw), _trailing_blanks(raw)
+    content = raw[len(lead):len(raw) - len(tail)] if tail else raw[len(lead):]
+    if not 0 < line < len(content):
+        # A split at either end would make a slide out of nothing; that is what `N` is for.
+        raise ValueError("nothing to split there")
+
+    chunks[index] = lead + content[:line] + pad
+    chunks.insert(index + 1, pad + content[line:] + tail)
+    seps.insert(min(index, len(seps)), seps[min(index, len(seps) - 1)] if seps else "---")
+    _trimEnds(chunks)
+
+    out = join_chunks(chunks, seps)
+    return out + "\n" if trailing else out
+
+
+def merge_chunk(text: str, index: int) -> str:
+    """Join block ``index`` with the one after it, dropping the separator between them.
+
+    The inverse of :func:`split_chunk`, and what undoes a slide broken in the wrong place. A
+    blank line is left where the separator was, so two paragraphs do not run together.
+
+    A heading in the second half is demoted to plain text. A slide's title has to be its first
+    line, so once the second half is body it could never be a title again whatever it looked
+    like — and left as it was it would break the build, because json2rc reads a text line
+    beginning with `#` as a colour. (That is json2rc's bug rather than this one's, but not a
+    thing to hand somebody as the result of pressing a key.)
+    """
+    n = count_chunks(text)
+    if not 0 <= index < n:
+        raise IndexError(f"block {index} out of range (deck has {n} blocks)")
+    if index + 1 >= n:
+        raise ValueError("there is no slide after this one to merge with")
+
+    trailing = text.endswith("\n")
+    body = text[:-1] if trailing else text
+    chunks, seps = split_chunks(body)
+
+    first, second = chunks[index], chunks[index + 1]
+    lead = _leading_blanks(first)
+    tail = _trailing_blanks(second)
+    head = first[len(lead):len(first) - len(_trailing_blanks(first))] \
+        if _trailing_blanks(first) else first[len(lead):]
+    rest = second[len(_leading_blanks(second)):len(second) - len(tail)] if tail \
+        else second[len(_leading_blanks(second)):]
+
+    rest = [_demote_heading(line) for line in rest]
+    chunks[index] = lead + head + ([""] if head and rest else []) + rest + tail
+    del chunks[index + 1]
+    del seps[min(index, len(seps) - 1)]
+    _trimEnds(chunks)
+
+    out = join_chunks(chunks, seps)
+    return out + "\n" if trailing else out
+
+
+# Must match markdown.TITLE_RE: what counts as a slide's title is that module's decision, and
+# a heading this does not recognise would be left to break the build.
+_HEADING = re.compile(r"^#\s+")
+
+
+def _demote_heading(line: str) -> str:
+    return _HEADING.sub("", line) if _HEADING.match(line) else line
+
+
+def duplicate_chunk(text: str, index: int) -> str:
+    """Put a copy of block ``index`` straight after it — a slide to start the next one from."""
+    return insert_chunk(text, index + 1, read_chunk(text, index))
+
+
 def _padding(chunks: list[list[str]]) -> list[str]:
     """The blank line a deck puts either side of its ``---``, or nothing if it does not.
 

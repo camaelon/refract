@@ -76,6 +76,7 @@ set(REFRACTPLAYER_SOURCES
     src/DeckView.cpp
     src/Navigator.cpp
     src/Presenter.cpp
+    src/Session.cpp
     src/SlideEditor.cpp
     src/TextBuffer.cpp
     src/Thumbs.cpp
@@ -87,15 +88,16 @@ set(REFRACTPLAYER_SOURCES
 )
 
 if(APPLE)
-    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm)
+    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm)
 else()
-    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp)
+    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp
+                                      src/AppMenuStub.cpp)
 endif()
 
 add_executable(refractplayer ${REFRACTPLAYER_SOURCES})
 
 if(APPLE)
-    set_source_files_properties(src/AudioPlayer.mm src/AudioRecorder.mm
+    set_source_files_properties(src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
                                 PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
@@ -106,23 +108,15 @@ target_include_directories(refractplayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 # The reorder arithmetic only. It has no window, no GPU and no engine behind it, so it
 # builds and runs in a second — which is the point of having pulled it out of the view.
 enable_testing()
-add_executable(deck_order_test tests/deck_order_test.cpp src/DeckOrder.cpp)
-target_include_directories(deck_order_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-add_test(NAME deck_order COMMAND deck_order_test)
 
-# The slide editor's text model: lines, caret, selection, undo. No window, no engine.
-add_executable(text_buffer_test tests/text_buffer_test.cpp src/TextBuffer.cpp)
-target_include_directories(text_buffer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-add_test(NAME text_buffer COMMAND text_buffer_test)
+# The suites that need nothing but their own source live in tests/, which can also be
+# configured on its own — that is what CI builds, since configuring this project pulls in the
+# whole engine and Skia with it.
+add_subdirectory(tests)
 
-# The rehearsal trace and the slide identity it is keyed by. Needs rcplayer for the sidecar
-# reader, but no window and no GPU.
+# The rehearsal trace reads a sidecar beside the deck, so this one needs rcplayer. Still no
+# window and no GPU, but it cannot be built without the engine.
 add_executable(timing_test tests/timing_test.cpp src/Timing.cpp src/Deck.cpp src/DeckOrder.cpp)
 target_include_directories(timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(timing_test PRIVATE rcplayer nlohmann_json::nlohmann_json)
 add_test(NAME timing COMMAND timing_test)
-
-# The deck view's grid and the editor's lines: clicking, scrolling, hit-testing.
-add_executable(view_geometry_test tests/view_geometry_test.cpp src/ViewGeometry.cpp)
-target_include_directories(view_geometry_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-add_test(NAME view_geometry COMMAND view_geometry_test)

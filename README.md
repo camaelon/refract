@@ -37,6 +37,8 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 | build panel | `M` | refract's options, and a Rebuild button |
 | captions | `C` | the recorded narration, word by word |
 
+All six are in the **Window** menu too (`cmd`+`1`…`6`), with a tick beside whatever is open.
+
 The middle three write back to `slides.md` and re-run refract, so a deck can be rearranged
 and rewritten without leaving the player. It also records and replays a rehearsal, transcribes
 the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`) or a
@@ -57,6 +59,7 @@ and adds `--screenshot` / `--frames` for single-file headless capture.
   out/deck.json      # deck outline + provenance      (created)
   out/.refract-cache.json  # what the last build produced (incremental builds)
   out/.refract-history.json # the last 30 edits, for undo in the deck view
+  out/.refract-session.json # which panels were open, and where  (refractplayer)
   out/notes.md       # speaker notes                 (when the deck has any)
   out/timing.json    # rehearsal trace               (refractplayer --record)
   out/json/          # generated .json documents     (only with --json)
@@ -604,6 +607,7 @@ is the same one `markdown.py` produces.
 python3 player/tools/reorder.py <deck>/out --move 12 --to 3      # move a slide
 python3 player/tools/slide.py   <deck>/out --slide 12 --read     # one slide's markdown
 python3 player/tools/build.py   <deck>/out --transitions         # rebuild, and say what it did
+python3 player/tools/slide.py   <deck>/out --slide 12 --split 4   # break it in two
 python3 player/tools/history.py <deck>/out --undo                # take the last one back
 ```
 
@@ -689,6 +693,11 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
 | `history`     | undo and redo for every edit that rewrites a deck's markdown |
 
+`refract.py` itself is the CLI plus the build: `slide_style` (the theme a slide renders with),
+`render_slide` (which of the seven ways it is drawn) and `manifest_record` (what a player is
+told about it) are separate from the loop that walks the deck, so each can be asked directly —
+`tests/test_build_pieces.py` does, without json2rc in sight.
+
 **Add a language:** drop a `tokenize_x` in `highlight.py` and register it in
 `LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the
 `.sksl`.
@@ -704,6 +713,13 @@ and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over them.
 python3 -m unittest discover -s tests          # refract, and the player's tools
 ctest --test-dir player/build                  # the player's own logic — no window, no GPU
 ```
+
+Both run on every push ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)). CI does
+not build the RemoteCompose engine — configuring the player fetches Skia, which is minutes of
+compiling for none of what usually breaks — so it runs the Python suite and the three C++
+suites that need nothing but their own source. The tests that run a real build need `json2rc`,
+which comes from a local androidx checkout; about sixty of the five hundred are in that group
+and they skip cleanly where it is missing.
 
 The Python suite covers the markdown grammar, rendering, the incremental build, and the tools
 the player edits decks through. The C++ suites cover the parts of the player that are pure

@@ -82,6 +82,8 @@ struct DeckViewWindow::Impl {
     std::function<bool(int, bool, std::string*)> onAdd;
     std::function<bool(int, std::string*)> onDelete;
     std::function<bool(bool, std::string*)> onUndo;
+    std::function<bool(int, std::string*)> onDuplicate;
+    std::function<bool(int, std::string*)> onMerge;
     // Delete asks twice. A slide is a paragraph of somebody's talk and there is no undo
     // behind this — only the markdown, and whatever they have in git.
     int armedDelete = -1;
@@ -113,6 +115,13 @@ struct DeckViewWindow::Impl {
 
     std::string status;
     bool        statusError = false;
+
+    // Finding a slide by name. `/` opens it, typing narrows it, Esc clears it. A filter dims
+    // what does not match rather than hiding it: the grid keeps its shape, so a deck stays in
+    // the place you have learnt it is in, and dragging still means what it meant.
+    bool filtering = false;
+    std::string filter;
+    std::vector<char> matches;      // per cell, this frame
 
     // The group a move is heading for, kept from the drag until the rewrite comes back. The
     // work happens on another thread, so the selection cannot follow it until the reloaded
@@ -374,6 +383,22 @@ void DeckViewWindow::setOnUndo(std::function<bool(bool, std::string*)> action) {
     mImpl->onUndo = std::move(action);
 }
 
+std::vector<std::string> DeckViewWindow::foldedRuns() const {
+    return {mImpl->folded.begin(), mImpl->folded.end()};
+}
+
+void DeckViewWindow::setFoldedRuns(const std::vector<std::string>& keys) {
+    mImpl->folded = {keys.begin(), keys.end()};
+}
+
+void DeckViewWindow::setOnDuplicateSlide(std::function<bool(int, std::string*)> action) {
+    mImpl->onDuplicate = std::move(action);
+}
+
+void DeckViewWindow::setOnMergeSlide(std::function<bool(int, std::string*)> action) {
+    mImpl->onMerge = std::move(action);
+}
+
 // Move the whole run the cursor is in, one place either way — what dragging its grip bar
 // does, for anyone not reaching for the mouse.
 void DeckViewWindow::nudgeRun(int delta) {
@@ -508,11 +533,68 @@ void DeckViewWindow::nudge(int delta) {
     commitDrag(impl.slideOfCell(impl.cursor), delta > 0 ? to + 1 : to);
 }
 
+// The first cell after `from` that the filter matched, wrapping. -1 when nothing matched.
+static int nextMatch(const std::vector<char>& matches, int from, int step) {
+    const int n = static_cast<int>(matches.size());
+    if (n == 0) return -1;
+    for (int i = 1; i <= n; i++) {
+        const int at = ((from + i * step) % n + n) % n;
+        if (matches[at]) return at;
+    }
+    return -1;
+}
+
+bool DeckViewWindow::handleChar(unsigned int codepoint) {
+    Impl& impl = *mImpl;
+    if (!impl.filtering || codepoint < 0x20 || codepoint == '/') return false;
+    // ASCII is enough for a deck's titles; anything else is one byte at a time, which a
+    // substring match does not mind.
+    impl.filter.push_back(static_cast<char>(codepoint < 0x80 ? codepoint : '?'));
+    return true;
+}
+
 bool DeckViewWindow::handleKey(int key, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return false;
     Impl& impl = *mImpl;
     const int last = static_cast<int>(impl.cards.size()) - 1;
     if (last < 0) return false;
+
+    // While a filter is being typed the letters belong to it, and only the keys that steer it
+    // are read. Everything else — including the deck's own bindings — waits.
+    if (impl.filtering) {
+        switch (key) {
+            case GLFW_KEY_ESCAPE:
+                impl.filtering = false;
+                impl.filter.clear();
+                return true;
+            case GLFW_KEY_BACKSPACE:
+                if (!impl.filter.empty()) impl.filter.pop_back();
+                return true;
+            case GLFW_KEY_ENTER:
+            case GLFW_KEY_KP_ENTER: {
+                // Enter leaves the filter on and goes to the first match: the deck stays
+                // dimmed, so you can see where you have landed in it.
+                const int at = nextMatch(impl.matches, impl.cursor - 1, 1);
+                if (at >= 0) impl.setCursor(at);
+                impl.filtering = false;
+                return true;
+            }
+            case GLFW_KEY_DOWN:
+            case GLFW_KEY_UP: {
+                const int at = nextMatch(impl.matches, impl.cursor,
+                                         key == GLFW_KEY_DOWN ? 1 : -1);
+                if (at >= 0) impl.setCursor(at);
+                return true;
+            }
+            default:
+                return true;
+        }
+    }
+    if (key == GLFW_KEY_SLASH) {
+        impl.filtering = true;
+        impl.filter.clear();
+        return true;
+    }
 
     const bool shift = (mods & GLFW_MOD_SHIFT) != 0;
     const bool alt = (mods & GLFW_MOD_ALT) != 0;
@@ -574,6 +656,20 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
             if (shift) foldAll(!allFolded());
             else foldAtCursor();
             return true;
+        case GLFW_KEY_D: {
+            // Shifted, so an unshifted D still reaches the player's debug overlay.
+            if (!shift || !impl.onDuplicate) return shift;
+            std::string status;
+            impl.setStatus(status,
+                           !impl.onDuplicate(impl.slideOfCell(impl.cursor), &status));
+            return true;
+        }
+        case GLFW_KEY_J: {
+            if (!impl.onMerge) return true;
+            std::string status;
+            impl.setStatus(status, !impl.onMerge(impl.slideOfCell(impl.cursor), &status));
+            return true;
+        }
         case GLFW_KEY_N: {
             if (!impl.onAdd) return true;
             std::string status;
@@ -600,6 +696,9 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
             return true;
         }
         case GLFW_KEY_ESCAPE:
+            // A filter left showing is cleared first; Esc closes the window only once there
+            // is nothing else to back out of.
+            if (!impl.filter.empty()) { impl.filter.clear(); return true; }
             glfwSetWindowShouldClose(mWindow, GLFW_TRUE);
             return true;
         default:
@@ -712,6 +811,24 @@ void DeckViewWindow::render(App& app) {
     drawTextRight(canvas, std::to_string(deck.size()) + " slides", countRight, 32,
                   uiFont(13), ui::kDim);
 
+    if (impl.filtering) {
+        // While a filter is being typed it replaces the hint: it is the only thing on the
+        // reader's mind, and how many slides it found is the answer they are waiting for.
+        int found = 0;
+        for (char m : impl.matches) found += m ? 1 : 0;
+        SkFont typing = uiFont(13, true);
+        const float x = pad + drawText(canvas, "/", pad, 54, typing, ui::kDim) + 4;
+        const float typed = drawText(canvas, impl.filter, x, 54, typing, ui::kAccent);
+        // A caret, so an empty filter still looks like something being typed into.
+        fillRect(canvas, SkRect::MakeXYWH(x + typed + 2, 42, 1.5f, 14), ui::kAccent);
+        drawText(canvas,
+                 impl.filter.empty()
+                     ? std::string("type to find a slide  ~  esc clears")
+                     : std::to_string(found) + " of " + std::to_string(impl.matches.size())
+                           + "  ~  enter goes to the first",
+                 x + typed + 16, 54, uiFont(12),
+                 (found || impl.filter.empty()) ? ui::kDim : ui::kWarn);
+    } else {
     std::string hint = impl.canReorder
         ? "drag a slide to reorder  ~  shift+left/right nudges  ~  double-click opens"
         : "read-only: this deck has no source information, so it cannot be reordered";
@@ -729,6 +846,7 @@ void DeckViewWindow::render(App& app) {
     if (!impl.status.empty()) {
         drawTextRight(canvas, ellipsize(impl.status, smallFont, w * 0.5f), w - pad, 54,
                       smallFont, impl.statusError ? ui::kOver : ui::kAhead);
+    }
     }
     fillRect(canvas, SkRect::MakeXYWH(0, headerH - 1, w, 1), ui::kLine);
 
@@ -783,6 +901,17 @@ void DeckViewWindow::render(App& app) {
         impl.pendingSelectGroup = -1;
     }
     impl.cursor = std::max(0, std::min(cellCount - 1, impl.cursor));
+
+    impl.matches.assign(cellCount, 1);
+    if (!impl.filter.empty()) {
+        for (int i = 0; i < cellCount; i++) {
+            bool hit = false;
+            for (int sl = impl.cells[i].firstSlide; sl <= impl.cells[i].lastSlide && !hit; sl++) {
+                hit = matchesFilter(deck.at(sl).title, impl.filter);
+            }
+            impl.matches[i] = hit ? 1 : 0;
+        }
+    }
 
     impl.hover = -1;
     for (int i = 0; i < cellCount; i++) {
@@ -871,10 +1000,12 @@ void DeckViewWindow::render(App& app) {
         // Stills are read from the cache rather than demanded: a screenful of cards asking
         // urgently every frame would keep reshuffling the render queue instead of letting
         // any one still finish. The request is placed once and picked up when it is done.
+        // A card the filter passed over is dimmed, not hidden.
+        const bool dimmed = ci < static_cast<int>(impl.matches.size()) && !impl.matches[ci];
         sk_sp<SkImage> image = thumbCached(slide.entry, kThumbW, kThumbH);
         if (image) {
             SkPaint paint;
-            paint.setAlphaf(inDragged ? 0.35f : 1.0f);
+            paint.setAlphaf(inDragged ? 0.35f : (dimmed ? 0.22f : 1.0f));
             SkRect fit = thumb.makeInset(1, 1);
             canvas->save();
             canvas->clipRRect(SkRRect::MakeRectXY(thumb, 6, 6), true);
@@ -884,7 +1015,7 @@ void DeckViewWindow::render(App& app) {
             requestThumb(slide.entry, kThumbW, kThumbH);
         }
 
-        SkColor border = cell.folded() ? foldTone : ui::kLine;
+        SkColor border = dimmed ? ui::kLine : (cell.folded() ? foldTone : ui::kLine);
         float borderWidth = cell.folded() ? 1.5f : 1.0f;
         if (isCurrent) { border = ui::kAhead; borderWidth = 2.0f; }
         if (isCursor)  { border = ui::kAccent; borderWidth = 2.0f; }

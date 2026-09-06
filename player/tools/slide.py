@@ -9,6 +9,13 @@ source, hand back an edited version, and have the deck rebuilt around it.
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --write new.md [--no-rebuild]
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --new [--before]
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --delete
+    python3 player/tools/slide.py <deck-out-dir> --slide 12 --split 4 [--write new.md]
+    python3 player/tools/slide.py <deck-out-dir> --slide 12 --merge
+    python3 player/tools/slide.py <deck-out-dir> --slide 12 --duplicate
+
+`--split N` breaks the slide after line N of its markdown; combined with `--write` it applies
+the edit and splits it in one go, so the editor can break a slide it is holding unsaved
+changes to without saving twice. `--merge` joins it with the slide after it.
 
 `--read` prints JSON: the file, the block index, and the source. `--write` takes the new
 source from a file (not stdin, so the player can hand over text with any bytes in it without
@@ -80,14 +87,25 @@ def main() -> int:
     ap.add_argument("--before", action="store_true", help="with --new: insert in front")
     ap.add_argument("--delete", action="store_true",
                     help="remove this slide's markdown block, and every slide it produced")
+    ap.add_argument("--split", type=int, default=None, metavar="LINE",
+                    help="break this slide in two after LINE of its markdown")
+    ap.add_argument("--merge", action="store_true",
+                    help="join this slide with the one after it")
+    ap.add_argument("--duplicate", action="store_true",
+                    help="insert a copy of this slide after it")
     ap.add_argument("--no-rebuild", action="store_true",
                     help="write the markdown but do not re-run refract")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     args = ap.parse_args()
 
-    modes = [args.read, args.write is not None, args.new, args.delete]
+    # --split may ride along with --write: the editor breaks a slide it is holding unsaved
+    # changes to, and that has to be one edit rather than two rewrites and two rebuilds.
+    structural = [args.new, args.delete, args.merge, args.duplicate,
+                  args.split is not None and args.write is None]
+    modes = [args.read, args.write is not None] + structural
     if sum(1 for m in modes if m) != 1:
-        ap.error("give exactly one of --read, --write, --new or --delete")
+        ap.error("give exactly one of --read, --write, --new, --delete, --split, --merge "
+                 "or --duplicate")
     # A read always answers in JSON, so its failures do too — the caller is parsing stdout
     # either way, and an error on stderr would look to it like no answer at all.
     as_json = args.json or args.read
@@ -110,20 +128,37 @@ def main() -> int:
     with open(md_path) as f:
         text = f.read()
 
-    if args.new or args.delete:
-        # A block is what is added or removed, not a slide: deleting one step of a stepped
-        # bullet list would leave the others without their source.
+    if args.new or args.delete or args.merge or args.duplicate or args.split is not None:
+        # A block is what is added, removed, split or joined — not a slide: deleting one step
+        # of a stepped bullet list would leave the others without their source.
         at = block if args.before else block + 1
         try:
-            new_text = (chunks.insert_chunk(text, at, "# New slide\n") if args.new
-                        else chunks.delete_chunk(text, block))
+            if args.write is not None:
+                # The editor's unsaved text, then the split, as one edit.
+                with open(args.write) as f:
+                    text = chunks.replace_chunk(text, block, f.read())
+            if args.new:
+                new_text, what = chunks.insert_chunk(text, at, "# New slide\n"), "add a slide"
+            elif args.delete:
+                new_text, what = chunks.delete_chunk(text, block), \
+                    f"delete slide {args.slide + 1}"
+            elif args.merge:
+                new_text, what = chunks.merge_chunk(text, block), \
+                    f"merge slide {args.slide + 1}"
+            elif args.duplicate:
+                new_text, what = chunks.duplicate_chunk(text, block), \
+                    f"duplicate slide {args.slide + 1}"
+            else:
+                new_text, what = chunks.split_chunk(text, block, args.split), \
+                    f"split slide {args.slide + 1}"
         except IndexError as e:
             return fail(f"{e} — the deck is out of date with {src}", as_json)
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             return fail(str(e), as_json)
 
-        history.record(out_dir, src, text, new_text,
-                       "add a slide" if args.new else f"delete slide {args.slide + 1}")
+        with open(md_path) as f:
+            on_disk = f.read()
+        history.record(out_dir, src, on_disk, new_text, what)
         tmp = md_path + ".edit.tmp"
         with open(tmp, "w") as f:
             f.write(new_text)
@@ -133,7 +168,9 @@ def main() -> int:
                   "changed": True, "rebuilt": False,
                   "removed": shared if args.delete else 0}
         if not args.no_rebuild:
+            before = manifest.outputs(out_dir)
             rc = rebuild(deck_dir, deck)
+            result["outputs"] = manifest.changed_since(before, out_dir)
             result["rebuilt"] = rc == 0
             if rc != 0:
                 result["ok"] = False
@@ -173,7 +210,9 @@ def main() -> int:
         os.replace(tmp, md_path)
 
     if changed and not args.no_rebuild:
+        before = manifest.outputs(out_dir)
         rc = rebuild(deck_dir, deck)
+        result["outputs"] = manifest.changed_since(before, out_dir)
         result["rebuilt"] = rc == 0
         if rc != 0:
             result["ok"] = False
