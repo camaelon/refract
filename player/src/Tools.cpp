@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -61,6 +62,48 @@ std::string errorTail(const std::string& errors, const std::string& fallback) {
     // Long enough to say what went wrong, short enough for a status line.
     if (line.size() > 160) line = line.substr(0, 157) + "...";
     return line.empty() ? fallback : line;
+}
+
+fs::path findJson2Rc() {
+    if (const char* override = std::getenv("REFRACT_JSON2RC")) {
+        if (fs::exists(override)) return override;
+    }
+    const fs::path dir = executableDir();
+    if (dir.empty()) return {};
+    for (const char* rel : {"json2rc/bin/json2rc",                 // prebuilt/refractplayer
+                            "../../prebuilt/json2rc/bin/json2rc",  // player/build/refractplayer
+                            "../prebuilt/json2rc/bin/json2rc"}) {
+        std::error_code ec;
+        fs::path candidate = fs::weakly_canonical(dir / rel, ec);
+        if (!ec && fs::exists(candidate)) return candidate;
+    }
+    return {};
+}
+
+bool compileRcJson(const std::string& jsonPath, const std::string& rcPath) {
+    const fs::path tool = findJson2Rc();
+    if (tool.empty()) return false;
+
+    std::string program = tool.string(), from = jsonPath, to = rcPath;
+    char* argv[] = {program.data(), from.data(), to.data(), nullptr};
+
+    pid_t pid = ::fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        // Its own output is the build's, not this preview's: a compiler warning on the
+        // terminal every time somebody arrows down a menu would be noise.
+        const int null = ::open("/dev/null", O_WRONLY);
+        if (null >= 0) {
+            ::dup2(null, STDOUT_FILENO);
+            ::dup2(null, STDERR_FILENO);
+            ::close(null);
+        }
+        ::execv(program.c_str(), argv);
+        ::_exit(127);
+    }
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0) {}
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && fs::exists(rcPath);
 }
 
 int runTool(const std::string& name, const std::vector<std::string>& args,
