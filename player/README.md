@@ -447,6 +447,23 @@ a line with an accent in it, and the frame is drawn over its full column span wi
 where a line stops short washed rather than selected. Option is live: let go and extend again
 and you have an ordinary selection back.
 
+**Three things it can be pointed at**, as tabs along the top:
+
+| | |
+|---|---|
+| **slide** | the block the slide on screen was written in; follows the deck as you move |
+| **slides.md** | the whole deck, end to end — for a change that spans slides |
+| **settings.toml** | the theme, the size, the transitions, the speakers and the shaders |
+
+`settings.toml` was the last thing that still needed a terminal. A deck that has none opens an
+empty one, and saving it is what creates the file. A theme change touches every slide, and the
+incremental build works that out for itself from the documents it produces — there is nothing
+to tell it, and nothing to force.
+
+Switching tabs is refused while there are unsaved changes, for the same reason changing slides
+is: the buffer belongs to what it was opened on. Saving a whole file goes through the same
+history as everything else, so `cmd`+`Z` in the deck view takes a theme change back too.
+
 **It edits a block, not a slide.** A stepped bullet list is one `---` block and four rendered
 slides, so editing any of them edits the source they share — the header says "one block, 4
 slides" when that is the case, rather than letting it be a surprise.
@@ -927,7 +944,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Four C++ suites, none of which needs a window or a GPU. Three of them need nothing but their
+Five C++ suites, none of which needs a window or a GPU. Four of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -936,7 +953,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All four, alongside the player:
+All five, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -946,7 +963,8 @@ ctest --test-dir player/build --output-on-failure
 |---|---|
 | `deck_order` | which slides group together, which block a drop moves, how folding tiles the grid |
 | `text_buffer` | the editor's caret, selection, UTF-8, frame selection and undo |
-| `timing` | the rehearsal trace, and the slide identity that survives a reorder |
+| `timing` | the rehearsal trace, and the slide identity a build is keyed by |
+| `slide_recorder` | when a re-recorded take replaces the old one, and when it must not |
 | `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
 
 `view_geometry` exists because both of this player's visual bugs lived in coordinate arithmetic
@@ -972,7 +990,10 @@ python3 -m unittest discover -s tests
 | `src/DeckView.{h,cpp}` | the deck view: the grid, folding, dragging |
 | `src/DeckOrder.{h,cpp}` | the reordering arithmetic behind it, with no window attached |
 | `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
-| `src/SlideEditor.{h,cpp}` | the slide editor window |
+| `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
+| `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
+| `src/EditRunner.{h,cpp}` | rewriting the deck's markdown, off the main thread |
+| `src/Tools.{h,cpp}` | finding and running the scripts in tools/ |
 | `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
 | `src/BuildPanel.{h,cpp}` | the build panel |
 | `src/AppMenu.{h,mm}` | the panels in the menu bar (Cocoa; a no-op elsewhere) |

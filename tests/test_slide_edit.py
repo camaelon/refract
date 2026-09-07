@@ -463,5 +463,91 @@ class Tool(unittest.TestCase):
             self.assertEqual(f.read(), self.SLIDES)
 
 
+class WholeFile(unittest.TestCase):
+    """Editing a whole file rather than one slide's block — `slides.md`, and `settings.toml`,
+    which was the last thing that still needed a terminal."""
+
+    SLIDES = "# One\n\n---\n\n# Two\n"
+
+    def setUp(self):
+        self.deck = tempfile.mkdtemp()
+        self.md = os.path.join(self.deck, "slides.md")
+        with open(self.md, "w") as f:
+            f.write(self.SLIDES)
+        p = subprocess.run([sys.executable, os.path.join(REPO, "refract.py"), self.deck],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            self.skipTest("refract could not build the deck")
+        self.out = os.path.join(self.deck, "out")
+
+    def run_tool(self, *args):
+        return subprocess.run([sys.executable, TOOL, self.out, *args],
+                              capture_output=True, text=True)
+
+    def write_via_tool(self, name, text, *extra):
+        path = os.path.join(self.deck, "new.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return self.run_tool("--file", name, "--write", path, "--json", *extra)
+
+    def test_reads_a_file(self):
+        p = self.run_tool("--file", "slides.md", "--read")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertTrue(result["ok"] and result["exists"])
+        self.assertEqual(result["text"], self.SLIDES)
+
+    def test_a_file_that_is_not_there_reads_as_empty(self):
+        # A deck with no settings.toml is an ordinary deck: the editor opens an empty one.
+        result = json.loads(self.run_tool("--file", "settings.toml", "--read").stdout)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["exists"])
+        self.assertEqual(result["text"], "")
+
+    def test_writing_settings_creates_it_and_rebuilds_every_slide(self):
+        p = self.write_via_tool("settings.toml", '[theme]\nbackground = "#FF102030"\n')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertTrue(result["ok"] and result["changed"] and result["rebuilt"])
+        self.assertTrue(os.path.isfile(os.path.join(self.deck, "settings.toml")))
+        # The theme is in every document, so the incremental build touches all of them.
+        self.assertEqual(sorted(result["outputs"]), ["01_one.rc", "02_two.rc"])
+
+    def test_editing_the_whole_deck(self):
+        self.write_via_tool("slides.md", "# Only\n")
+        with open(os.path.join(self.out, "deck.json")) as f:
+            self.assertEqual([s["title"] for s in json.load(f)["slides"]], ["Only"])
+
+    def test_an_unchanged_write_is_reported_as_such(self):
+        result = json.loads(self.write_via_tool("slides.md", self.SLIDES).stdout)
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["rebuilt"])
+
+    def test_a_whole_file_edit_can_be_undone(self):
+        self.write_via_tool("slides.md", "# Only\n")
+        subprocess.run([sys.executable, os.path.join(REPO, "player", "tools", "history.py"),
+                        self.out, "--undo", "--json"], capture_output=True, text=True)
+        with open(self.md) as f:
+            self.assertEqual(f.read(), self.SLIDES)
+
+    def test_a_path_outside_the_deck_is_refused(self):
+        # This is reached from a window; a path that could climb out is not a thing to offer.
+        for bad in ("../escape.md", "../../etc/passwd"):
+            with self.subTest(path=bad):
+                p = self.run_tool("--file", bad, "--read")
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("outside the deck", json.loads(p.stdout)["error"])
+
+    def test_a_file_and_a_slide_are_exclusive(self):
+        p = self.run_tool("--file", "slides.md", "--slide", "0", "--read")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("exactly one", p.stderr)
+
+    def test_the_block_operations_need_a_slide(self):
+        p = self.run_tool("--file", "slides.md", "--delete")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("--slide", p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

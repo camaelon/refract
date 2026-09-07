@@ -19,10 +19,13 @@
 #include "BuildPanel.h"
 #include "Captions.h"
 #include "DeckView.h"
+#include "EditRunner.h"
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Presenter.h"
 #include "Session.h"
+#include "SlideRecorder.h"
+#include "Tools.h"
 #include "SlideEditor.h"
 #include "VoiceIndex.h"
 #include "Thumbs.h"
@@ -115,6 +118,9 @@ std::string deckInput;
 // document, and doing that from inside glfwPollEvents — with another window's GL context
 // current — is asking for trouble.
 bool deckReloadPending = false;
+// The outputs the last build actually rewrote, from the tool that ran it. Empty means "no
+// idea", and the reload then drops every still rather than guessing.
+std::vector<std::string> changedOutputs;
 
 // Where the window sat before it went fullscreen, so F can put it back.
 struct WindowedGeometry { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
@@ -156,131 +162,6 @@ double voicelessDwell();
 // Transcription and forced alignment are Python's — whisper and whisperx live there — so
 // this runs the script that does it. The player supplies the one thing the script cannot
 // work out on its own: which directory the narration was recorded into.
-
-fs::path executableDir() {
-#if defined(__APPLE__)
-    char buf[4096];
-    uint32_t size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &size) == 0) {
-        std::error_code ec;
-        fs::path resolved = fs::weakly_canonical(fs::path(buf), ec);
-        if (!ec) return resolved.parent_path();
-    }
-#endif
-    return {};
-}
-
-// The scripts sit in the repo beside the player's sources. Both places the binary normally
-// lives — prebuilt/ and player/build/ — are a fixed distance from them.
-fs::path findTool(const std::string& name) {
-    if (name == "captions.py") {
-        if (const char* override = std::getenv("REFRACT_CAPTIONS_SCRIPT")) {
-            if (fs::exists(override)) return override;
-        }
-    }
-    const fs::path dir = executableDir();
-    if (dir.empty()) return {};
-    for (const char* rel : {"../player/tools/",   // prebuilt/refractplayer
-                            "../tools/",          // player/build/refractplayer
-                            "tools/"}) {
-        std::error_code ec;
-        fs::path candidate = fs::weakly_canonical(dir / rel / name, ec);
-        if (!ec && fs::exists(candidate)) return candidate;
-    }
-    return {};
-}
-
-// Run one of the Python tools, waiting for it. Its output is the user's, not ours: it goes
-// straight to the terminal — unless `out` is given, in which case stdout is captured for the
-// caller and only what the tool wrote to stderr reaches the terminal.
-// The last line of a tool's error output, or `fallback` when it said nothing useful. What a
-// window shows instead of "see the terminal" — which is no help at all when the player was
-// started from Finder and there is no terminal to see.
-std::string errorTail(const std::string& errors, const std::string& fallback) {
-    size_t end = errors.find_last_not_of(" \t\r\n");
-    if (end == std::string::npos) return fallback;
-    const size_t start = errors.find_last_of('\n', end);
-    std::string line = errors.substr(start == std::string::npos ? 0 : start + 1,
-                                     end - (start == std::string::npos ? 0 : start));
-    // Long enough to say what went wrong, short enough for a status line.
-    if (line.size() > 160) line = line.substr(0, 157) + "...";
-    return line.empty() ? fallback : line;
-}
-
-int runTool(const std::string& name, const std::vector<std::string>& args,
-            std::string* out = nullptr, std::string* errors = nullptr) {
-    const fs::path script = findTool(name);
-    if (script.empty()) {
-        std::cerr << "refractplayer: cannot find tools/" << name << "\n";
-        return 1;
-    }
-
-    std::vector<char*> argv;
-    std::string python = "python3";
-    std::string path = script.string();
-    argv.push_back(python.data());
-    argv.push_back(path.data());
-    std::vector<std::string> owned = args;
-    for (auto& arg : owned) argv.push_back(arg.data());
-    argv.push_back(nullptr);
-
-    int pipeFds[2] = {-1, -1};
-    int errFds[2] = {-1, -1};
-    if (out && ::pipe(pipeFds) != 0) return 1;
-    // Captured as well as shown: the terminal still gets it (it is the user's output), and a
-    // window gets the last line to put on screen.
-    if (errors && ::pipe(errFds) != 0) {
-        if (out) { ::close(pipeFds[0]); ::close(pipeFds[1]); }
-        return 1;
-    }
-
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        if (out) { ::close(pipeFds[0]); ::close(pipeFds[1]); }
-        if (errors) { ::close(errFds[0]); ::close(errFds[1]); }
-        return 1;
-    }
-    if (pid == 0) {
-        if (out) {
-            ::close(pipeFds[0]);
-            ::dup2(pipeFds[1], STDOUT_FILENO);
-            ::close(pipeFds[1]);
-        }
-        if (errors) {
-            ::close(errFds[0]);
-            ::dup2(errFds[1], STDERR_FILENO);
-            ::close(errFds[1]);
-        }
-        ::execvp("python3", argv.data());
-        std::cerr << "refractplayer: python3 not found\n";
-        ::_exit(127);
-    }
-    // Drained before waiting: a tool that fills a pipe would block forever otherwise. Both
-    // are drained together, or one filling up would stall the other.
-    if (out) { ::close(pipeFds[1]); out->clear(); }
-    if (errors) { ::close(errFds[1]); errors->clear(); }
-    while ((out && pipeFds[0] >= 0) || (errors && errFds[0] >= 0)) {
-        char buf[4096];
-        bool progress = false;
-        if (out && pipeFds[0] >= 0) {
-            const ssize_t n = ::read(pipeFds[0], buf, sizeof(buf));
-            if (n > 0) { out->append(buf, n); progress = true; }
-            else { ::close(pipeFds[0]); pipeFds[0] = -1; }
-        }
-        if (errors && errFds[0] >= 0) {
-            const ssize_t n = ::read(errFds[0], buf, sizeof(buf));
-            if (n > 0) {
-                errors->append(buf, n);
-                std::cerr.write(buf, n);   // still the user's output
-                progress = true;
-            } else { ::close(errFds[0]); errFds[0] = -1; }
-        }
-        if (!progress && pipeFds[0] < 0 && errFds[0] < 0) break;
-    }
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-}
 
 // ── Deck navigation ──────────────────────────────────────────────────
 
@@ -397,62 +278,20 @@ void refreshVoicePresence() {
 }
 
 // ── Re-recording one slide ───────────────────────────────────────────
-//
-// A rehearsal is recorded in one pass, and until now a slide that came out badly cost the
-// whole take. It could not have worked before: the wavs were named for the slide's position,
-// so a re-record after any reorder wrote over somebody else's narration. Now that the voice
-// index says which wav belongs to which *block*, doing one slide again is well defined.
-//
-// The take goes to a temp file and only replaces the old one when it is stopped deliberately.
-// Nothing is lost by starting a re-record and thinking better of it.
-fs::path reRecordTemp, reRecordTarget;
+// The state machine is SlideRecorder's; what is here is the microphone, the file naming and
+// what the rest of the player needs told when a take lands.
+refract::SlideRecorder slideRecorder;
 
 void stopSlideRecording(bool keep) {
-    if (!app.reRecording) return;
+    slideRecorder.stop(keep);
     app.reRecording = false;
-    if (recorder) recorder->stop();
-
-    std::error_code ec;
-    if (keep && fs::exists(reRecordTemp, ec) && fs::file_size(reRecordTemp, ec) > 0) {
-        fs::rename(reRecordTemp, reRecordTarget, ec);
-        if (ec) fs::copy_file(reRecordTemp, reRecordTarget,
-                              fs::copy_options::overwrite_existing, ec);
-        if (app.reRecordSlide >= 0 && app.reRecordSlide < app.deck.size()) {
-            voiceIndex.record(app.deck.at(app.reRecordSlide).sourceKey(),
-                              reRecordTarget.stem().string());
-            if (app.reRecordSlide < static_cast<int>(app.voice.size())) {
-                app.voice[app.reRecordSlide] = 1;
-            }
-        }
-        // The transcript and the word timings were made from the take that has just been
-        // replaced; leaving them would light the wrong words under the new one.
-        for (const char* ext : {".txt", ".words.json"}) {
-            fs::path stale = reRecordTarget;
-            stale.replace_extension();
-            stale += ext;
-            if (fs::exists(stale, ec)) {
-                fs::remove(stale, ec);
-                std::cerr << "audio: removed " << stale.filename().string()
-                          << " — re-run --transcribe for this slide\n";
-            }
-        }
-        std::cerr << "audio: re-recorded " << reRecordTarget.filename().string() << "\n";
-    } else {
-        fs::remove(reRecordTemp, ec);
-        std::cerr << "audio: re-record cancelled; the old take is untouched\n";
-    }
     app.reRecordSlide = -1;
 }
 
 void toggleSlideRecording() {
-    if (app.reRecording) { stopSlideRecording(/*keep=*/true); return; }
+    if (slideRecorder.running()) { stopSlideRecording(/*keep=*/true); return; }
     if (app.deck.empty() || app.timing.recording()) {
         std::cerr << "audio: not while a whole run is being recorded\n";
-        return;
-    }
-    const fs::path wav = voiceFileFor(g.currentIndex);
-    if (wav.empty()) {
-        std::cerr << "audio: this deck has nowhere to keep narration\n";
         return;
     }
     if (!recorder) recorder = refract::AudioRecorder::Create();
@@ -463,15 +302,24 @@ void toggleSlideRecording() {
     if (voice) voice->stop();
     voicePlaying = false;
 
-    std::error_code ec;
-    fs::create_directories(wav.parent_path(), ec);
-    reRecordTarget = wav;
-    reRecordTemp = wav;
-    reRecordTemp.replace_extension(".take.wav");
-    app.reRecordSlide = g.currentIndex;
+    slideRecorder.configure(
+        [](int slide) { return voiceFileFor(slide); },
+        [](const std::string& path) { if (recorder) recorder->start(path); },
+        [] { if (recorder) recorder->stop(); },
+        [](int slide, const std::string& stem) {
+            if (slide < 0 || slide >= app.deck.size()) return;
+            voiceIndex.record(app.deck.at(slide).sourceKey(), stem);
+            if (slide < static_cast<int>(app.voice.size())) app.voice[slide] = 1;
+        });
+
+    std::string why;
+    if (!slideRecorder.toggle(g.currentIndex, &why)) {
+        std::cerr << "audio: " << why << "\n";
+        return;
+    }
     app.reRecording = true;
-    recorder->start(reRecordTemp.string());
-    std::cerr << "audio: recording over " << wav.filename().string()
+    app.reRecordSlide = g.currentIndex;
+    std::cerr << "audio: recording over slide " << (g.currentIndex + 1)
               << " — shift+R again to keep it, Esc to drop it\n";
 }
 
@@ -667,10 +515,6 @@ void toggleCaptions() {
 // rebuild renames files: there is nothing to patch up, the playlist is simply collected
 // again. The slide on screen is kept by *position*, which after a reorder is what the deck
 // view just moved it to.
-// The outputs the last build actually rewrote, from the tool that ran it. Empty means "no
-// idea", and the reload then drops every still rather than guessing.
-std::vector<std::string> changedOutputs;
-
 bool reloadDeck() {
     if (g.zip || deckInput.empty()) return false;
     std::vector<std::string> files = collectRcFiles(deckInput);
@@ -703,111 +547,27 @@ bool reloadDeck() {
 
 // ── Editing the deck's source ────────────────────────────────────────
 //
-// Reordering a slide, moving a section and saving an edit are all the same shape: run a tool
-// that rewrites the markdown and re-runs refract, then reload the deck. refract takes seconds
-// on a big deck, so none of it happens on the main thread — the window would stop dead in the
-// middle of the drag that started it. One job at a time: two of them writing into the same
-// out/ is the reliable way to get a deck that is neither.
-std::thread editThread;
-std::atomic<bool> editRunning{false};
-std::mutex editMutex;
-struct EditResult {
-    bool done = false;      // a job finished and the loop has not picked it up yet
-    bool ok = true;
-    bool changed = false;
-    std::string status;
-    // The outputs the rebuild rewrote, so the reload can drop only those stills.
-    std::vector<std::string> outputs;
-};
-EditResult editResult;
-std::function<void(bool ok, const std::string& status)> editReport;
+// Every rewrite of the deck's markdown goes through one runner, off the main thread — see
+// EditRunner. What is left here is the wiring: which tool, which arguments, and who to tell.
+refract::EditRunner edits;
 
-// True while the deck's source is being rewritten. Nothing else may start one.
-bool sourceEditRunning() { return editRunning; }
+bool sourceEditRunning() { return edits.running(); }
 
-// Run `reorder.py` or `slide.py` off the main thread and report back through `report`, which
-// is called on the main thread once the deck has been reloaded.
+// Start a tool, and reload the deck when it lands. `report` is called on the main thread once
+// the reload has happened, so whatever it does next sees the new deck.
 bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
                      std::string doneMessage,
                      std::function<void(bool, const std::string&)> report,
                      std::string* status) {
-    if (editRunning) {
-        *status = "already working — one at a time";
-        return false;
-    }
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        *status = "this deck has no markdown to write to";
-        return false;
-    }
-    args.insert(args.begin(), out.parent_path().string());
-    args.push_back("--json");
-
-    if (editThread.joinable()) editThread.join();
-    editRunning = true;
-    editReport = std::move(report);
-    editThread = std::thread([tool, args, doneMessage]() {
-        std::string output, errors;
-        const int rc = runTool(tool, args, &output, &errors);
-        // The tools report in JSON so the difference between "nothing to do", "the markdown
-        // was rewritten but refract could not rebuild it" and "refused" survives the process
-        // boundary. A failed rebuild in particular has already changed the file on disk, and
-        // saying so is the difference between a puzzle and a one-line fix in the terminal.
-        auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-        const bool parsed = !doc.is_discarded() && doc.is_object();
-
-        EditResult result;
-        result.done = true;
-        result.ok = rc == 0 && (!parsed || doc.value("ok", false));
-        result.changed = parsed && doc.value("changed", false);
-        // Which outputs the rebuild rewrote, so the reload can drop only those stills.
-        if (parsed && doc.contains("outputs") && doc["outputs"].is_array()) {
-            result.outputs = doc["outputs"].get<std::vector<std::string>>();
-        }
-        if (!result.ok) {
-            result.status = parsed && doc.contains("error")
-                                ? doc["error"].get<std::string>()
-                                : errorTail(errors, "the edit failed");
-            if (result.changed && parsed && !doc.value("rebuilt", false)) {
-                result.status = "the markdown was written but the rebuild failed: "
-                                + result.status;
-            }
-        } else if (parsed && doc.contains("description")) {
-            // The tool knows better than the caller does: "undid move slide 3" says more
-            // than "undone", and "nothing to undo" is not "no change".
-            result.status = doc["description"].get<std::string>();
-        } else {
-            result.status = result.changed ? doneMessage : "no change";
-        }
-        {
-            std::lock_guard<std::mutex> lock(editMutex);
-            editResult = result;
-        }
-        editRunning = false;
-    });
-    *status = "working…";
-    return true;
-}
-
-// Picked up at the top of the frame: the deck is reloaded here, on the main thread, and only
-// then is the caller told — so whatever it does next sees the new deck.
-void collectSourceEdit() {
-    EditResult result;
-    {
-        std::lock_guard<std::mutex> lock(editMutex);
-        if (!editResult.done || editRunning) return;
-        result = editResult;
-        editResult = {};
-    }
-    if (result.ok && result.changed) {
-        changedOutputs = result.outputs;
-        deckReloadPending = true;
-    }
-    if (editReport) {
-        auto report = editReport;
-        editReport = nullptr;
-        report(result.ok, result.status);
-    }
+    return edits.start(tool, std::move(args), std::move(doneMessage),
+                       [report](const refract::EditRunner::Result& result) {
+                           if (result.ok && result.changed) {
+                               changedOutputs = result.outputs;
+                               deckReloadPending = true;
+                           }
+                           if (report) report(result.ok, result.status);
+                       },
+                       status);
 }
 
 // Move a slide by rewriting the markdown behind it. The markdown belongs to refract, not to
@@ -997,7 +757,7 @@ bool startBuild(const refract::BuildOptions& options) {
     buildRunning = true;
     buildThread = std::thread([args]() {
         std::string output, errors;
-        const int rc = runTool("build.py", args, &output, &errors);
+        const int rc = refract::runTool("build.py", args, &output, &errors);
         auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
         const bool parsed = !doc.is_discarded() && doc.is_object();
 
@@ -1011,7 +771,7 @@ bool startBuild(const refract::BuildOptions& options) {
             state.seconds = doc.value("seconds", 0.0);
             if (doc.contains("error")) state.error = doc["error"].get<std::string>();
         }
-        if (!state.ok && state.error.empty()) state.error = errorTail(errors, "build failed");
+        if (!state.ok && state.error.empty()) state.error = refract::errorTail(errors, "build failed");
 
         {
             std::lock_guard<std::mutex> lock(buildMutex);
@@ -1109,7 +869,7 @@ bool loadSlideSource(int slide, std::string* text, std::string* file, int* share
         return false;
     }
     std::string output;
-    const int rc = runTool("slide.py", {out.parent_path().string(),
+    const int rc = refract::runTool("slide.py", {out.parent_path().string(),
                                         "--slide", std::to_string(slide), "--read"}, &output);
     auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
     if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
@@ -1177,6 +937,49 @@ bool splitSlideSource(int slide, const std::string& text, int line, std::string*
                            }, error);
 }
 
+// A whole file under the deck — slides.md end to end, or settings.toml. The same tool, the
+// same history, the same rebuild as editing one slide.
+bool loadDeckFile(const std::string& path, std::string* text, std::string* error) {
+    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
+    if (out.empty()) {
+        *error = "this deck has no files behind it";
+        return false;
+    }
+    std::string output;
+    const int rc = refract::runTool("slide.py", {out.parent_path().string(),
+                                                 "--file", path, "--read"}, &output);
+    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
+        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
+                     ? doc["error"].get<std::string>()
+                     : "cannot read " + path;
+        return false;
+    }
+    *text = doc.value("text", std::string());
+    return true;
+}
+
+bool saveDeckFile(const std::string& path, const std::string& text, std::string* error) {
+    const fs::path scratch = fs::temp_directory_path()
+                             / ("refractplayer_file_" + std::to_string(::getpid()) + ".txt");
+    {
+        std::ofstream file(scratch, std::ios::binary);
+        if (!file) {
+            *error = "cannot write a temporary file";
+            return false;
+        }
+        file << text;
+        if (!text.empty() && text.back() != '\n') file << "\n";
+    }
+    const std::string tmp = scratch.string();
+    return startSourceEdit("slide.py", {"--file", path, "--write", tmp}, "saved",
+                           [tmp](bool ok, const std::string& done) {
+                               std::error_code ec;
+                               fs::remove(tmp, ec);
+                               if (slideEditor) slideEditor->saveFinished(ok, done);
+                           }, error);
+}
+
 void openSlideEditor() {
     if (slideEditor) return;
     slideEditor = refract::SlideEditor::Create(560, 620);
@@ -1184,6 +987,7 @@ void openSlideEditor() {
     slideEditor->setLoader(loadSlideSource);
     slideEditor->setSaver(saveSlideSource);
     slideEditor->setSplitter(splitSlideSource);
+    slideEditor->setFileAccess(loadDeckFile, saveDeckFile);
     slideEditor->setAutoSave(session.editorAutoSave);
     session.restore("editor", slideEditor->window());
     slideEditor->showSlide(g.currentIndex);
@@ -1635,7 +1439,7 @@ int main(int argc, char* argv[]) {
         const fs::path slidesDir = fs::is_directory(input)
                                        ? fs::path(input)
                                        : fs::path(g.files.front()).parent_path();
-        return runTool("web.py", {slidesDir.string(), webOutput});
+        return refract::runTool("web.py", {slidesDir.string(), webOutput});
     }
 
     // ── Transcription ────────────────────────────────────────────────
@@ -1648,7 +1452,7 @@ int main(int argc, char* argv[]) {
                          "files to transcribe\n";
             return 1;
         }
-        return runTool("captions.py", {wav.parent_path().string(),
+        return refract::runTool("captions.py", {wav.parent_path().string(),
                                        "--model", captionModel,
                                        "--language", captionLanguage});
     }
@@ -1711,6 +1515,12 @@ int main(int argc, char* argv[]) {
     // ── Window ───────────────────────────────────────────────────────
     // What was open last time, and where. Read before any window is made, because the first
     // of them is the deck's own and it wants putting back too.
+    // Where the edit tools are pointed. Empty for a zip bundle, which has no markdown.
+    {
+        const fs::path out = refract::deckSidecarPath(input, "deck.json");
+        if (!out.empty()) edits.setDeck(out.parent_path().string());
+    }
+
     if (session.load(input)) sessionOnDisk = session.serialise();
 
     if (!glfwInit()) {
@@ -1870,7 +1680,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        collectSourceEdit();
+        edits.collect();
 
         if (deckReloadPending) {
             deckReloadPending = false;
@@ -2044,7 +1854,7 @@ int main(int argc, char* argv[]) {
                 // Rebuild when the markdown moves under us. The first sample after the
                 // switch is turned on only records where things stand — turning it on is
                 // not itself a change.
-                if (buildPanel->watching() && !state.running && !editRunning
+                if (buildPanel->watching() && !state.running && !edits.running()
                     && elapsed - lastWatchCheck >= kWatchInterval) {
                     lastWatchCheck = elapsed;
                     const double now = deckSourceMtime();
@@ -2134,7 +1944,7 @@ int main(int argc, char* argv[]) {
     buildPanel.reset();
     slideEditor.reset();
     if (buildThread.joinable()) buildThread.join();
-    if (editThread.joinable()) editThread.join();
+    edits.join();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();
