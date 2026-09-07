@@ -474,12 +474,21 @@ deck has to put in it:
 
 ```
     <lo|
-    ┌───────────────────────────────┐
-    │ logo.png                image │
-    │ old-logo.png            image │
-    └───────────────────────────────┘
+    ┌──────────────────────────┬──────────┐
+    │ logo.png           image │  ┌────┐  │
+    │ old-logo.png       image │  │ ▨  │  │
+    │                          │  └────┘  │
+    │                          │ 512×512  │
+    │                          │  1.4 MB  │
+    └──────────────────────────┴──────────┘
       ↩ inserts  ·  esc dismisses
 ```
+
+Down the right of it, a square preview of the name under the cursor, the full height of the
+menu: the picture for a picture, with its pixel size and file size under it, and the opening
+lines for anything that is text — a `.json` card, a `.sksl` shader, a sub-deck's `slides.md`.
+A video or a compiled `.rc` has nothing to show and says what it is instead. Two screenshots
+taken a minute apart have names that tell you nothing; this is the part that does.
 
 Picking one writes the name and closes the bracket — `<logo.png>` — with the caret after it.
 Asset names are the thing nobody remembers, and getting one wrong is a slide that builds
@@ -1054,7 +1063,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Nine C++ suites, none of which needs a window or a GPU. Seven of them need nothing but their
+Ten C++ suites, none of which needs a window or a GPU. Eight of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1063,7 +1072,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All nine, alongside the player:
+All ten, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1079,10 +1088,19 @@ ctest --test-dir player/build --output-on-failure
 | `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
 | `options` | the command line, and that every flag it takes is in the help text |
 | `completion` | the include being typed, where its names resolve, and what matches |
+| `utf8` | that no string the chrome trims or cuts can come out invalid |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 
 The last two need more than their own source — `timing` links the engine, `deck_source` parses
 JSON — so they build with the player rather than on their own.
+
+`utf8` exists for the same reason as `view_geometry`, one layer down. `ellipsize` trimmed a
+string to fit by popping single bytes and stopping at the first non-continuation byte, which
+leaves the *lead* byte of a multi-byte character behind. Skia sizes its glyph buffer from a
+code-point count, answers -1 for a run that is not valid UTF-8, and turns that into an
+enormous allocation and an `abort()` — so a single em-dash, in any line long enough to need
+trimming, could take the player down mid-talk. Text is now checked before it is measured as
+well, so bad bytes draw as `?` rather than ending the process.
 
 `view_geometry` exists because both of this player's visual bugs lived in coordinate arithmetic
 buried inside a render function — the grid scrolling back to the cursor every frame, and a
@@ -1109,6 +1127,7 @@ python3 -m unittest discover -s tests
 | `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
 | `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
 | `src/Completion.{h,cpp}` | which include is being typed, and which asset names match it |
+| `src/Utf8.{h,cpp}` | keeping arbitrary file bytes safe to measure and draw |
 | `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
 | `src/DeckSource.{h,cpp}` | reading and rewriting the deck's own source through the tools |
 | `src/EditRunner.{h,cpp}` | the worker a rewrite runs on |

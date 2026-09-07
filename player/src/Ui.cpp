@@ -1,5 +1,9 @@
 #include "Ui.h"
 
+#include "Utf8.h"
+
+#include <cstdio>
+
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontStyle.h"
@@ -83,7 +87,13 @@ SkColor withAlpha(SkColor color, unsigned alpha) {
 }
 
 float textWidth(const SkFont& font, const std::string& text) {
-    return font.measureText(text.c_str(), text.size(), SkTextEncoding::kUTF8);
+    // Checked, not trusted: invalid UTF-8 makes Skia size a glyph buffer from -1 and abort.
+    // Checked, not trusted. Skia sizes its glyph buffer from a code-point count, and answers
+    // -1 for a run that is not valid UTF-8 — which becomes an enormous allocation and an
+    // abort(). Anything drawn in the chrome can come from a file, so nothing is measured
+    // until it is known to be drawable.
+    const std::string safe = displayable(text);
+    return font.measureText(safe.c_str(), safe.size(), SkTextEncoding::kUTF8);
 }
 
 float drawText(SkCanvas* canvas, const std::string& text, float x, float y,
@@ -92,8 +102,9 @@ float drawText(SkCanvas* canvas, const std::string& text, float x, float y,
     SkPaint paint;
     paint.setColor(color);
     paint.setAntiAlias(true);
-    canvas->drawSimpleText(text.c_str(), text.size(), SkTextEncoding::kUTF8, x, y, font, paint);
-    return textWidth(font, text);
+    const std::string safe = displayable(text);
+    canvas->drawSimpleText(safe.c_str(), safe.size(), SkTextEncoding::kUTF8, x, y, font, paint);
+    return textWidth(font, safe);
 }
 
 float drawTextRight(SkCanvas* canvas, const std::string& text, float x, float y,
@@ -142,8 +153,11 @@ std::string ellipsize(const std::string& text, const SkFont& font, float maxWidt
     // no font fallback, so a glyph the UI font happens not to carry comes out as tofu.
     std::string s = text;
     while (!s.empty() && textWidth(font, s + "...") > maxWidth) {
-        // Step back over a whole UTF-8 code point so we never cut one in half.
-        do { s.pop_back(); } while (!s.empty() && (s.back() & 0xC0) == 0x80);
+        // A whole code point at a time. Popping single bytes and stopping at the first
+        // non-continuation byte leaves the *lead* byte of a multi-byte character behind —
+        // invalid UTF-8, which Skia answers by sizing a glyph buffer from -1 and calling
+        // abort(). One em-dash in a line long enough to need trimming took the player down.
+        s = dropLastChar(s);
     }
     return s + "...";
 }
@@ -184,6 +198,14 @@ SkRect drawImageFit(SkCanvas* canvas, const sk_sp<SkImage>& img, const SkRect& b
     SkSamplingOptions sampling(SkFilterMode::kLinear, SkMipmapMode::kLinear);
     canvas->drawImageRect(img, dst, sampling);
     return dst;
+}
+
+std::string humanBytes(long long bytes) {
+    char buf[32];
+    if (bytes >= 1024 * 1024) std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
+    else if (bytes >= 1024)   std::snprintf(buf, sizeof(buf), "%lld KB", bytes / 1024);
+    else                      std::snprintf(buf, sizeof(buf), "%lld B", bytes);
+    return buf;
 }
 
 std::string formatDuration(double seconds) {
