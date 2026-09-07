@@ -40,7 +40,7 @@ EXPERIMENTAL JSON operations (compact path resources, paint blur, variable-width
 | presenter window | `P` | clock, timer, notes, the next slide, pace against a rehearsal |
 | navigator | `Tab` | the deck as a list, to jump somewhere |
 | deck view | `V` | every slide at once; drag to reorder, fold sections, add and delete |
-| slide editor | `E` | the markdown behind a slide, the whole deck, or `settings.toml` |
+| slide editor | `E` | the markdown behind a slide, the whole deck, or `settings.toml`; `<` offers the deck's assets |
 | build panel | `M` | refract's options, and a Rebuild button |
 | captions | `C` | the recorded narration, word by word |
 | assets | `I` | what is in `includes/`, which slides use it, and what nothing does |

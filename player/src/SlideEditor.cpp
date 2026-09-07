@@ -1,5 +1,7 @@
 #include "SlideEditor.h"
 
+#include "Completion.h"
+
 #include "Ui.h"
 #include "ViewGeometry.h"
 
@@ -83,6 +85,29 @@ struct SlideEditor::Impl {
     double lastEditAt = -1.0;
     SkRect autoButton = SkRect::MakeEmpty();
 
+    // ── Include completion ───────────────────────────────────────────
+    // Typing `<` and pausing offers what can go in the brackets. The menu is worked out
+    // from the text rather than remembered: backspace, an arrow key, a click and an undo
+    // all move the caret out of an include, and a flag would have to be cleared by each of
+    // them. Reading the line back costs nothing and cannot fall out of step.
+    AssetLister assetLister;
+    std::vector<Asset> assetList;
+    std::vector<std::string> assetNames;   // as they would be written between < and >
+    std::string namesFor;                  // the file assetNames was worked out for
+    bool namesReady = false;               // ...and it has been, even if it found nothing
+    bool menuOpen = false;
+    // Open once the pause has been waited out, and *stay* open: every key goes through
+    // handleKey, which restarts the idle clock, so a menu that re-tested the pause every
+    // frame would blink out the moment you pressed the down arrow to walk it.
+    bool menuLatched = false;
+    Caret menuAnchor{-1, -1};              // the `<` the menu belongs to
+    bool menuDismissed = false;            // escape was pressed on this one
+    std::vector<int> menuMatches;          // indices into assetNames
+    int menuPick = 0;
+    int menuTop = 0;                       // first row drawn, for a list longer than the box
+    SkRect menuRect = SkRect::MakeEmpty();
+    float menuRowH = 0;
+
     Loader loader;
     Saver  saver;
     Splitter splitter;
@@ -110,6 +135,36 @@ struct SlideEditor::Impl {
     SkFont mono = uiMonoFont(kFontSize);
 
     void setStatus(const std::string& text, bool error) { status = text; statusError = error; }
+
+    // The include being typed, if one is. Read back from the line rather than remembered:
+    // backspace, an arrow key, a click and an undo all move the caret out of one, and a flag
+    // would have to be cleared by every one of them.
+    Include includeAt() const {
+        const Caret c = buffer.caret();
+        return refract::includeAt(buffer.line(c.line), c.col);
+    }
+
+    // The names, in the shape the file being edited would have to write them. Recomputed
+    // when the editor is pointed somewhere else: a sub-deck's slide names its own assets.
+    void namesForFile() {
+        if (namesReady && namesFor == file) return;
+        namesFor = file;
+        namesReady = true;
+        std::vector<std::string> paths;
+        paths.reserve(assetList.size());
+        for (const Asset& asset : assetList) paths.push_back(asset.path);
+        assetNames = namesUnder(paths, includeBase(file));
+    }
+
+    // What each row says on its right: the kind, so an .rc embed and a .png read apart at a
+    // glance. Looked up rather than derived — the tool already decided.
+    std::string kindOf(const std::string& name) const {
+        const std::string path = includeBase(file) + name;
+        for (const Asset& asset : assetList) {
+            if (asset.path == path) return asset.kind;
+        }
+        return std::string();
+    }
 
     // The caret position under a point in the window.
     Lines lineGeometry() const { return {textTop, lineHeight, kLineGap}; }
@@ -194,6 +249,13 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
                                    : i == 1 ? EditTarget::Deck : EditTarget::Settings);
             return;
         }
+        // The menu is over the text, so it is asked first: a click in it is a choice, not
+        // somewhere to put the caret.
+        if (impl.menuOpen && impl.menuRect.contains(x, y) && impl.menuRowH > 0) {
+            const int row = static_cast<int>((y - impl.menuRect.top() - 4) / impl.menuRowH);
+            self->acceptCompletion(impl.menuTop + row);
+            return;
+        }
         if (impl.autoButton.contains(x, y)) { impl.autoSave = !impl.autoSave; return; }
         if (impl.saveButton.contains(x, y)) { self->save(); return; }
         if (impl.revertButton.contains(x, y)) { self->revert(); return; }
@@ -205,6 +267,7 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         const bool extending = (mods & GLFW_MOD_SHIFT) != 0;
         impl.buffer.setCaret(impl.caretAt(x, y), extending);
         impl.caretBlinkFrom = glfwGetTime();
+        impl.lastEditAt = glfwGetTime();
 
         // A repeat click has to be in the same place as well as soon after: moving the
         // pointer to another word and clicking is two first clicks, not a double.
@@ -255,6 +318,21 @@ bool SlideEditor::shouldClose() const {
 void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); }
 void SlideEditor::setSaver(Saver saver) { mImpl->saver = std::move(saver); }
 void SlideEditor::setSplitter(Splitter splitter) { mImpl->splitter = std::move(splitter); }
+
+void SlideEditor::setAssetLister(AssetLister lister) {
+    mImpl->assetLister = std::move(lister);
+}
+
+void SlideEditor::refreshAssets() {
+    Impl& impl = *mImpl;
+    if (!impl.assetLister) return;
+    std::vector<Asset> found;
+    std::string dir, error;
+    if (!impl.assetLister(&found, &dir, &error)) return;   // a zip bundle, or no deck
+    impl.assetList = std::move(found);
+    impl.namesReady = false;     // the names are worked out again for whatever is open
+    impl.assetNames.clear();
+}
 
 void SlideEditor::setFileAccess(FileLoader loader, FileSaver saver) {
     mImpl->fileLoader = std::move(loader);
@@ -381,6 +459,25 @@ void SlideEditor::save() {
     impl.setStatus("saving…", false);
 }
 
+void SlideEditor::acceptCompletion(int match) {
+    Impl& impl = *mImpl;
+    if (match < 0 || match >= static_cast<int>(impl.menuMatches.size())) return;
+    const Include include = impl.includeAt();
+    if (!include.found) return;
+    const std::string name = impl.assetNames[impl.menuMatches[match]];
+
+    // Select what has been typed since the `<` and type over it — one edit, one undo step,
+    // and the same code path as any other insertion.
+    const Caret caret = impl.buffer.caret();
+    impl.buffer.setBlockMode(false);
+    impl.buffer.setCaret({caret.line, include.start + 1}, /*select=*/false);
+    impl.buffer.setCaret(caret, /*select=*/true);
+    impl.buffer.insert(name + ">");
+    impl.menuOpen = false;
+    impl.caretBlinkFrom = glfwGetTime();
+    impl.lastEditAt = glfwGetTime();
+}
+
 void SlideEditor::saveFinished(bool ok, const std::string& status) {
     Impl& impl = *mImpl;
     impl.saving = false;
@@ -405,6 +502,32 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     // column, rather than a run through them. Live: it applies for as long as the key is
     // held, and letting go and extending again gives an ordinary selection back.
     impl.buffer.setBlockMode((mods & GLFW_MOD_ALT) != 0);
+
+    // The completion menu, while it is up, takes the four keys that mean something to a
+    // list and leaves the rest to the editor — typing goes on filtering it.
+    if (impl.menuOpen && !cmd) {
+        switch (key) {
+            case GLFW_KEY_DOWN:
+                impl.menuPick = std::min(impl.menuPick + 1,
+                                         static_cast<int>(impl.menuMatches.size()) - 1);
+                return true;
+            case GLFW_KEY_UP:
+                impl.menuPick = std::max(0, impl.menuPick - 1);
+                return true;
+            case GLFW_KEY_ENTER:
+            case GLFW_KEY_KP_ENTER:
+            case GLFW_KEY_TAB:
+                acceptCompletion(impl.menuPick);
+                return true;
+            case GLFW_KEY_ESCAPE:
+                // Dismissed for this `<` only: moving to another one offers again.
+                impl.menuDismissed = true;
+                impl.menuOpen = false;
+                return true;
+            default:
+                break;      // everything else is still editing, and re-filters as it goes
+        }
+    }
 
     if (cmd) {
         switch (key) {
@@ -535,6 +658,46 @@ void SlideEditor::render(App& app) {
         impl.backend.onFramebufferResize(fbW, fbH);
         impl.fbWidth = fbW;
         impl.fbHeight = fbH;
+    }
+
+    // The include menu. Half a second after the last keystroke, so it follows a pause
+    // rather than interrupting a word — and short enough that pausing on purpose to ask
+    // "what have I got?" is answered straight away.
+    constexpr double kIncludeIdleSec = 0.5;
+    {
+        // `<>` is markdown's include; settings.toml has no such thing, so nothing is offered
+        // there rather than something of the wrong shape.
+        const bool markdown = impl.target != EditTarget::Settings;
+        const Include include = impl.includeAt();
+        if (markdown && !impl.assetList.empty() && include.found) {
+            impl.namesForFile();
+            const Caret anchor{impl.buffer.caret().line, include.start};
+            if (anchor != impl.menuAnchor) {
+                // A different `<`: whatever was decided about the last one does not apply.
+                impl.menuAnchor = anchor;
+                impl.menuDismissed = false;
+                impl.menuLatched = false;
+                impl.menuPick = 0;
+                impl.menuTop = 0;
+            }
+            impl.menuMatches = matchNames(impl.assetNames, include.prefix);
+            impl.menuPick = std::max(0, std::min(impl.menuPick,
+                                                 static_cast<int>(impl.menuMatches.size()) - 1));
+            if (!impl.menuLatched && glfwGetTime() - impl.lastEditAt >= kIncludeIdleSec) {
+                impl.menuLatched = true;
+            }
+            // A prefix nothing matches hides the list without unlatching it: deleting back
+            // to something that does match brings it straight back, with no second pause.
+            impl.menuOpen = impl.menuLatched && !impl.menuDismissed
+                            && !impl.menuMatches.empty();
+        } else {
+            impl.menuOpen = false;
+            impl.menuLatched = false;
+            impl.menuAnchor = {-1, -1};
+            impl.menuDismissed = false;
+            impl.menuMatches.clear();
+        }
+        if (!impl.menuOpen) impl.menuRect = SkRect::MakeEmpty();
     }
 
     // Saved once typing has stopped for a moment. The pause is what makes it feel like the
@@ -760,6 +923,82 @@ void SlideEditor::render(App& app) {
                  impl.statusError ? ui::kOver : ui::kAhead);
     }
     drawTextRight(canvas, "cmd+S saves", w - pad, viewBottom + 26, uiFont(11), ui::kDim);
+
+    // ── The include menu ─────────────────────────────────────────────
+    // Drawn last so nothing is over it, and anchored to the `<` rather than to the caret:
+    // it is a list of what could follow that bracket, and it should not slide sideways as
+    // the name is typed.
+    if (impl.menuOpen) {
+        constexpr int kMaxRows = 8;
+        const int rows = std::min<int>(kMaxRows, static_cast<int>(impl.menuMatches.size()));
+        // Keep the pick in view when the list is longer than the box.
+        impl.menuTop = std::min(impl.menuTop, impl.menuPick);
+        impl.menuTop = std::max(impl.menuTop, impl.menuPick - rows + 1);
+        impl.menuTop = std::max(0, std::min(impl.menuTop,
+                                            static_cast<int>(impl.menuMatches.size()) - rows));
+
+        SkFont rowFont = uiMonoFont(kFontSize - 1);
+        SkFont kindFont = uiFont(10);
+        const float rowH = std::round(kFontSize + 10);
+        impl.menuRowH = rowH;
+
+        float widest = 120;
+        for (int i = 0; i < rows; i++) {
+            const std::string& name = impl.assetNames[impl.menuMatches[impl.menuTop + i]];
+            widest = std::max(widest, textWidth(rowFont, name)
+                                          + textWidth(kindFont, "document") + 46);
+        }
+        const std::string& anchorLine = impl.buffer.line(impl.menuAnchor.line);
+        const float anchorX = impl.textLeft - impl.scrollX
+                              + textWidth(mono, anchorLine.substr(0, impl.menuAnchor.col));
+        const float boxW = std::min(widest, w - pad * 2);
+        const float x = std::max(pad, std::min(anchorX, w - pad - boxW));
+        const float lineBottom = impl.textTop + impl.menuAnchor.line * lineHeight
+                                 - impl.scrollY + kLineGap;
+        const float boxH = rows * rowH + 8;
+        // Below the line it belongs to, unless there is no room — then above it, which is
+        // what every other menu in the world does at the bottom of a screen.
+        float y = lineBottom + 4;
+        if (y + boxH > viewBottom) y = lineBottom - lineHeight - boxH - 2;
+        y = std::max(viewTop + 2, y);
+
+        impl.menuRect = SkRect::MakeXYWH(x, y, boxW, boxH);
+        fillRoundRect(canvas, impl.menuRect, 8, ui::kPanel);
+        strokeRoundRect(canvas, impl.menuRect, 8, ui::kAccent, 1.0f);
+
+        for (int i = 0; i < rows; i++) {
+            const int index = impl.menuMatches[impl.menuTop + i];
+            const std::string& name = impl.assetNames[index];
+            const SkRect row = SkRect::MakeXYWH(x + 4, y + 4 + i * rowH, boxW - 8, rowH);
+            const bool picked = impl.menuTop + i == impl.menuPick;
+            const bool hot = row.contains(static_cast<float>(impl.mouseX),
+                                          static_cast<float>(impl.mouseY));
+            if (picked || hot) {
+                fillRoundRect(canvas, row, 5,
+                              picked ? withAlpha(ui::kAccent, 0x44) : withAlpha(ui::kBg, 0x60));
+            }
+            const float baseline = row.centerY() + kFontSize * 0.35f;
+            drawText(canvas, ellipsize(name, rowFont, row.width() - 80), row.left() + 8,
+                     baseline, rowFont, picked ? ui::kText : ui::kDim);
+            const std::string kind = impl.kindOf(name);
+            if (!kind.empty()) {
+                drawTextRight(canvas, kind, row.right() - 8, baseline, kindFont, ui::kLine);
+            }
+        }
+        // Said once, at the foot of the list: the two keys that finish the job.
+        if (static_cast<int>(impl.menuMatches.size()) > rows) {
+            if (impl.menuRect.bottom() + 16 < viewBottom) {
+                drawTextRight(canvas,
+                              std::to_string(impl.menuMatches.size() - rows) + " more",
+                              impl.menuRect.right() - 8, impl.menuRect.bottom() + 13,
+                              uiFont(10), ui::kLine);
+            }
+        }
+        if (impl.menuRect.bottom() + 16 < viewBottom) {
+            drawText(canvas, "↩ inserts  ·  esc dismisses", impl.menuRect.left(),
+                     impl.menuRect.bottom() + 13, uiFont(10), ui::kLine);
+        }
+    }
 
     impl.backend.present();
     glfwSwapBuffers(mWindow);

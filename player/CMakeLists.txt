@@ -73,6 +73,7 @@ set(REFRACTPLAYER_SOURCES
     src/DeckSource.cpp
     src/Windowing.cpp
     src/BuildRunner.cpp
+    src/Completion.cpp
     src/BuildPanel.cpp
     src/CaptionWindow.cpp
     src/Captions.cpp

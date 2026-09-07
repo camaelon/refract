@@ -709,6 +709,12 @@ void openSlideEditor() {
                             std::string* error) {
         return source.splitSlide(slide, text, line, error);
     });
+    // What can go between `<` and `>`, from the same scan the asset window shows.
+    slideEditor->setAssetLister([](std::vector<refract::Asset>* out, std::string* dir,
+                                   std::string* error) {
+        return source.scanAssets(out, dir, error);
+    });
+    slideEditor->refreshAssets();
     slideEditor->setFileAccess(
         [](const std::string& path, std::string* text, std::string* error) {
             return source.readFile(path, text, error);
@@ -1336,8 +1342,9 @@ int main(int argc, char* argv[]) {
             deckReloadPending = false;
             glfwMakeContextCurrent(window);
             if (!reloadDeck()) std::cerr << "refractplayer: reload failed\n";
-            // What the deck uses may have changed with it.
+            // What the deck has may have changed with it.
             if (assetWindow) assetWindow->refresh();
+            if (slideEditor) slideEditor->refreshAssets();
             liveFrame.reset();
             lastCapturedSlide = -1;
         }
