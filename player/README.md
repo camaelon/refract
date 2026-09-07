@@ -1018,7 +1018,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Six C++ suites, none of which needs a window or a GPU. Five of them need nothing but their
+Eight C++ suites, none of which needs a window or a GPU. Six of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1027,7 +1027,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All six, alongside the player:
+All eight, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1041,6 +1041,11 @@ ctest --test-dir player/build --output-on-failure
 | `slide_recorder` | when a re-recorded take replaces the old one, and when it must not |
 | `deck_library` | starting a deck, and the list of ones opened before |
 | `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
+| `options` | the command line, and that every flag it takes is in the help text |
+| `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
+
+The last two need more than their own source — `timing` links the engine, `deck_source` parses
+JSON — so they build with the player rather than on their own.
 
 `view_geometry` exists because both of this player's visual bugs lived in coordinate arithmetic
 buried inside a render function — the grid scrolling back to the cursor every frame, and a
@@ -1058,7 +1063,7 @@ python3 -m unittest discover -s tests
 
 | File | |
 |---|---|
-| `src/main.cpp` | command line, window, event loop, key bindings |
+| `src/main.cpp` | the windows, the event loop, the key bindings, and what holds them together |
 | `src/Deck.{h,cpp}` | the deck: manifest, titles, sections, notes |
 | `src/Presenter.{h,cpp}` | the second window |
 | `src/Navigator.{h,cpp}` | the navigator, help card, pending-jump chip |
@@ -1067,8 +1072,12 @@ python3 -m unittest discover -s tests
 | `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
 | `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
 | `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
-| `src/EditRunner.{h,cpp}` | rewriting the deck's markdown, off the main thread |
+| `src/DeckSource.{h,cpp}` | reading and rewriting the deck's own source through the tools |
+| `src/EditRunner.{h,cpp}` | the worker a rewrite runs on |
+| `src/BuildRunner.{h,cpp}` | running refract over the deck, off the main thread |
 | `src/Tools.{h,cpp}` | finding and running the scripts in tools/ |
+| `src/Options.{h,cpp}` | the command line, and the help text |
+| `src/Windowing.{h,cpp}` | monitors, and going fullscreen on the right one |
 | `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
 | `src/BuildPanel.{h,cpp}` | the build panel |
 | `src/AppMenu.{h,mm}` | the panels in the menu bar (Cocoa; a no-op elsewhere) |
@@ -1091,4 +1100,4 @@ python3 -m unittest discover -s tests
 | `tools/assets.py` | what is in `includes/`, who uses it, and moving one to `out/.trash/` |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
 | `tools/web.py` | the web player: assembles the deck, audio and captions into a page |
-| `tests/` | the three C++ suites above |
+| `tests/` | the C++ suites above |

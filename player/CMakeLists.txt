@@ -69,6 +69,10 @@ FetchContent_MakeAvailable(nlohmann_json)
 set(REFRACTPLAYER_SOURCES
     src/App.cpp
     src/AssetWindow.cpp
+    src/Options.cpp
+    src/DeckSource.cpp
+    src/Windowing.cpp
+    src/BuildRunner.cpp
     src/BuildPanel.cpp
     src/CaptionWindow.cpp
     src/Captions.cpp
@@ -128,3 +132,11 @@ add_executable(timing_test tests/timing_test.cpp src/Timing.cpp src/Deck.cpp src
 target_include_directories(timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(timing_test PRIVATE rcplayer nlohmann_json::nlohmann_json)
 add_test(NAME timing COMMAND timing_test)
+
+# The source layer talks to the Python tools, so it needs them on disk and nothing else —
+# no window, no engine. It lives here rather than in tests/ only because it parses JSON.
+add_executable(deck_source_test tests/deck_source_test.cpp src/DeckSource.cpp
+                                src/EditRunner.cpp src/Tools.cpp)
+target_include_directories(deck_source_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(deck_source_test PRIVATE nlohmann_json::nlohmann_json)
+add_test(NAME deck_source COMMAND deck_source_test)
