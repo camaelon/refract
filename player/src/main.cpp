@@ -18,11 +18,13 @@
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
 #include "BuildPanel.h"
+#include "BuildRunner.h"
 #include "Captions.h"
 #include "DeckView.h"
-#include "EditRunner.h"
+#include "DeckSource.h"
 #include "AudioRecorder.h"
 #include "Navigator.h"
+#include "Options.h"
 #include "Presenter.h"
 #include "Session.h"
 #include "DeckLibrary.h"
@@ -31,6 +33,7 @@
 #include "Tools.h"
 #include "SlideEditor.h"
 #include "VoiceIndex.h"
+#include "Windowing.h"
 #include "Thumbs.h"
 #include "Ui.h"
 
@@ -50,8 +53,6 @@
 
 #include "rccore/CoreDocument.h"
 
-#include <nlohmann/json.hpp>
-
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
@@ -61,17 +62,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <iostream>
-#include <atomic>
-#include <fstream>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -106,13 +101,6 @@ std::unique_ptr<refract::DeckViewWindow> deckView;
 std::unique_ptr<refract::BuildPanel> buildPanel;
 std::unique_ptr<refract::SlideEditor> slideEditor;
 std::unique_ptr<refract::AssetWindow> assetWindow;
-// A build runs off the main thread — refract takes seconds on a big deck, and a frozen window
-// during it would be the wrong trade for a panel whose whole point is staying in the player.
-// The thread only ever writes `buildResult` and clears `buildRunning`; the loop reads them.
-std::thread buildThread;
-std::atomic<bool> buildRunning{false};
-std::mutex buildMutex;
-refract::BuildState buildResult;
 std::string tracePath;   // where --record will write, once the talk starts
 // The deck as the user named it. Kept because reordering rebuilds and reloads it, and the
 // reload has to look in the same place the first load did.
@@ -125,10 +113,6 @@ bool deckReloadPending = false;
 // The outputs the last build actually rewrote, from the tool that ran it. Empty means "no
 // idea", and the reload then drops every still rather than guessing.
 std::vector<std::string> changedOutputs;
-
-// Where the window sat before it went fullscreen, so F can put it back.
-struct WindowedGeometry { int x = 0, y = 0, w = 0, h = 0; bool valid = false; };
-WindowedGeometry savedGeometry;
 
 int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherever it lands
 bool wantPresenter = false;
@@ -418,58 +402,6 @@ void stepSection(int direction) {
     if (target >= 0) goToSlide(target);
 }
 
-// ── Fullscreen ───────────────────────────────────────────────────────
-
-GLFWmonitor* monitorAt(int wanted) {
-    int count = 0;
-    GLFWmonitor** monitors = glfwGetMonitors(&count);
-    if (count <= 0) return glfwGetPrimaryMonitor();
-    if (wanted >= 0 && wanted < count) return monitors[wanted];
-    return glfwGetPrimaryMonitor();
-}
-
-// The monitor holding most of the window — the one you would expect fullscreen to fill.
-GLFWmonitor* monitorForWindow(GLFWwindow* window) {
-    int wx, wy, ww, wh;
-    glfwGetWindowPos(window, &wx, &wy);
-    glfwGetWindowSize(window, &ww, &wh);
-    int count = 0;
-    GLFWmonitor** monitors = glfwGetMonitors(&count);
-    GLFWmonitor* best = glfwGetPrimaryMonitor();
-    int bestArea = 0;
-    for (int i = 0; i < count; i++) {
-        int mx, my;
-        glfwGetMonitorPos(monitors[i], &mx, &my);
-        const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
-        if (!mode) continue;
-        int overlapW = std::max(0, std::min(wx + ww, mx + mode->width)  - std::max(wx, mx));
-        int overlapH = std::max(0, std::min(wy + wh, my + mode->height) - std::max(wy, my));
-        if (overlapW * overlapH > bestArea) {
-            bestArea = overlapW * overlapH;
-            best = monitors[i];
-        }
-    }
-    return best;
-}
-
-void setFullscreen(GLFWwindow* window, bool on, GLFWmonitor* preferred = nullptr) {
-    bool isFullscreen = glfwGetWindowMonitor(window) != nullptr;
-    if (on == isFullscreen) return;
-    if (on) {
-        glfwGetWindowPos(window, &savedGeometry.x, &savedGeometry.y);
-        glfwGetWindowSize(window, &savedGeometry.w, &savedGeometry.h);
-        savedGeometry.valid = true;
-        GLFWmonitor* monitor = preferred ? preferred : monitorForWindow(window);
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-        if (!mode) return;
-        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
-    } else {
-        if (!savedGeometry.valid) { savedGeometry = {100, 100, 1280, 720, true}; }
-        glfwSetWindowMonitor(window, nullptr, savedGeometry.x, savedGeometry.y,
-                             savedGeometry.w, savedGeometry.h, 0);
-    }
-}
-
 // ── Presenter window ─────────────────────────────────────────────────
 
 void playerKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -492,7 +424,7 @@ void openPresenter() {
         }
     });
     if (presenterMonitor >= 0) {
-        GLFWmonitor* monitor = monitorAt(presenterMonitor);
+        GLFWmonitor* monitor = refract::monitorAt(presenterMonitor);
         int mx, my;
         glfwGetMonitorPos(monitor, &mx, &my);
         glfwSetWindowPos(presenter->window(), mx + 60, my + 60);
@@ -582,114 +514,41 @@ bool reloadDeck() {
 
 // ── Editing the deck's source ────────────────────────────────────────
 //
-// Every rewrite of the deck's markdown goes through one runner, off the main thread — see
-// EditRunner. What is left here is the wiring: which tool, which arguments, and who to tell.
-refract::EditRunner edits;
-
-bool sourceEditRunning() { return edits.running(); }
-
-// Start a tool, and reload the deck when it lands. `report` is called on the main thread once
-// the reload has happened, so whatever it does next sees the new deck.
-bool startSourceEdit(const std::string& tool, std::vector<std::string> args,
-                     std::string doneMessage,
-                     std::function<void(bool, const std::string&)> report,
-                     std::string* status) {
-    return edits.start(tool, std::move(args), std::move(doneMessage),
-                       [report](const refract::EditRunner::Result& result) {
-                           if (result.ok && result.changed) {
-                               changedOutputs = result.outputs;
-                               deckReloadPending = true;
-                           }
-                           if (report) report(result.ok, result.status);
-                       },
-                       status);
-}
-
-// Move a slide by rewriting the markdown behind it. The markdown belongs to refract, not to
-// the player, so the edit is made by the tool that owns the grammar; this only decides which
-// slide goes where.
-bool moveSlideInSource(int from, int to, std::string* status) {
-    return startSourceEdit("reorder.py",
-                           {"--move", std::to_string(from), "--to", std::to_string(to)},
-                           "moved slide " + std::to_string(from + 1),
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-// The same rewrite, for a whole run: a section, or an included sub-deck. The view has worked
-// out which block range that is and where it goes; this only carries it to the tool.
-bool moveRunInSource(const std::string& file, int first, int last, int dst,
-                     std::string* status) {
-    const int blocks = last - first + 1;
-    return startSourceEdit("reorder.py",
-                           {"--file", file, "--chunks", std::to_string(first),
-                            std::to_string(last), "--to-chunk", std::to_string(dst)},
-                           "moved " + std::to_string(blocks)
-                               + (blocks == 1 ? " block" : " blocks"),
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-// Add an empty slide next to this one, or take one out. Both are block-level edits to the
-// markdown, so they go through the same runner as a reorder and the same tool.
-bool addSlideInSource(int slide, bool before, std::string* status) {
-    std::vector<std::string> args{"--slide", std::to_string(slide), "--new"};
-    if (before) args.push_back("--before");
-    return startSourceEdit("slide.py", args, "added a slide",
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-bool duplicateSlideInSource(int slide, std::string* status) {
-    return startSourceEdit("slide.py",
-                           {"--slide", std::to_string(slide), "--duplicate"}, "duplicated",
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-bool mergeSlideInSource(int slide, std::string* status) {
-    return startSourceEdit("slide.py",
-                           {"--slide", std::to_string(slide), "--merge"}, "merged",
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-bool deleteSlideInSource(int slide, std::string* status) {
-    return startSourceEdit("slide.py",
-                           {"--slide", std::to_string(slide), "--delete"}, "deleted",
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
-
-// Take back the last rewrite of the deck's markdown, or put it back.
-bool undoSourceEdit(bool redo, std::string* status) {
-    return startSourceEdit("history.py", {redo ? "--redo" : "--undo"},
-                           redo ? "redone" : "undone",
-                           [](bool ok, const std::string& done) {
-                               if (deckView) deckView->editFinished(ok, done);
-                           }, status);
-}
+// Every read and rewrite of the deck's markdown goes through DeckSource, which runs the
+// tools in player/tools/ — the ones off the main thread on a worker. What is left here is
+// who to tell when one lands.
+refract::DeckSource source;
+refract::BuildRunner builder;
 
 void openDeckView() {
     if (deckView) return;
     deckView = refract::DeckViewWindow::Create(1180, 780);
     if (!deckView) return;
     deckView->setOnOpenSlide([](int index) { goToSlide(index); });
-    deckView->setOnMoveSlide(moveSlideInSource);
-    deckView->setOnMoveRun(moveRunInSource);
-    deckView->setOnAddSlide(addSlideInSource);
-    deckView->setOnDeleteSlide(deleteSlideInSource);
-    deckView->setOnUndo(undoSourceEdit);
+    deckView->setOnMoveSlide([](int from, int to, std::string* status) {
+        return source.moveSlide(from, to, status);
+    });
+    deckView->setOnMoveRun([](const std::string& file, int first, int last, int dst,
+                          std::string* status) {
+        return source.moveRun(file, first, last, dst, status);
+    });
+    deckView->setOnAddSlide([](int slide, bool before, std::string* status) {
+        return source.addSlide(slide, before, status);
+    });
+    deckView->setOnDeleteSlide([](int slide, std::string* status) {
+        return source.deleteSlide(slide, status);
+    });
+    deckView->setOnUndo([](bool redo, std::string* status) {
+        return source.undo(redo, status);
+    });
     deckView->setFoldedRuns(session.folded);
     session.restore("deckView", deckView->window());
-    deckView->setOnDuplicateSlide(duplicateSlideInSource);
-    deckView->setOnMergeSlide(mergeSlideInSource);
+    deckView->setOnDuplicateSlide([](int slide, std::string* status) {
+        return source.duplicateSlide(slide, status);
+    });
+    deckView->setOnMergeSlide([](int slide, std::string* status) {
+        return source.mergeSlide(slide, status);
+    });
     // The view takes the keys it uses to walk the grid; everything else still drives the
     // talk, so the deck can be run from this window like any other.
     glfwSetKeyCallback(deckView->window(),
@@ -710,13 +569,9 @@ void captureSession() {
     // took over the screen the moment it opened would be startling, and `--fullscreen` and
     // `F` are how you ask for that. What is kept is where the window was *windowed*, which
     // while fullscreen is the geometry `F` would put it back to.
-    if (slideWindow) {
-        if (glfwGetWindowMonitor(slideWindow) && savedGeometry.valid) {
-            session.windows["slides"] = {savedGeometry.x, savedGeometry.y,
-                                         savedGeometry.w, savedGeometry.h};
-        } else if (!glfwGetWindowMonitor(slideWindow)) {
-            session.capture("slides", slideWindow);
-        }
+    int x, y, w, h;
+    if (refract::windowedGeometry(slideWindow, &x, &y, &w, &h)) {
+        session.windows["slides"] = {x, y, w, h};
     }
 
     session.presenter = presenter != nullptr;
@@ -768,72 +623,19 @@ void toggleDeckView() {
 }
 
 // ── Assets ───────────────────────────────────────────────────────────
-// What is in the deck's includes/, and which of it is used. Both answers come from the tool,
-// which loads the deck with refract's own resolver — so "used" here is what the build means
-// by used rather than a second reading of the markdown.
-bool scanAssets(std::vector<refract::Asset>* out, std::string* deckDir, std::string* error) {
-    const fs::path dir = refract::deckSidecarPath(deckInput, "deck.json");
-    if (dir.empty()) {
-        *error = "a zip bundle carries no includes/ to look at";
-        return false;
-    }
-    std::string output;
-    const int rc = refract::runTool("assets.py", {dir.parent_path().string(), "--list"},
-                                    &output);
-    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
-        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
-                     ? doc["error"].get<std::string>()
-                     : "cannot read this deck's assets";
-        return false;
-    }
-    *deckDir = doc.value("dir", std::string());
-    out->clear();
-    for (const auto& rec : doc["assets"]) {
-        refract::Asset asset;
-        asset.path = rec.value("path", std::string());
-        asset.name = rec.value("name", std::string());
-        asset.kind = rec.value("kind", std::string("other"));
-        asset.size = rec.value("size", 0LL);
-        asset.used = rec.value("used", false);
-        if (rec["slides"].is_array()) {
-            for (const auto& n : rec["slides"]) asset.slides.push_back(n.get<int>());
-        }
-        out->push_back(std::move(asset));
-    }
-    return true;
-}
-
-// Moved to out/.trash/ rather than deleted: everything else the player does to a deck can be
-// taken back, and an asset is the one thing the undo history cannot hold.
-bool removeAsset(const std::string& path, std::string* status) {
-    const fs::path dir = refract::deckSidecarPath(deckInput, "deck.json");
-    if (dir.empty()) {
-        *status = "this deck has no includes/ to change";
-        return false;
-    }
-    std::string output;
-    // --force because the window has already asked, and said what uses it.
-    const int rc = refract::runTool(
-        "assets.py", {dir.parent_path().string(), "--remove", path, "--force"}, &output);
-    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    const bool parsed = !doc.is_discarded() && doc.is_object();
-    if (rc != 0 || (parsed && !doc.value("ok", false))) {
-        *status = parsed && doc.contains("error") ? doc["error"].get<std::string>()
-                                                  : "could not move it";
-        return false;
-    }
-    *status = "moved to " + (parsed ? doc.value("trash", std::string("the trash"))
-                                    : std::string("the trash"));
-    return true;
-}
 
 void openAssetWindow() {
     if (assetWindow) return;
     assetWindow = refract::AssetWindow::Create(680, 520);
     if (!assetWindow) return;
-    assetWindow->setScanner(scanAssets);
-    assetWindow->setRemover(removeAsset);
+    assetWindow->setScanner([](std::vector<refract::Asset>* out, std::string* dir,
+                           std::string* error) {
+        return source.scanAssets(out, dir, error);
+    });
+        // The window has already asked, and said what uses it, so the tool does not ask again.
+    assetWindow->setRemover([](const std::string& path, std::string* status) {
+        return source.removeAsset(path, /*force=*/true, status);
+    });
     assetWindow->refresh();
     session.restore("assets", assetWindow->window());
     glfwSetKeyCallback(assetWindow->window(),
@@ -851,100 +653,12 @@ void toggleAssetWindow() {
 
 // ── Build panel ──────────────────────────────────────────────────────
 
-// Run refract over the deck with the panel's options, off the main thread. True when a build
-// was started; the loop notices it finish and reloads the deck.
-bool startBuild(const refract::BuildOptions& options) {
-    if (buildRunning) return false;
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        std::lock_guard<std::mutex> lock(buildMutex);
-        buildResult = {};
-        buildResult.ran = true;
-        buildResult.ok = false;
-        buildResult.error = "this deck has no directory to rebuild into";
-        return false;
-    }
-
-    std::vector<std::string> args{out.parent_path().string()};
-    if (options.transitions) args.push_back("--transitions");
-    if (options.debug)       args.push_back("--debug");
-    if (options.force)       args.push_back("--force");
-    if (options.keepJson)    args.push_back("--keep-json");
-    args.push_back("--json");
-
-    if (buildThread.joinable()) buildThread.join();
-    buildRunning = true;
-    buildThread = std::thread([args]() {
-        std::string output, errors;
-        const int rc = refract::runTool("build.py", args, &output, &errors);
-        auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-        const bool parsed = !doc.is_discarded() && doc.is_object();
-
-        refract::BuildState state;
-        state.ran = true;
-        state.ok = rc == 0 && parsed && doc.value("ok", false);
-        if (parsed) {
-            state.rebuilt = doc.value("rebuilt", 0);
-            state.reused  = doc.value("reused", 0);
-            state.removed = doc.value("removed", 0);
-            state.seconds = doc.value("seconds", 0.0);
-            if (doc.contains("error")) state.error = doc["error"].get<std::string>();
-        }
-        if (!state.ok && state.error.empty()) state.error = refract::errorTail(errors, "build failed");
-
-        {
-            std::lock_guard<std::mutex> lock(buildMutex);
-            buildResult = state;
-        }
-        buildRunning = false;
-    });
-    return true;
-}
-
-// The options the deck on screen was actually built with, so the panel opens telling the
-// truth rather than showing defaults. They live in deck.json's `build` record, which is also
-// what the reorder tool replays.
-refract::BuildOptions optionsFromManifest() {
-    refract::BuildOptions options;
-    std::string text;
-    if (!refract::readDeckSidecar(deckInput, "deck.json", &text) || text.empty()) return options;
-    auto doc = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (doc.is_discarded() || !doc.contains("build")) return options;
-    const auto& build = doc["build"];
-    options.transitions = build.value("transitions", false);
-    options.debug = build.value("debug", false);
-    return options;
-}
-
-// The newest modification time across the deck's markdown, its settings and its includes —
-// everything refract reads. Cheap enough to check once a second; refract's own --watch looks
-// at the same set.
-double deckSourceMtime() {
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) return 0.0;
-    const fs::path deckDir = out.parent_path().parent_path();
-    double newest = 0.0;
-    auto note = [&newest](const fs::path& path) {
-        std::error_code ec;
-        const auto when = fs::last_write_time(path, ec);
-        if (!ec) newest = std::max(newest, static_cast<double>(when.time_since_epoch().count()));
-    };
-    for (const char* name : {"slides.md", "settings.toml"}) note(deckDir / name);
-    std::error_code ec;
-    for (fs::recursive_directory_iterator it(deckDir / "includes", ec), end; it != end;
-         it.increment(ec)) {
-        if (ec) break;
-        if (!it->is_directory(ec)) note(it->path());
-    }
-    return newest;
-}
-
 void openBuildPanel() {
     if (buildPanel) return;
     buildPanel = refract::BuildPanel::Create(300, 760);
     if (!buildPanel) return;
     // The options the panel was last showing, or — the first time — how the deck was built.
-    refract::BuildOptions options = optionsFromManifest();
+    refract::BuildOptions options = builder.optionsFromManifest();
     if (!sessionOnDisk.empty() || session.build) {
         // What the panel was last showing, rather than how the deck happens to have been
         // built — they are different questions once somebody has changed one of them.
@@ -954,7 +668,9 @@ void openBuildPanel() {
         options.keepJson = session.buildKeepJson;
     }
     buildPanel->setOptions(options);
-    buildPanel->setOnBuild(startBuild);
+    buildPanel->setOnBuild([](const refract::BuildOptions& options) {
+        return builder.start(options);
+    });
     buildPanel->setWatching(session.buildWatch);
     session.restore("build", buildPanel->window());
     glfwSetKeyCallback(buildPanel->window(),
@@ -978,135 +694,28 @@ bool editorHoldsDeck() {
     return slideEditor && slideEditor->dirty();
 }
 
-// Read one slide's markdown. The block-level surgery is the tool's — it has to split the file
-// exactly the way refract's parser does, and that parser is Python's.
-bool loadSlideSource(int slide, std::string* text, std::string* file, int* shared,
-                     std::string* error) {
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        *error = "this deck has no markdown behind it";
-        return false;
-    }
-    std::string output;
-    const int rc = refract::runTool("slide.py", {out.parent_path().string(),
-                                        "--slide", std::to_string(slide), "--read"}, &output);
-    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
-        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
-                     ? doc["error"].get<std::string>()
-                     : "cannot read this slide's source";
-        return false;
-    }
-    *text = doc.value("text", std::string());
-    *file = doc.value("file", std::string());
-    *shared = doc.value("slides", 1);
-    return true;
-}
-
-// Write it back and rebuild, off the main thread. The text goes through a temp file rather
-// than an argument: a slide's markdown contains newlines, quotes and whatever else the author
-// typed. The file outlives this call — the worker is still reading it — so it is named for
-// the job and removed when the job reports back.
-bool saveSlideSource(int slide, const std::string& text, std::string* error) {
-    const fs::path scratch = fs::temp_directory_path()
-                             / ("refractplayer_slide_" + std::to_string(::getpid()) + ".md");
-    {
-        std::ofstream file(scratch, std::ios::binary);
-        if (!file) {
-            *error = "cannot write a temporary file";
-            return false;
-        }
-        file << text;
-        if (!text.empty() && text.back() != '\n') file << "\n";
-    }
-    const std::string path = scratch.string();
-    return startSourceEdit("slide.py",
-                           {"--slide", std::to_string(slide), "--write", path},
-                           "saved",
-                           [path](bool ok, const std::string& done) {
-                               std::error_code ec;
-                               fs::remove(path, ec);
-                               if (slideEditor) slideEditor->saveFinished(ok, done);
-                           }, error);
-}
-
-// Break the slide in two at `line`, with the editor's unsaved text applied first — one
-// rewrite, one history entry, one rebuild.
-bool splitSlideSource(int slide, const std::string& text, int line, std::string* error) {
-    const fs::path scratch = fs::temp_directory_path()
-                             / ("refractplayer_split_" + std::to_string(::getpid()) + ".md");
-    {
-        std::ofstream file(scratch, std::ios::binary);
-        if (!file) {
-            *error = "cannot write a temporary file";
-            return false;
-        }
-        file << text;
-        if (!text.empty() && text.back() != '\n') file << "\n";
-    }
-    const std::string path = scratch.string();
-    return startSourceEdit("slide.py",
-                           {"--slide", std::to_string(slide), "--write", path,
-                            "--split", std::to_string(line)},
-                           "split",
-                           [path](bool ok, const std::string& done) {
-                               std::error_code ec;
-                               fs::remove(path, ec);
-                               if (slideEditor) slideEditor->saveFinished(ok, done);
-                           }, error);
-}
-
-// A whole file under the deck — slides.md end to end, or settings.toml. The same tool, the
-// same history, the same rebuild as editing one slide.
-bool loadDeckFile(const std::string& path, std::string* text, std::string* error) {
-    const fs::path out = refract::deckSidecarPath(deckInput, "deck.json");
-    if (out.empty()) {
-        *error = "this deck has no files behind it";
-        return false;
-    }
-    std::string output;
-    const int rc = refract::runTool("slide.py", {out.parent_path().string(),
-                                                 "--file", path, "--read"}, &output);
-    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
-    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
-        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
-                     ? doc["error"].get<std::string>()
-                     : "cannot read " + path;
-        return false;
-    }
-    *text = doc.value("text", std::string());
-    return true;
-}
-
-bool saveDeckFile(const std::string& path, const std::string& text, std::string* error) {
-    const fs::path scratch = fs::temp_directory_path()
-                             / ("refractplayer_file_" + std::to_string(::getpid()) + ".txt");
-    {
-        std::ofstream file(scratch, std::ios::binary);
-        if (!file) {
-            *error = "cannot write a temporary file";
-            return false;
-        }
-        file << text;
-        if (!text.empty() && text.back() != '\n') file << "\n";
-    }
-    const std::string tmp = scratch.string();
-    return startSourceEdit("slide.py", {"--file", path, "--write", tmp}, "saved",
-                           [tmp](bool ok, const std::string& done) {
-                               std::error_code ec;
-                               fs::remove(tmp, ec);
-                               if (slideEditor) slideEditor->saveFinished(ok, done);
-                           }, error);
-}
-
 void openSlideEditor() {
     if (slideEditor) return;
     slideEditor = refract::SlideEditor::Create(560, 620);
     if (!slideEditor) return;
-    slideEditor->setLoader(loadSlideSource);
-    slideEditor->setSaver(saveSlideSource);
-    slideEditor->setSplitter(splitSlideSource);
-    slideEditor->setFileAccess(loadDeckFile, saveDeckFile);
+    slideEditor->setLoader([](int slide, std::string* text, std::string* file, int* shared,
+                          std::string* error) {
+        return source.readSlide(slide, text, file, shared, error);
+    });
+    slideEditor->setSaver([](int slide, const std::string& text, std::string* error) {
+        return source.writeSlide(slide, text, error);
+    });
+    slideEditor->setSplitter([](int slide, const std::string& text, int line,
+                            std::string* error) {
+        return source.splitSlide(slide, text, line, error);
+    });
+    slideEditor->setFileAccess(
+        [](const std::string& path, std::string* text, std::string* error) {
+            return source.readFile(path, text, error);
+        },
+        [](const std::string& path, const std::string& text, std::string* error) {
+            return source.writeFile(path, text, error);
+        });
     slideEditor->setAutoSave(session.editorAutoSave);
     session.restore("editor", slideEditor->window());
     slideEditor->showSlide(g.currentIndex);
@@ -1282,7 +891,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         // ── Screen ───────────────────────────────────────────────────
         case GLFW_KEY_B: app.blank = (app.blank == 1) ? 0 : 1; break;
         case GLFW_KEY_W: app.blank = (app.blank == 2) ? 0 : 2; break;
-        case GLFW_KEY_F: setFullscreen(window, glfwGetWindowMonitor(window) == nullptr); break;
+        case GLFW_KEY_F: refract::setFullscreen(window, glfwGetWindowMonitor(window) == nullptr); break;
         case GLFW_KEY_P: togglePresenter(); break;
         case GLFW_KEY_C: toggleCaptions(); break;
         case GLFW_KEY_V: toggleDeckView(); break;
@@ -1322,7 +931,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             if (app.showHelp) app.showHelp = false;
             else if (!app.jumpDigits.empty()) app.jumpDigits.clear();
             else if (app.blank) app.blank = 0;
-            else if (glfwGetWindowMonitor(window) != nullptr) setFullscreen(window, false);
+            else if (glfwGetWindowMonitor(window) != nullptr) refract::setFullscreen(window, false);
             break;
         case GLFW_KEY_Q:
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -1361,154 +970,40 @@ sk_sp<SkImage> captureLiveFrame() {
     return bitmap.asImage();
 }
 
-void usage() {
-    std::cerr <<
-        "refractplayer — presenter's player for refract decks\n"
-        "\n"
-        "  refractplayer [options] <deck-out-dir | slide.rc | deck.zip> [width height]\n"
-        "\n"
-        "Options:\n"
-        "  --presenter        open the presenter window (clock, notes, next slide)\n"
-        "  --deck-view        open the deck view: every slide at once, and where the\n"
-        "                     deck is reordered (drag a slide; the markdown is rewritten\n"
-        "                     and the deck rebuilt)\n"
-        "  --build            open the build panel: refract's options and a rebuild\n"
-        "                     button, attached alongside the deck view\n"
-        "  --editor           open the slide editor: the markdown behind the slide on\n"
-        "                     screen, edited in place and rebuilt on save\n"
-        "  --assets           open the asset window: what is in includes/, which\n"
-        "                     slides use it, and what nothing uses any more\n"
-        "  --fullscreen, -f   start the slide window fullscreen\n"
-        "  --display <n>      monitor for the slide window (0-based); the presenter\n"
-        "                     window opens on the next one\n"
-        "  --duration <t>     planned talk length for the timer, e.g. 25m, 45, 1h30m\n"
-        "  --cpu | --metal    rendering backend (default: Metal on macOS)\n"
-        "  --auto <sec>       advance every N seconds\n"
-        "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
-        "                     wavs a --record-audio run captured)\n"
-        "  --no-sound         never play a slide's voice-over, even where one exists\n"
-        "  --captions         open the close-caption window (needs timings from\n"
-        "                     --transcribe)\n"
-        "\n"
-        "Captions:\n"
-        "  --transcribe       transcribe the recorded narration and align it into\n"
-        "                     per-word caption timings, then exit\n"
-        "  --caption-model N  whisper model for transcription (default: base)\n"
-        "  --caption-lang L   language of the narration (default: en)\n"
-        "\n"
-        "Web:\n"
-        "  --web <dir>        write a self-contained web player of the deck — slides,\n"
-        "                     narration and captions — into <dir>, then exit\n"
-        "\n"
-        "Rehearsing:\n"
-        "  --record           time the run: writes timing.json beside the slides, so a\n"
-        "                     later run can show whether it is ahead or behind\n"
-        "  --record-audio     also record narration, one wav per slide, into the deck's\n"
-        "                     voice dir (implies --record; disables voice-over playback)\n"
-        "\n"
-        "Export:\n"
-        "  --pdf <out.pdf>    write the deck to a PDF and exit (one page per slide;\n"
-        "                     .rc slides stay vector, videos contribute a first frame)\n"
-        "  --images <dir>     write one PNG per slide into <dir> and exit\n"
-        "  --export-delay <s> how long each slide animates before it is captured\n"
-        "                     (default 2) — long enough that a slide which animates\n"
-        "                     in is not caught blank\n"
-        "\n"
-        "Press H in the player for the key card.\n";
-}
-
-// "25m", "45" (minutes), "1h30m", "90s" — a planned talk length in seconds.
-double parseDuration(const std::string& text) {
-    double total = 0, number = 0;
-    bool sawUnit = false, sawDigit = false;
-    for (char c : text) {
-        if (std::isdigit(static_cast<unsigned char>(c))) {
-            number = number * 10 + (c - '0');
-            sawDigit = true;
-        } else {
-            if (c == 'h' || c == 'H') { total += number * 3600; sawUnit = true; }
-            else if (c == 'm' || c == 'M') { total += number * 60; sawUnit = true; }
-            else if (c == 's' || c == 'S') { total += number; sawUnit = true; }
-            number = 0;
-        }
-    }
-    if (!sawUnit) return sawDigit ? number * 60 : 0;   // a bare number is minutes
-    return total + number * 60;
-}
-
 }  // namespace
 
 int main(int argc, char* argv[]) {
-
-    bool useMetal = true;
-    bool startFullscreen = false;
-    int slideMonitor = -1;
-    int initW = 1600, initH = 900;
-    std::string pdfOutput;
-    std::string imagesOutput;
-    double exportDelay = 2.0;
-    bool record = false;
-    bool wantCaptions = false;
-    bool wantAssets = false;
-    bool transcribe = false;
-    std::string webOutput;
-    std::string captionModel = "base";
-    std::string captionLanguage = "en";
-    std::string input;
-    std::vector<std::string> positional;
-
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        auto next = [&](const char* what) -> std::string {
-            if (i + 1 >= argc) {
-                std::cerr << "refractplayer: " << what << " needs a value\n";
-                std::exit(1);
-            }
-            return argv[++i];
-        };
-        if (arg == "--presenter") wantPresenter = true;
-        else if (arg == "--deck-view") wantDeckView = true;
-        else if (arg == "--build") wantBuildPanel = true;
-        else if (arg == "--editor") wantEditor = true;
-        else if (arg == "--fullscreen" || arg == "-f") startFullscreen = true;
-        else if (arg == "--display") slideMonitor = std::atoi(next("--display").c_str());
-        else if (arg == "--duration") app.clock.target = parseDuration(next("--duration"));
-        else if (arg == "--cpu") useMetal = false;
-        else if (arg == "--metal") useMetal = true;
-        else if (arg == "--auto") {
-            g.autoAdvanceSec = std::atof(next("--auto").c_str());
-            if (g.autoAdvanceSec <= 0) g.autoAdvanceSec = 5.0;
-        }
-        else if (arg == "--auto-voice") g.autoAdvanceOnVoice = true;
-        else if (arg == "--no-sound") g.voiceOverEnabled = false;
-        else if (arg == "--pdf") pdfOutput = next("--pdf");
-        else if (arg == "--images") imagesOutput = next("--images");
-        else if (arg == "--captions") wantCaptions = true;
-        else if (arg == "--assets") wantAssets = true;
-        else if (arg == "--transcribe") transcribe = true;
-        else if (arg == "--web") webOutput = next("--web");
-        else if (arg == "--caption-model") captionModel = next("--caption-model");
-        else if (arg == "--caption-lang") captionLanguage = next("--caption-lang");
-        else if (arg == "--record") record = true;
-        else if (arg == "--record-audio") { record = true; app.recordAudio = true; }
-        else if (arg == "--export-delay" || arg == "--pdf-delay")
-            exportDelay = std::atof(next(arg.c_str()).c_str());
-        else if (arg == "--help" || arg == "-h") { usage(); return 0; }
-        else if (!arg.empty() && arg[0] == '-') {
-            std::cerr << "refractplayer: unknown option " << arg << "\n";
-            usage();
-            return 1;
-        }
-        else positional.push_back(arg);
+    const refract::Options options = refract::parseOptions(argc, argv);
+    if (!options.error.empty()) {
+        std::cerr << "refractplayer: " << options.error << "\n" << refract::usageText();
+        return 1;
+    }
+    if (options.help) {
+        std::cerr << refract::usageText();
+        return 0;
     }
 
-    if (positional.empty()) {
+    // What the options say about the run itself, rather than about a window.
+    app.clock.target = options.duration;
+    app.recordAudio = options.recordAudio;
+    g.autoAdvanceSec = options.autoAdvanceSec;
+    g.autoAdvanceOnVoice = options.autoVoice;
+    g.voiceOverEnabled = options.sound;
+    wantPresenter = options.presenter;
+    wantDeckView = options.deckView;
+    wantBuildPanel = options.buildPanel;
+    wantEditor = options.editor;
+
+    int initW = options.width, initH = options.height;
+    std::string input = options.input;
+
+    if (input.empty()) {
         // Nothing named. From a terminal the usage text is the useful answer; double-clicked,
         // it was a process that printed into nowhere and exited. So say it, then ask — the
         // player can write a deck as well as play one, and "start a new one" is now something
         // it can offer.
-        usage();
-        if (pdfOutput.empty() && imagesOutput.empty() && webOutput.empty() && !transcribe) {
+        std::cerr << refract::usageText();
+        if (!options.headless()) {
             if (!glfwInit()) return 1;
             input = refract::runStartWindow();
         }
@@ -1516,26 +1011,20 @@ int main(int argc, char* argv[]) {
             glfwTerminate();
             return 1;
         }
-    } else {
-        input = positional[0];
-    }
-    if (positional.size() >= 3) {
-        initW = std::atoi(positional[1].c_str());
-        initH = std::atoi(positional[2].c_str());
     }
 
     // ── Export ───────────────────────────────────────────────────────
     // Headless: no window, no GLFW, no playlist — the exporters walk the deck themselves.
     // Size follows the window size, which defaults to the deck's design size; a PDF page
     // takes an .rc slide's own size over it, so there it only matters for media pages.
-    if (!pdfOutput.empty() || !imagesOutput.empty()) {
+    if (!options.pdf.empty() || !options.images.empty()) {
         int failures = 0;
-        if (!pdfOutput.empty()) {
-            auto result = exportDeckToPdf(input, pdfOutput, initW, initH, exportDelay);
+        if (!options.pdf.empty()) {
+            auto result = exportDeckToPdf(input, options.pdf, initW, initH, options.exportDelay);
             if (result.pages == 0) failures++;
         }
-        if (!imagesOutput.empty()) {
-            auto result = exportDeckToImages(input, imagesOutput, initW, initH, exportDelay);
+        if (!options.images.empty()) {
+            auto result = exportDeckToImages(input, options.images, initW, initH, options.exportDelay);
             if (result.images == 0 || result.failures > 0) failures++;
         }
         return failures > 0 ? 1 : 0;
@@ -1572,7 +1061,7 @@ int main(int argc, char* argv[]) {
 
     // ── Web player ───────────────────────────────────────────────────
     // The deck, its narration and its captions, assembled into a page that plays them.
-    if (!webOutput.empty()) {
+    if (!options.web.empty()) {
         if (g.zip) {
             std::cerr << "refractplayer: --web needs a deck directory, not a zip\n";
             return 1;
@@ -1580,13 +1069,13 @@ int main(int argc, char* argv[]) {
         const fs::path slidesDir = fs::is_directory(input)
                                        ? fs::path(input)
                                        : fs::path(g.files.front()).parent_path();
-        return refract::runTool("web.py", {slidesDir.string(), webOutput});
+        return refract::runTool("web.py", {slidesDir.string(), options.web});
     }
 
     // ── Transcription ────────────────────────────────────────────────
     // Needs the playlist — that is what says where the narration was recorded — but no
     // window, so it runs before one is opened and exits.
-    if (transcribe) {
+    if (options.transcribe) {
         const fs::path wav = voicePathFor(g.files.front());
         if (wav.empty()) {
             std::cerr << "refractplayer: slides are not numbered, so there are no voice "
@@ -1594,8 +1083,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return refract::runTool("captions.py", {wav.parent_path().string(),
-                                       "--model", captionModel,
-                                       "--language", captionLanguage});
+                                       "--model", options.captionModel,
+                                       "--language", options.captionLanguage});
     }
 
     app.deck.build(g.files, input);
@@ -1617,7 +1106,7 @@ int main(int argc, char* argv[]) {
     // the numbers on the files are no longer the numbers on the slides.
     if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
 
-    if (record) {
+    if (options.record) {
         fs::path tracePathFor = refract::deckSidecarPath(input, "timing.json");
         if (tracePathFor.empty()) {
             std::cerr << "refractplayer: cannot record a trace for a zip bundle\n";
@@ -1659,7 +1148,22 @@ int main(int argc, char* argv[]) {
     // Where the edit tools are pointed. Empty for a zip bundle, which has no markdown.
     {
         const fs::path out = refract::deckSidecarPath(input, "deck.json");
-        if (!out.empty()) edits.setDeck(out.parent_path().string());
+        if (!out.empty()) {
+            source.setOutDir(out.parent_path().string());
+            builder.setOutDir(out.parent_path().string());
+        }
+        // A finished write changed the deck on disk: reload it, and remember which stills
+        // the rebuild actually rewrote so the rest can be kept.
+        source.setOnChanged([](std::vector<std::string> outputs) {
+            changedOutputs = std::move(outputs);
+            deckReloadPending = true;
+        });
+        source.setOnEditFinished([](bool ok, const std::string& done) {
+            if (deckView) deckView->editFinished(ok, done);
+        });
+        source.setOnSaveFinished([](bool ok, const std::string& done) {
+            if (slideEditor) slideEditor->saveFinished(ok, done);
+        });
     }
 
     if (session.load(input)) sessionOnDisk = session.serialise();
@@ -1680,15 +1184,15 @@ int main(int argc, char* argv[]) {
     slideWindow = window;
     // Where it was last time. A size on the command line or a `--display` outranks it, the
     // same way an explicitly opened panel does: asking for something beats a memory of it.
-    if (positional.size() < 3 && slideMonitor < 0) session.restore("slides", window);
+    if (!options.sizeGiven && options.display < 0) session.restore("slides", window);
 
-    if (slideMonitor >= 0) {
-        GLFWmonitor* monitor = monitorAt(slideMonitor);
+    if (options.display >= 0) {
+        GLFWmonitor* monitor = refract::monitorAt(options.display);
         int mx, my;
         glfwGetMonitorPos(monitor, &mx, &my);
         glfwSetWindowPos(window, mx + 40, my + 40);
         // The presenter window belongs on a *different* screen from the slides.
-        presenterMonitor = slideMonitor + 1;
+        presenterMonitor = options.display + 1;
         int count = 0;
         glfwGetMonitors(&count);
         if (presenterMonitor >= count) presenterMonitor = -1;
@@ -1698,7 +1202,7 @@ int main(int argc, char* argv[]) {
     glfwSwapInterval(1);
 
 #if defined(__APPLE__)
-    if (useMetal) {
+    if (options.useMetal) {
         g.backend = MetalRenderBackend::Create(window);
         if (!g.backend) {
             std::cerr << "refractplayer: Metal unavailable, using CPU\n";
@@ -1708,7 +1212,7 @@ int main(int argc, char* argv[]) {
         g.backend = std::make_unique<CpuRenderBackend>();
     }
 #else
-    (void)useMetal;
+    (void)options.useMetal;
     g.backend = std::make_unique<CpuRenderBackend>();
 #endif
     // Hands the window to the player *and* to the hosts that put native views over the
@@ -1733,19 +1237,19 @@ int main(int argc, char* argv[]) {
     glfwGetWindowSize(window, &winW, &winH);
     ensureSurface(winW, winH);
 
-    if (startFullscreen) {
-        setFullscreen(window, true, slideMonitor >= 0 ? monitorAt(slideMonitor) : nullptr);
+    if (options.fullscreen) {
+        refract::setFullscreen(window, true, options.display >= 0 ? refract::monitorAt(options.display) : nullptr);
         glfwGetWindowSize(window, &winW, &winH);
         ensureSurface(winW, winH);
     }
     // A flag on the command line still opens a panel the session had closed — asking for
     // something explicitly outranks a memory of not having wanted it.
     if (wantPresenter || session.presenter) openPresenter();
-    if (wantCaptions || session.captions) openCaptions();
+    if (options.captions || session.captions) openCaptions();
     if (wantDeckView || session.deckView) openDeckView();
     if (wantBuildPanel || session.build) openBuildPanel();
     if (wantEditor || session.editor) openSlideEditor();
-    if (wantAssets || session.assets) openAssetWindow();
+    if (options.assets || session.assets) openAssetWindow();
 
     // The panels, in the menu bar. Chosen from a menu they arrive on Cocoa's thread of
     // control rather than GLFW's, in the middle of the event pump — so the item only asks,
@@ -1826,7 +1330,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        edits.collect();
+        source.collect();
 
         if (deckReloadPending) {
             deckReloadPending = false;
@@ -1996,12 +1500,7 @@ int main(int argc, char* argv[]) {
             } else {
                 // A build that has just finished changed the deck on disk; reload it the same
                 // way a reorder does, so the slides on screen are the ones just built.
-                refract::BuildState state;
-                {
-                    std::lock_guard<std::mutex> lock(buildMutex);
-                    state = buildResult;
-                }
-                state.running = buildRunning;
+                const refract::BuildState state = builder.state();
                 if (state.ran && !state.running && !buildReloaded) {
                     buildReloaded = true;
                     if (state.ok) deckReloadPending = true;
@@ -2012,11 +1511,13 @@ int main(int argc, char* argv[]) {
                 // Rebuild when the markdown moves under us. The first sample after the
                 // switch is turned on only records where things stand — turning it on is
                 // not itself a change.
-                if (buildPanel->watching() && !state.running && !edits.running()
+                if (buildPanel->watching() && !state.running && !source.running()
                     && elapsed - lastWatchCheck >= kWatchInterval) {
                     lastWatchCheck = elapsed;
-                    const double now = deckSourceMtime();
-                    if (watchedMtime != 0.0 && now > watchedMtime) startBuild(buildPanel->options());
+                    const double now = builder.sourceMtime();
+                    if (watchedMtime != 0.0 && now > watchedMtime) {
+                        builder.start(buildPanel->options());
+                    }
                     watchedMtime = now;
                 } else if (!buildPanel->watching()) {
                     watchedMtime = 0.0;
@@ -2070,31 +1571,10 @@ int main(int argc, char* argv[]) {
     if (voice) voice->stop();
     voice.reset();
     refract::stopThumbs();
-    // What is still open at the end is what was open, so it comes back next time.
-    session.presenter = presenter != nullptr;
-    session.deckView = deckView != nullptr;
-    session.editor = slideEditor != nullptr;
-    session.build = buildPanel != nullptr;
-    session.captions = captionWindow != nullptr;
-    if (presenter) session.capture("presenter", presenter->window());
-    if (captionWindow) session.capture("captions", captionWindow->window());
-    if (deckView) {
-        session.capture("deckView", deckView->window());
-        session.folded = deckView->foldedRuns();
-    }
-    if (slideEditor) {
-        session.capture("editor", slideEditor->window());
-        session.editorAutoSave = slideEditor->autoSave();
-    }
-    if (buildPanel) {
-        session.capture("build", buildPanel->window());
-        session.buildWatch = buildPanel->watching();
-        const refract::BuildOptions& opts = buildPanel->options();
-        session.buildTransitions = opts.transitions;
-        session.buildDebug = opts.debug;
-        session.buildForce = opts.force;
-        session.buildKeepJson = opts.keepJson;
-    }
+    // What is still open at the end is what was open, so it comes back next time. The same
+    // capture the timer takes while the player runs — a clean quit should not remember
+    // anything different from a kill.
+    captureSession();
     session.save(deckInput);
 
     captionWindow.reset();
@@ -2102,8 +1582,8 @@ int main(int argc, char* argv[]) {
     deckView.reset();
     buildPanel.reset();
     slideEditor.reset();
-    if (buildThread.joinable()) buildThread.join();
-    edits.join();
+    builder.join();
+    source.join();
     stopVoiceOver();
     cleanupTempFile();
     presenter.reset();

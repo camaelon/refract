@@ -18,6 +18,7 @@ endif()
 set(PLAYER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeometry
+              options:Options
               slide_recorder:SlideRecorder deck_library:DeckLibrary)
     string(REPLACE ":" ";" parts ${suite})
     list(GET parts 0 name)
