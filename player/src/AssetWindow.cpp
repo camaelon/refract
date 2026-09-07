@@ -31,15 +31,6 @@ constexpr float kHeaderH = 74.0f;
 constexpr float kRowH    = 44.0f;
 constexpr float kPreview = 34.0f;   // the thumbnail down the left of a row
 
-// "1.4 MB", "812 KB", "377 B" — a size somebody can act on rather than count digits in.
-std::string humanSize(long long bytes) {
-    char buf[32];
-    if (bytes >= 1024 * 1024) std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
-    else if (bytes >= 1024)   std::snprintf(buf, sizeof(buf), "%lld KB", bytes / 1024);
-    else                      std::snprintf(buf, sizeof(buf), "%lld B", bytes);
-    return buf;
-}
-
 // Which slides use it, in the space a row has. "slides 1, 4, 9" — and past a few, a count,
 // because the list stops meaning anything once it wraps.
 std::string usedLabel(const Asset& asset) {
@@ -288,11 +279,11 @@ void AssetWindow::render(App& app) {
              uiFont(12), ui::kDim);
     char summary[128];
     std::snprintf(summary, sizeof(summary), "%d files   %s",
-                  static_cast<int>(impl.assets.size()), humanSize(total).c_str());
+                  static_cast<int>(impl.assets.size()), humanBytes(total).c_str());
     drawTextRight(canvas, summary, w - pad, 32, uiFont(13), ui::kDim);
     if (unused) {
         char note[128];
-        std::snprintf(note, sizeof(note), "%d unused   %s", unused, humanSize(wasted).c_str());
+        std::snprintf(note, sizeof(note), "%d unused   %s", unused, humanBytes(wasted).c_str());
         drawTextRight(canvas, note, w - pad, 52, uiFont(12), ui::kWarn);
     }
     drawText(canvas, "up/down selects  ~  backspace moves one to the trash  ~  R rescans",
@@ -368,7 +359,7 @@ void AssetWindow::render(App& app) {
         }
         drawText(canvas, usedLabel(asset), textLeft, baseline + 14,
                  uiFont(11), asset.used ? ui::kDim : ui::kWarn);
-        drawTextRight(canvas, humanSize(asset.size), row.right() - 14, baseline, uiFont(12),
+        drawTextRight(canvas, humanBytes(asset.size), row.right() - 14, baseline, uiFont(12),
                       ui::kDim);
     }
     canvas->restore();

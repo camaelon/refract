@@ -68,6 +68,9 @@ void strokeRoundRect(SkCanvas* canvas, const SkRect& r, float radius, SkColor co
 SkRect drawImageFit(SkCanvas* canvas, const sk_sp<SkImage>& img, const SkRect& box);
 
 // Durations as m:ss, or h:mm:ss past an hour.
+// "1.4 MB", "812 KB", "377 B" — a size somebody can act on rather than count digits in.
+std::string humanBytes(long long bytes);
+
 std::string formatDuration(double seconds);
 // Local wall-clock time as HH:MM.
 std::string wallClock();

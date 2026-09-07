@@ -1,21 +1,28 @@
 #include "SlideEditor.h"
 
 #include "Completion.h"
+#include "Utf8.h"
 
 #include "Ui.h"
 #include "ViewGeometry.h"
 
 #include "rcplayer/CpuRenderBackend.h"
+#include "rcplayer/Player.h"          // readFileBytes, for the preview beside the menu
 
 #define GL_SILENCE_DEPRECATION
 #include <GLFW/glfw3.h>
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkData.h"
 #include "include/core/SkFontMetrics.h"
+#include "include/core/SkImage.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <vector>
 
 namespace refract {
@@ -92,6 +99,7 @@ struct SlideEditor::Impl {
     // them. Reading the line back costs nothing and cannot fall out of step.
     AssetLister assetLister;
     std::vector<Asset> assetList;
+    std::string deckDir;                   // where the files are, for the preview
     std::vector<std::string> assetNames;   // as they would be written between < and >
     std::string namesFor;                  // the file assetNames was worked out for
     bool namesReady = false;               // ...and it has been, even if it found nothing
@@ -107,6 +115,12 @@ struct SlideEditor::Impl {
     int menuTop = 0;                       // first row drawn, for a list longer than the box
     SkRect menuRect = SkRect::MakeEmpty();
     float menuRowH = 0;
+    float menuListW = 0;                   // the names' half of it, for hit-testing
+    // Decoded previews, by path, and the opening lines of the ones that are text. Only the
+    // asset under the cursor is ever read, so walking a folder of 4K screenshots costs one
+    // decode per row you stop on rather than all of them at once.
+    std::map<std::string, sk_sp<SkImage>> previews;
+    std::map<std::string, std::string> excerpts;
 
     Loader loader;
     Saver  saver;
@@ -156,14 +170,76 @@ struct SlideEditor::Impl {
         assetNames = namesUnder(paths, includeBase(file));
     }
 
-    // What each row says on its right: the kind, so an .rc embed and a .png read apart at a
-    // glance. Looked up rather than derived — the tool already decided.
-    std::string kindOf(const std::string& name) const {
+    // The asset a menu row stands for. Looked up rather than derived — the tool already
+    // decided what kind each file is and how big it is.
+    const Asset* assetFor(const std::string& name) const {
         const std::string path = includeBase(file) + name;
         for (const Asset& asset : assetList) {
-            if (asset.path == path) return asset.kind;
+            if (asset.path == path) return &asset;
         }
-        return std::string();
+        return nullptr;
+    }
+
+    sk_sp<SkImage> preview(const std::string& relative) {
+        auto it = previews.find(relative);
+        if (it != previews.end()) return it->second;
+        sk_sp<SkImage> image;
+        std::vector<uint8_t> bytes;
+        if (!deckDir.empty()
+            && rcplayer::readFileBytes(deckDir + "/" + relative, bytes) && !bytes.empty()) {
+            image = SkImages::DeferredFromEncodedData(
+                SkData::MakeWithCopy(bytes.data(), bytes.size()));
+        }
+        previews[relative] = image;   // a null is remembered too: it failed once, it will again
+        return image;
+    }
+
+    // Whether the pane can show the file's own text. A .rc is a *compiled* document — its
+    // bytes say nothing to anybody — so it is not on the list even though it is a document.
+    static bool textual(const std::string& name) {
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos) return false;
+        std::string ext = name.substr(dot);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (const char* known : {".json", ".md", ".toml", ".sksl", ".txt", ".csv", ".xml",
+                                  ".kt", ".kts", ".java", ".py", ".ts", ".js"}) {
+            if (ext == known) return true;
+        }
+        return false;
+    }
+
+    // The opening of a text asset, enough to fill the pane and no more.
+    //
+    // Read as a fixed block rather than line by line: a minified .json is one line of
+    // several megabytes, and getline would pull all of it into memory to show sixty
+    // characters of it. Lines are cut at a code-point boundary — half a character is not
+    // valid UTF-8, and Skia's answer to invalid UTF-8 is to abort the process.
+    const std::string& excerpt(const std::string& relative) {
+        auto it = excerpts.find(relative);
+        if (it != excerpts.end()) return it->second;
+        std::string text;
+        if (!deckDir.empty()) {
+            std::ifstream file(deckDir + "/" + relative, std::ios::binary);
+            char block[4096];
+            file.read(block, sizeof(block));
+            const std::string head(block, static_cast<size_t>(file.gcount()));
+            size_t at = 0;
+            for (int i = 0; i < 8 && at < head.size(); i++) {
+                size_t end = head.find('\n', at);
+                if (end == std::string::npos) end = head.size();
+                const size_t stop = utf8Boundary(head, std::min(end, at + 60));
+                std::string line = head.substr(at, stop - at);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                // A tab or a stray control byte would draw as tofu or nothing at all.
+                for (char& c : line) {
+                    if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+                }
+                text += displayable(line);
+                text += '\n';
+                at = end + 1;
+            }
+        }
+        return excerpts.emplace(relative, std::move(text)).first->second;
     }
 
     // The caret position under a point in the window.
@@ -252,8 +328,13 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         // The menu is over the text, so it is asked first: a click in it is a choice, not
         // somewhere to put the caret.
         if (impl.menuOpen && impl.menuRect.contains(x, y) && impl.menuRowH > 0) {
-            const int row = static_cast<int>((y - impl.menuRect.top() - 4) / impl.menuRowH);
-            self->acceptCompletion(impl.menuTop + row);
+            // Only the names are clickable. The preview beside them is something to look
+            // at, and a click on it should not take whatever row it happens to be level
+            // with — but it should not put the caret behind the menu either.
+            if (x <= impl.menuRect.left() + impl.menuListW) {
+                const int row = static_cast<int>((y - impl.menuRect.top() - 4) / impl.menuRowH);
+                self->acceptCompletion(impl.menuTop + row);
+            }
             return;
         }
         if (impl.autoButton.contains(x, y)) { impl.autoSave = !impl.autoSave; return; }
@@ -330,6 +411,9 @@ void SlideEditor::refreshAssets() {
     std::string dir, error;
     if (!impl.assetLister(&found, &dir, &error)) return;   // a zip bundle, or no deck
     impl.assetList = std::move(found);
+    impl.deckDir = dir;
+    impl.previews.clear();       // a rebuild may have replaced the file behind a name
+    impl.excerpts.clear();
     impl.namesReady = false;     // the names are worked out again for whatever is open
     impl.assetNames.clear();
 }
@@ -942,20 +1026,31 @@ void SlideEditor::render(App& app) {
         const float rowH = std::round(kFontSize + 10);
         impl.menuRowH = rowH;
 
-        float widest = 120;
+        float listW = 130;
         for (int i = 0; i < rows; i++) {
             const std::string& name = impl.assetNames[impl.menuMatches[impl.menuTop + i]];
-            widest = std::max(widest, textWidth(rowFont, name)
-                                          + textWidth(kindFont, "document") + 46);
+            listW = std::max(listW, textWidth(rowFont, name)
+                                        + textWidth(kindFont, "document") + 46);
         }
+        // The menu is at least tall enough for the preview to be worth looking at. One
+        // match is exactly when you most want to see the file before taking it, and a
+        // 20-pixel square would be no answer at all.
+        constexpr float kMinPane = 116;
+        const float boxH = std::max(rows * rowH + 8, kMinPane + 8);
+        // The preview is a square down the full height of the menu, beside the names — so it
+        // grows with the list rather than sitting in a fixed well, and an image is shown as
+        // large as the menu is tall. In an editor too narrow for both, the names win.
+        const float paneSide = boxH - 8;
+        const float room = w - pad * 2;
+        const bool withPane = listW + paneSide + 10 <= room;
+        const float boxW = std::min(withPane ? listW + paneSide + 10 : listW, room);
+
         const std::string& anchorLine = impl.buffer.line(impl.menuAnchor.line);
         const float anchorX = impl.textLeft - impl.scrollX
                               + textWidth(mono, anchorLine.substr(0, impl.menuAnchor.col));
-        const float boxW = std::min(widest, w - pad * 2);
         const float x = std::max(pad, std::min(anchorX, w - pad - boxW));
         const float lineBottom = impl.textTop + impl.menuAnchor.line * lineHeight
                                  - impl.scrollY + kLineGap;
-        const float boxH = rows * rowH + 8;
         // Below the line it belongs to, unless there is no room — then above it, which is
         // what every other menu in the world does at the bottom of a screen.
         float y = lineBottom + 4;
@@ -966,10 +1061,12 @@ void SlideEditor::render(App& app) {
         fillRoundRect(canvas, impl.menuRect, 8, ui::kPanel);
         strokeRoundRect(canvas, impl.menuRect, 8, ui::kAccent, 1.0f);
 
+        const float rowsW = withPane ? boxW - paneSide - 10 : boxW;
+        impl.menuListW = rowsW;
         for (int i = 0; i < rows; i++) {
             const int index = impl.menuMatches[impl.menuTop + i];
             const std::string& name = impl.assetNames[index];
-            const SkRect row = SkRect::MakeXYWH(x + 4, y + 4 + i * rowH, boxW - 8, rowH);
+            const SkRect row = SkRect::MakeXYWH(x + 4, y + 4 + i * rowH, rowsW - 8, rowH);
             const bool picked = impl.menuTop + i == impl.menuPick;
             const bool hot = row.contains(static_cast<float>(impl.mouseX),
                                           static_cast<float>(impl.mouseY));
@@ -978,13 +1075,77 @@ void SlideEditor::render(App& app) {
                               picked ? withAlpha(ui::kAccent, 0x44) : withAlpha(ui::kBg, 0x60));
             }
             const float baseline = row.centerY() + kFontSize * 0.35f;
-            drawText(canvas, ellipsize(name, rowFont, row.width() - 80), row.left() + 8,
-                     baseline, rowFont, picked ? ui::kText : ui::kDim);
-            const std::string kind = impl.kindOf(name);
-            if (!kind.empty()) {
-                drawTextRight(canvas, kind, row.right() - 8, baseline, kindFont, ui::kLine);
+            const Asset* asset = impl.assetFor(name);
+            const float kindW = asset ? textWidth(kindFont, asset->kind) + 14 : 8;
+            drawText(canvas, ellipsize(name, rowFont, row.width() - kindW - 12),
+                     row.left() + 8, baseline, rowFont, picked ? ui::kText : ui::kDim);
+            if (asset && !asset->kind.empty()) {
+                drawTextRight(canvas, asset->kind, row.right() - 8, baseline, kindFont,
+                              ui::kLine);
             }
         }
+
+        // ── The preview ──────────────────────────────────────────────
+        // What the name under the cursor actually is: the picture for a picture, the opening
+        // lines for anything that is text. The names alone are not enough to tell two
+        // screenshots apart, which is most of what the folder is.
+        if (withPane && impl.menuPick < static_cast<int>(impl.menuMatches.size())) {
+            const std::string& name = impl.assetNames[impl.menuMatches[impl.menuPick]];
+            const Asset* asset = impl.assetFor(name);
+            const SkRect pane = SkRect::MakeXYWH(x + boxW - paneSide - 4, y + 4,
+                                                 paneSide, paneSide);
+            fillRoundRect(canvas, pane, 6, ui::kBg);
+            strokeRoundRect(canvas, pane, 6, ui::kLine, 1.0f);
+
+            // A strip along the bottom for what the picture cannot say: how big the file is,
+            // and — once it has been decoded — how big the image is.
+            const float stripH = 16;
+            const SkRect art = SkRect::MakeLTRB(pane.left() + 4, pane.top() + 4,
+                                                pane.right() - 4, pane.bottom() - stripH);
+            std::string caption;
+            sk_sp<SkImage> image = (asset && asset->kind == "image")
+                                       ? impl.preview(asset->path) : nullptr;
+            if (image) {
+                canvas->save();
+                canvas->clipRect(art, true);
+                drawImageFit(canvas, image, art);
+                canvas->restore();
+                caption = std::to_string(image->width()) + " × "
+                          + std::to_string(image->height());
+            } else if (Impl::textual(name)) {
+                const std::string& text = impl.excerpt(asset ? asset->path : name);
+                SkFont small = uiMonoFont(9);
+                float ty = art.top() + 10;
+                size_t at = 0;
+                canvas->save();
+                canvas->clipRect(art, true);
+                while (at < text.size() && ty < art.bottom()) {
+                    const size_t end = text.find('\n', at);
+                    const std::string line = text.substr(at, end - at);
+                    drawText(canvas, ellipsize(line, small, art.width() - 8), art.left() + 4,
+                             ty, small, ui::kDim);
+                    if (end == std::string::npos) break;
+                    at = end + 1;
+                    ty += 11;
+                }
+                canvas->restore();
+            } else {
+                // A video, or a compiled .rc: nothing to draw, so it says what it is.
+                drawTextCentred(canvas, asset ? asset->kind : "no preview", art,
+                                uiFont(11, true), ui::kLine);
+            }
+            if (asset) {
+                if (!caption.empty()) caption += "  ·  ";
+                caption += humanBytes(asset->size);
+            }
+            if (!caption.empty()) {
+                drawTextCentred(canvas, caption,
+                                SkRect::MakeLTRB(pane.left(), pane.bottom() - stripH,
+                                                 pane.right(), pane.bottom()),
+                                uiFont(9), ui::kLine);
+            }
+        }
+
         // Said once, at the foot of the list: the two keys that finish the job.
         if (static_cast<int>(impl.menuMatches.size()) > rows) {
             if (impl.menuRect.bottom() + 16 < viewBottom) {
