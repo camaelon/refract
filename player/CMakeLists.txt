@@ -142,3 +142,10 @@ add_executable(deck_source_test tests/deck_source_test.cpp src/DeckSource.cpp
 target_include_directories(deck_source_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(deck_source_test PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME deck_source COMMAND deck_source_test)
+
+# Previewing a document include. Needs the engine — that is the point of it — so it builds
+# with the player rather than on its own.
+add_executable(thumb_document_test tests/thumb_document_test.cpp src/Thumbs.cpp src/Tools.cpp)
+target_include_directories(thumb_document_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(thumb_document_test PRIVATE rcplayer)
+add_test(NAME thumb_document COMMAND thumb_document_test)

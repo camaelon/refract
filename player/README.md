@@ -485,10 +485,30 @@ deck has to put in it:
 ```
 
 Down the right of it, a square preview of the name under the cursor, the full height of the
-menu: the picture for a picture, with its pixel size and file size under it, and the opening
-lines for anything that is text — a `.json` card, a `.sksl` shader, a sub-deck's `slides.md`.
-A video or a compiled `.rc` has nothing to show and says what it is instead. Two screenshots
-taken a minute apart have names that tell you nothing; this is the part that does.
+menu. Two screenshots taken a minute apart have names that tell you nothing; this is the part
+that does.
+
+| | |
+|---|---|
+| a picture | the picture, with its pixel size and file size under it |
+| a document — `.rc`, `.rcd`, or one written as `.json` | rendered, by the engine that plays the deck |
+| a clip — `.mp4`, `.mov`, `.m4v`, `.webp`, `.gif` | its opening frame, marked with a ▸ so it does not read as a photograph |
+| text — a `.sksl` shader, a sub-deck's `slides.md` | its opening lines |
+
+**Everything that can be drawn is drawn.** A deck is mostly documents and clips, so a preview
+that could only name them would be a preview of the wrong half of the folder. Both go through
+the same still worker as the presenter's "next up" pane — off the main thread, cached, never
+on the frame — so the pane shows what the include *is* rather than what it says. The rows
+either side of the cursor are rendered too, unhurried, which is what makes arrowing down the
+list instant.
+
+A `.json` document has to be compiled first: the engine reads the binary wire format, and the
+compiler that produces it is `json2rc`, the same JVM tool the build uses. So the worker
+compiles it once — about 0.2s — into a file named for the document's path, size and
+modification time, and renders that. Named that way it is compiled once *ever* rather than
+once per session: an unchanged document is already there the next time the player runs, and a
+changed one lands under a different name and rebuilds itself. Without `json2rc` built, a
+`.json` falls back to its opening lines.
 
 Picking one writes the name and closes the bracket — `<logo.png>` — with the caret after it.
 Asset names are the thing nobody remembers, and getting one wrong is a slide that builds
@@ -1063,7 +1083,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Ten C++ suites, none of which needs a window or a GPU. Eight of them need nothing but their
+Eleven C++ suites, none of which needs a window or a GPU. Eight of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1072,7 +1092,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All ten, alongside the player:
+All eleven, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1089,10 +1109,21 @@ ctest --test-dir player/build --output-on-failure
 | `options` | the command line, and that every flag it takes is in the help text |
 | `completion` | the include being typed, where its names resolve, and what matches |
 | `utf8` | that no string the chrome trims or cuts can come out invalid |
+| `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 
-The last two need more than their own source — `timing` links the engine, `deck_source` parses
-JSON — so they build with the player rather than on their own.
+The last three need more than their own source — `timing` and `thumb_document` link the
+engine, `deck_source` parses JSON — so they build with the player rather than on their own.
+
+`thumb_document` also runs as a tool: give it paths and it renders each one and says whether
+anything came out, which is how a real deck's includes get checked without opening a window.
+
+```sh
+player/build/thumb_document_test mytalk/includes/*.json mytalk/includes/*.mp4
+```
+
+A clip whose opening frame happens to be black previews as a black square — worth knowing
+about a deck before a talk, and not something a fixture can tell you.
 
 `utf8` exists for the same reason as `view_geometry`, one layer down. `ellipsize` trimmed a
 string to fit by popping single bytes and stopping at the first non-continuation byte, which

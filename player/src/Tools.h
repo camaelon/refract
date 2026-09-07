@@ -26,6 +26,17 @@ std::filesystem::path findTool(const std::string& name);
 int runTool(const std::string& name, const std::vector<std::string>& args,
             std::string* out = nullptr, std::string* errors = nullptr);
 
+// Compile a RemoteCompose document written as JSON into the binary wire format the engine
+// reads. That compiler is json2rc — a JVM tool, the same one the build uses — so this is a
+// process launch, and it belongs on a worker rather than on the frame. False when json2rc
+// cannot be found or the conversion failed.
+//
+// Safe to call from a thread: it forks and execs, and does nothing in between.
+bool compileRcJson(const std::string& jsonPath, const std::string& rcPath);
+
+// Where json2rc is, or empty when it has not been built. `REFRACT_JSON2RC` overrides it.
+std::filesystem::path findJson2Rc();
+
 // The last line of a tool's error output, or `fallback` when it said nothing useful. Trimmed
 // to something a status line can hold.
 std::string errorTail(const std::string& errors, const std::string& fallback);

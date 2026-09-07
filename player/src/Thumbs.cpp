@@ -1,5 +1,7 @@
 #include "Thumbs.h"
 
+#include "Tools.h"
+
 #include "rcplayer/AvfVideoPlayer.h"
 #include "rcplayer/MediaTypes.h"
 #include "rcplayer/Player.h"
@@ -59,6 +61,9 @@ struct Key {
 struct Job {
     Key key;
     std::vector<uint8_t> bytes;   // read on the main thread — see enqueue
+    // A document written as JSON, to be compiled before it can be read. Left to the worker
+    // rather than done in enqueue: it starts a JVM, and that does not belong on the frame.
+    std::string jsonPath;
     std::string mediaPath;        // a real file for AVFoundation, when the still is a video
     bool mediaTemp = false;       // ...and it was spilled out of a zip
     std::unique_ptr<rccore::CoreDocument> doc;
@@ -117,6 +122,39 @@ void store(const Key& key, sk_sp<SkImage> image) {
 std::deque<Job>& jobs() {
     static std::deque<Job> q;
     return q;
+}
+
+// A RemoteCompose document written as JSON — what refract's `<name.json>` includes are, and
+// what the build itself compiles. The engine reads only the binary wire format; the compiler
+// that produces it is json2rc, a JVM tool. So a JSON document is compiled once into a file
+// beside the temp directory and rendered from there.
+//
+// Compiled *once ever*, not once per session: the name carries the file's size and
+// modification time, so an unchanged document is already there the next time the player runs,
+// and a changed one lands under a different name and rebuilds itself. Around 0.2s the first
+// time, on this thread, and free afterwards.
+std::string compiledFromJson(const std::string& jsonPath) {
+    std::error_code ec;
+    const auto size = fs::file_size(jsonPath, ec);
+    if (ec) return {};
+    const auto when = fs::last_write_time(jsonPath, ec);
+    if (ec) return {};
+
+    // FNV-1a over the path, so two documents with the same name in different sub-decks do
+    // not collide, mixed with what says whether this one has changed.
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : jsonPath) { hash ^= c; hash *= 1099511628211ull; }
+    hash ^= static_cast<uint64_t>(size);      hash *= 1099511628211ull;
+    hash ^= static_cast<uint64_t>(when.time_since_epoch().count());
+
+    char name[32];
+    std::snprintf(name, sizeof(name), "%016llx.rc", static_cast<unsigned long long>(hash));
+    const fs::path dir = fs::temp_directory_path() / "refractplayer-rc";
+    fs::create_directories(dir, ec);
+    const fs::path out = dir / name;
+    if (fs::exists(out)) return out.string();
+    if (!compileRcJson(jsonPath, out.string())) return {};
+    return out.string();
 }
 
 double nowSec() {
@@ -244,6 +282,10 @@ struct Queue {
     std::mutex mutex;
     std::condition_variable wake;
     std::deque<Job> pending;
+    // The one the worker has taken off the queue and is rendering. Counted, because a still
+    // in flight is neither queued nor finished — and a caller that redraws "until the
+    // pictures have arrived" would otherwise stop while one was being made.
+    int inFlight = 0;
     std::vector<std::pair<Key, sk_sp<SkImage>>> done;
     // Bumped by clearThumbCache. Anything a worker finishes from an older generation is
     // dropped: the deck it was rendering no longer exists.
@@ -259,7 +301,16 @@ Queue& queue() {
 }
 
 void renderJob(Job& job, sk_sp<SkImage>* out) {
-    const std::string ext = rcplayer::getExt(job.key.entry);
+    std::string ext = rcplayer::getExt(job.key.entry);
+    if (!job.jsonPath.empty()) {
+        const std::string compiled = compiledFromJson(job.jsonPath);
+        if (compiled.empty() || !rcplayer::readFileBytes(compiled, job.bytes)
+            || job.bytes.empty()) {
+            *out = nullptr;                   // no json2rc, or a document it would not take
+            return;
+        }
+        ext = ".rc";                          // from here it is an ordinary document
+    }
     if (!rcplayer::isRcExt(ext)) {
         *out = renderMedia(ext, job.bytes, job.mediaPath, job.key.w, job.key.h);
         // A clip spilled out of a zip so AVFoundation could open it has served its purpose.
@@ -286,11 +337,13 @@ void workerLoop() {
             job = std::move(q.pending.front());
             q.pending.pop_front();
             generation = q.generation;
+            q.inFlight++;
         }
         sk_sp<SkImage> image;
         renderJob(job, &image);
         {
             std::lock_guard<std::mutex> lock(q.mutex);
+            q.inFlight--;
             // Dropped rather than delivered when the deck was reloaded underneath it.
             if (generation == q.generation) q.done.push_back({job.key, std::move(image)});
         }
@@ -331,7 +384,10 @@ void enqueue(const Key& key, bool urgent) {
     Job job;
     job.key = key;
     const std::string ext = rcplayer::getExt(key.entry);
-    if (rcplayer::isRcExt(ext) || rcplayer::isCodecVideoExt(ext)) {
+    if (ext == ".json") {
+        // Nothing to read here: the worker compiles it and reads what comes out.
+        job.jsonPath = key.entry;
+    } else if (rcplayer::isRcExt(ext) || rcplayer::isCodecVideoExt(ext)) {
         if (!rcplayer::readFileBytes(key.entry, job.bytes) || job.bytes.empty()) {
             store(key, nullptr);
             return;
@@ -393,7 +449,7 @@ void collectThumbs() {
 bool thumbsPending() {
     Queue& q = queue();
     std::lock_guard<std::mutex> lock(q.mutex);
-    return !q.pending.empty() || !q.done.empty();
+    return !q.pending.empty() || q.inFlight > 0 || !q.done.empty();
 }
 
 void dropThumbs(const std::vector<std::string>& entries) {

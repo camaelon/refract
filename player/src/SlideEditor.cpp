@@ -1,12 +1,14 @@
 #include "SlideEditor.h"
 
 #include "Completion.h"
+#include "Thumbs.h"
 #include "Utf8.h"
 
 #include "Ui.h"
 #include "ViewGeometry.h"
 
 #include "rcplayer/CpuRenderBackend.h"
+#include "rcplayer/MediaTypes.h"
 #include "rcplayer/Player.h"          // readFileBytes, for the preview beside the menu
 
 #define GL_SILENCE_DEPRECATION
@@ -16,6 +18,7 @@
 #include "include/core/SkData.h"
 #include "include/core/SkFontMetrics.h"
 #include "include/core/SkImage.h"
+#include "include/core/SkPathBuilder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -192,6 +195,34 @@ struct SlideEditor::Impl {
         }
         previews[relative] = image;   // a null is remembered too: it failed once, it will again
         return image;
+    }
+
+    // What the still worker can turn into a picture: a RemoteCompose document — the thing
+    // this deck is mostly made of — and a clip, which contributes its first frame. Both are
+    // rendered rather than described; see the preview pane.
+    static bool renderable(const std::string& name) {
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos) return false;
+        std::string ext = name.substr(dot);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return ext == ".rc" || ext == ".rcd" || ext == ".json"
+               || rcplayer::isCodecVideoExt(ext) || rcplayer::isAvfVideoExt(ext);
+    }
+
+    // A clip. Its frame is a real picture of a real size, unlike a document's still, which
+    // is square because the pane is.
+    static bool clip(const std::string& name) {
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos) return false;
+        std::string ext = name.substr(dot);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return rcplayer::isCodecVideoExt(ext) || rcplayer::isAvfVideoExt(ext);
+    }
+
+    // The path the still worker knows a document by: an absolute one, since it reads the
+    // file itself.
+    std::string fullPath(const std::string& relative) const {
+        return deckDir.empty() ? std::string() : deckDir + "/" + relative;
     }
 
     // Whether the pane can show the file's own text. A .rc is a *compiled* document — its
@@ -412,7 +443,12 @@ void SlideEditor::refreshAssets() {
     if (!impl.assetLister(&found, &dir, &error)) return;   // a zip bundle, or no deck
     impl.assetList = std::move(found);
     impl.deckDir = dir;
-    impl.previews.clear();       // a rebuild may have replaced the file behind a name
+    // A rebuild may have replaced the file behind a name, so nothing about it is kept —
+    // including the still the worker rendered from it.
+    std::vector<std::string> stale;
+    for (const Asset& asset : impl.assetList) stale.push_back(impl.fullPath(asset.path));
+    dropThumbs(stale);
+    impl.previews.clear();
     impl.excerpts.clear();
     impl.namesReady = false;     // the names are worked out again for whatever is open
     impl.assetNames.clear();
@@ -1103,15 +1139,61 @@ void SlideEditor::render(App& app) {
             const SkRect art = SkRect::MakeLTRB(pane.left() + 4, pane.top() + 4,
                                                 pane.right() - 4, pane.bottom() - stripH);
             std::string caption;
-            sk_sp<SkImage> image = (asset && asset->kind == "image")
-                                       ? impl.preview(asset->path) : nullptr;
+            // A document is rendered by the same engine that plays the deck, on the still
+            // worker, and cached — so the pane shows the slide rather than its source. It
+            // arrives a frame or two later; until then the pane says so.
+            bool rendering = false;
+            bool isPicture = false;          // a real image, whose own size is worth saying
+            sk_sp<SkImage> image;
+            if (asset && Impl::renderable(name)) {
+                const int side = static_cast<int>(art.width());
+                image = thumbIfReady(impl.fullPath(asset->path), side, side);
+                rendering = !image;
+                // A clip's frame is the clip's own size; a document's still is square
+                // because the pane is, and saying so would be saying nothing.
+                isPicture = image && Impl::clip(name);
+                // The neighbours, unhurried, so arrowing through the list is instant.
+                for (int step : {-1, 1}) {
+                    const int at = impl.menuPick + step;
+                    if (at < 0 || at >= static_cast<int>(impl.menuMatches.size())) continue;
+                    const std::string& near = impl.assetNames[impl.menuMatches[at]];
+                    if (!Impl::renderable(near)) continue;
+                    if (const Asset* other = impl.assetFor(near)) {
+                        requestThumb(impl.fullPath(other->path), side, side);
+                    }
+                }
+            } else if (asset && asset->kind == "image") {
+                image = impl.preview(asset->path);
+                isPicture = image != nullptr;
+            }
             if (image) {
                 canvas->save();
                 canvas->clipRect(art, true);
-                drawImageFit(canvas, image, art);
+                const SkRect drawn = drawImageFit(canvas, image, art);
+                // A frame out of a clip and a photograph are the same picture on the page,
+                // so a clip is marked as one. Small, in the corner, over its own shade.
+                if (Impl::clip(name)) {
+                    const float r = 9;
+                    const float cx = drawn.right() - r - 5, cy = drawn.bottom() - r - 5;
+                    SkPaint disc;
+                    disc.setAntiAlias(true);
+                    disc.setColor(withAlpha(SK_ColorBLACK, 0xA0));
+                    canvas->drawCircle(cx, cy, r, disc);
+                    SkPathBuilder play;
+                    play.moveTo(cx - 2.5f, cy - 4.5f);
+                    play.lineTo(cx + 4.5f, cy);
+                    play.lineTo(cx - 2.5f, cy + 4.5f);
+                    play.close();
+                    disc.setColor(SK_ColorWHITE);
+                    canvas->drawPath(play.detach(), disc);
+                }
                 canvas->restore();
-                caption = std::to_string(image->width()) + " × "
-                          + std::to_string(image->height());
+                if (isPicture) {
+                    caption = std::to_string(image->width()) + " × "
+                              + std::to_string(image->height());
+                }
+            } else if (rendering) {
+                drawTextCentred(canvas, "rendering…", art, uiFont(11), ui::kLine);
             } else if (Impl::textual(name)) {
                 const std::string& text = impl.excerpt(asset ? asset->path : name);
                 SkFont small = uiMonoFont(9);
