@@ -47,8 +47,8 @@ opens anything, and everything after that is pointed at the one deck.
 
 ## What is in here
 
-The player is five windows and a handful of scripts. The slide window plays the deck; the
-other four are for the person driving it.
+The player is seven windows and a handful of scripts. The slide window plays the deck; the
+rest are for the person driving it.
 
 | | | |
 |---|---|---|
@@ -58,6 +58,7 @@ other four are for the person driving it.
 | **[Slide editor](#the-slide-editor)** | `E`, `--editor` | the markdown behind the slide on screen |
 | **[Build panel](#the-build-panel)** | `M`, `--build` | refract's options and a Rebuild button |
 | **[Captions](#captions)** | `C`, `--captions` | the narration, word by word, and where it is wrong |
+| **[Assets](#the-asset-window)** | `I`, `--assets` | what is in `includes/`, and what nothing uses any more |
 
 Together the middle three close a loop that used to need a terminal: **reorder, edit and
 rebuild a deck without leaving the player** — see [the editing loop](#the-editing-loop).
@@ -160,6 +161,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `E` | `cmd`+`3` | slide editor |
 | `M` | `cmd`+`4` | build panel |
 | `C` | `cmd`+`5` | captions |
+| `I` | `cmd`+`7` | assets |
 
 The panels are the useful half of this program and every one of them used to be a single
 letter — fine once you know, invisible until you do. They are at the top of the Window menu,
@@ -288,6 +290,7 @@ all run on their own:
 | `tools/slide.py` | read, rewrite, add or delete one slide's markdown |
 | `tools/build.py` | rebuild with a given set of options, and report what it did |
 | `tools/history.py` | undo and redo those edits |
+| `tools/assets.py` | list what is in `includes/`, and move an unused file to the trash |
 
 Each of them moves the narration index and the rehearsal trace along with the blocks it moves,
 in the same write and as one undoable edit — see the note on recordings under
@@ -709,6 +712,52 @@ is granted — which means the opening slide of that first run is usually missed
 to grant, then record for real. If access was refused, the player says so and carries on
 recording timings without audio.
 
+## The asset window
+
+`I`, or `--assets`. Every file under the deck's `includes/`, with its size, a thumbnail where
+one can be drawn, and — the reason the window exists — which slides use it.
+
+```
+Assets  mytalk                                      6 files   1.4 MB
+─────────────────────────────────────────────────────────────────────
+ [img]  logo.png                                              1.4 MB
+        slides 1, 10, 12, 13
+ [img]  old-logo.png                                          1.4 MB
+        unused
+ [deck] slides.md   intro                                       201 B
+        slides 2, 3
+```
+
+An `includes/` folder collects things over the life of a talk — the screenshot that was
+replaced, the diagram from the version that got cut, the clip nobody ended up playing.
+Nothing in the player used to show you that folder, so the only way to tidy it was to read
+the markdown and guess.
+
+**Usage is not a guess.** It comes from loading the deck with refract's own resolver and
+asking what each slide's blocks resolved to, which makes it the same answer the build gives
+rather than a second reading of the markdown. Shaders `settings.toml` names count as used by
+the deck rather than by a slide, and a sub-deck's own images are judged on their own terms —
+a `diagram.png` in `includes/intro/` is used only if `includes/intro/slides.md` asks for it.
+
+| Key | |
+|---|---|
+| `↑` `↓` | move down the list |
+| `⌫` | move the file to the trash (press twice) |
+| `R` | rescan |
+
+Removing moves the file to `out/.trash/`, keeping its path, rather than deleting it.
+Everything else the player does to a deck can be taken back by `cmd`+`Z`, and an asset is the
+one thing the undo history — which stores text — cannot hold. `out/` is generated, so
+emptying the trash is always safe, and a build never looks in there. A file two slides still
+use can be removed, but the window says which slides first and makes you confirm.
+
+The scan itself is [`tools/assets.py`](tools/assets.py), which runs on its own:
+
+```sh
+python3 player/tools/assets.py <deck>/out --list
+python3 player/tools/assets.py <deck>/out --remove includes/old-logo.png
+```
+
 ## Captions
 
 A recorded narration can be transcribed and aligned into per-word timings, and then read
@@ -1033,11 +1082,13 @@ python3 -m unittest discover -s tests
 | `src/Ui.{h,cpp}` | text, boxes and images for the chrome |
 | `src/App.h` | presenter state: talk clock, blanking, overlay state |
 | `src/Captions.{h,cpp}`, `CaptionWindow.{h,cpp}` | caption timings and the window that lights them |
+| `src/AssetWindow.{h,cpp}` | the deck's `includes/`, what uses each file, and the trash |
 | `src/Audio*.{h,mm}` | narration capture and gapless playback |
 | `tools/reorder.py` | moving a slide, a section or a sub-deck in the markdown |
 | `tools/slide.py` | reading, rewriting, adding and deleting one slide's markdown |
 | `tools/build.py` | rebuilding, and reporting how much of the deck it had to touch |
 | `tools/history.py` | undo and redo for every edit above |
+| `tools/assets.py` | what is in `includes/`, who uses it, and moving one to `out/.trash/` |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
 | `tools/web.py` | the web player: assembles the deck, audio and captions into a page |
 | `tests/` | the three C++ suites above |

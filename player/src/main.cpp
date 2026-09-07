@@ -14,6 +14,7 @@
 
 #include "App.h"
 #include "AppMenu.h"
+#include "AssetWindow.h"
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
 #include "BuildPanel.h"
@@ -104,6 +105,7 @@ GLFWwindow* slideWindow = nullptr;
 std::unique_ptr<refract::DeckViewWindow> deckView;
 std::unique_ptr<refract::BuildPanel> buildPanel;
 std::unique_ptr<refract::SlideEditor> slideEditor;
+std::unique_ptr<refract::AssetWindow> assetWindow;
 // A build runs off the main thread — refract takes seconds on a big deck, and a frozen window
 // during it would be the wrong trade for a panel whose whole point is staying in the player.
 // The thread only ever writes `buildResult` and clears `buildRunning`; the loop reads them.
@@ -150,12 +152,13 @@ void stopSlideRecording(bool keep);
 // A panel the menu bar has asked for. Menu items fire from inside Cocoa's event handling,
 // and opening or closing a GLFW window from there means creating and destroying an NSWindow
 // while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
-enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator };
+enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets };
 MenuPanel menuRequest = MenuPanel::None;
 
 void toggleDeckView();
 void toggleBuildPanel();
 void toggleSlideEditor();
+void toggleAssetWindow();
 bool editorHoldsDeck();
 void goToSlide(int index);
 double voicelessDwell();
@@ -721,7 +724,9 @@ void captureSession() {
     session.editor = slideEditor != nullptr;
     session.build = buildPanel != nullptr;
     session.captions = captionWindow != nullptr;
+    session.assets = assetWindow != nullptr;
 
+    if (assetWindow) session.capture("assets", assetWindow->window());
     if (presenter) session.capture("presenter", presenter->window());
     if (captionWindow) session.capture("captions", captionWindow->window());
     if (deckView) {
@@ -759,6 +764,88 @@ void saveSessionIfChanged() {
 void toggleDeckView() {
     if (deckView) deckView.reset();
     else openDeckView();
+    saveSessionIfChanged();
+}
+
+// ── Assets ───────────────────────────────────────────────────────────
+// What is in the deck's includes/, and which of it is used. Both answers come from the tool,
+// which loads the deck with refract's own resolver — so "used" here is what the build means
+// by used rather than a second reading of the markdown.
+bool scanAssets(std::vector<refract::Asset>* out, std::string* deckDir, std::string* error) {
+    const fs::path dir = refract::deckSidecarPath(deckInput, "deck.json");
+    if (dir.empty()) {
+        *error = "a zip bundle carries no includes/ to look at";
+        return false;
+    }
+    std::string output;
+    const int rc = refract::runTool("assets.py", {dir.parent_path().string(), "--list"},
+                                    &output);
+    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    if (rc != 0 || doc.is_discarded() || !doc.is_object() || !doc.value("ok", false)) {
+        *error = (!doc.is_discarded() && doc.is_object() && doc.contains("error"))
+                     ? doc["error"].get<std::string>()
+                     : "cannot read this deck's assets";
+        return false;
+    }
+    *deckDir = doc.value("dir", std::string());
+    out->clear();
+    for (const auto& rec : doc["assets"]) {
+        refract::Asset asset;
+        asset.path = rec.value("path", std::string());
+        asset.name = rec.value("name", std::string());
+        asset.kind = rec.value("kind", std::string("other"));
+        asset.size = rec.value("size", 0LL);
+        asset.used = rec.value("used", false);
+        if (rec["slides"].is_array()) {
+            for (const auto& n : rec["slides"]) asset.slides.push_back(n.get<int>());
+        }
+        out->push_back(std::move(asset));
+    }
+    return true;
+}
+
+// Moved to out/.trash/ rather than deleted: everything else the player does to a deck can be
+// taken back, and an asset is the one thing the undo history cannot hold.
+bool removeAsset(const std::string& path, std::string* status) {
+    const fs::path dir = refract::deckSidecarPath(deckInput, "deck.json");
+    if (dir.empty()) {
+        *status = "this deck has no includes/ to change";
+        return false;
+    }
+    std::string output;
+    // --force because the window has already asked, and said what uses it.
+    const int rc = refract::runTool(
+        "assets.py", {dir.parent_path().string(), "--remove", path, "--force"}, &output);
+    auto doc = nlohmann::json::parse(output, nullptr, /*allow_exceptions=*/false);
+    const bool parsed = !doc.is_discarded() && doc.is_object();
+    if (rc != 0 || (parsed && !doc.value("ok", false))) {
+        *status = parsed && doc.contains("error") ? doc["error"].get<std::string>()
+                                                  : "could not move it";
+        return false;
+    }
+    *status = "moved to " + (parsed ? doc.value("trash", std::string("the trash"))
+                                    : std::string("the trash"));
+    return true;
+}
+
+void openAssetWindow() {
+    if (assetWindow) return;
+    assetWindow = refract::AssetWindow::Create(680, 520);
+    if (!assetWindow) return;
+    assetWindow->setScanner(scanAssets);
+    assetWindow->setRemover(removeAsset);
+    assetWindow->refresh();
+    session.restore("assets", assetWindow->window());
+    glfwSetKeyCallback(assetWindow->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (assetWindow && assetWindow->handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
+}
+
+void toggleAssetWindow() {
+    if (assetWindow) assetWindow.reset();
+    else openAssetWindow();
     saveSessionIfChanged();
 }
 
@@ -1201,6 +1288,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_V: toggleDeckView(); break;
         case GLFW_KEY_M: toggleBuildPanel(); break;
         case GLFW_KEY_E: toggleSlideEditor(); break;
+        case GLFW_KEY_I: toggleAssetWindow(); break;
 
         // ── Playback ─────────────────────────────────────────────────
         case GLFW_KEY_A:
@@ -1288,6 +1376,8 @@ void usage() {
         "                     button, attached alongside the deck view\n"
         "  --editor           open the slide editor: the markdown behind the slide on\n"
         "                     screen, edited in place and rebuilt on save\n"
+        "  --assets           open the asset window: what is in includes/, which\n"
+        "                     slides use it, and what nothing uses any more\n"
         "  --fullscreen, -f   start the slide window fullscreen\n"
         "  --display <n>      monitor for the slide window (0-based); the presenter\n"
         "                     window opens on the next one\n"
@@ -1359,6 +1449,7 @@ int main(int argc, char* argv[]) {
     double exportDelay = 2.0;
     bool record = false;
     bool wantCaptions = false;
+    bool wantAssets = false;
     bool transcribe = false;
     std::string webOutput;
     std::string captionModel = "base";
@@ -1393,6 +1484,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--pdf") pdfOutput = next("--pdf");
         else if (arg == "--images") imagesOutput = next("--images");
         else if (arg == "--captions") wantCaptions = true;
+        else if (arg == "--assets") wantAssets = true;
         else if (arg == "--transcribe") transcribe = true;
         else if (arg == "--web") webOutput = next("--web");
         else if (arg == "--caption-model") captionModel = next("--caption-model");
@@ -1653,6 +1745,7 @@ int main(int argc, char* argv[]) {
     if (wantDeckView || session.deckView) openDeckView();
     if (wantBuildPanel || session.build) openBuildPanel();
     if (wantEditor || session.editor) openSlideEditor();
+    if (wantAssets || session.assets) openAssetWindow();
 
     // The panels, in the menu bar. Chosen from a menu they arrive on Cocoa's thread of
     // control rather than GLFW's, in the middle of the event pump — so the item only asks,
@@ -1668,6 +1761,8 @@ int main(int argc, char* argv[]) {
                               [] { return buildPanel != nullptr; }},
         {"Captions",     "5", [] { menuRequest = MenuPanel::Captions; },
                               [] { return captionWindow != nullptr; }},
+        {"Assets",       "7", [] { menuRequest = MenuPanel::Assets; },
+                              [] { return assetWindow != nullptr; }},
         {"Navigator",    "6", [] { menuRequest = MenuPanel::Navigator; },
                               [] { return app.navOpen; }},
     });
@@ -1695,6 +1790,7 @@ int main(int argc, char* argv[]) {
     double watchedMtime = 0.0;
     constexpr double kWatchInterval = 1.0;
     double lastEditorDraw = -1.0;
+    double lastAssetDraw = -1.0;
     // A finished build is acted on once, not every frame it stays finished.
     bool buildReloaded = true;
     // Fast enough that a word lights on the syllable, cheap enough to be free.
@@ -1725,6 +1821,7 @@ int main(int argc, char* argv[]) {
                 case MenuPanel::Build:     toggleBuildPanel(); break;
                 case MenuPanel::Captions:  toggleCaptions(); break;
                 case MenuPanel::Navigator: app.navOpen = !app.navOpen; break;
+                case MenuPanel::Assets:    toggleAssetWindow(); break;
                 case MenuPanel::None:      break;
             }
         }
@@ -1735,6 +1832,8 @@ int main(int argc, char* argv[]) {
             deckReloadPending = false;
             glfwMakeContextCurrent(window);
             if (!reloadDeck()) std::cerr << "refractplayer: reload failed\n";
+            // What the deck uses may have changed with it.
+            if (assetWindow) assetWindow->refresh();
             liveFrame.reset();
             lastCapturedSlide = -1;
         }
@@ -1881,6 +1980,16 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (assetWindow) {
+            if (assetWindow->shouldClose()) {
+                assetWindow.reset();
+                saveSessionIfChanged();
+            } else if (elapsed - lastAssetDraw >= kPresenterInterval) {
+                assetWindow->render(app);
+                lastAssetDraw = elapsed;
+            }
+        }
+
         if (buildPanel) {
             if (buildPanel->shouldClose()) {
                 buildPanel.reset();
@@ -1989,6 +2098,7 @@ int main(int argc, char* argv[]) {
     session.save(deckInput);
 
     captionWindow.reset();
+    assetWindow.reset();
     deckView.reset();
     buildPanel.reset();
     slideEditor.reset();

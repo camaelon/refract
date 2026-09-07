@@ -26,6 +26,7 @@ struct WindowPlace {
 struct Session {
     // Which panels were open.
     bool presenter = false, deckView = false, editor = false, build = false, captions = false;
+    bool assets = false;
     // Where each of them was, by the same names.
     std::map<std::string, WindowPlace> windows;
 

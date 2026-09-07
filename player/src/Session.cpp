@@ -31,6 +31,7 @@ bool Session::load(const std::string& source) {
         editor    = panels.value("editor", false);
         build     = panels.value("build", false);
         captions  = panels.value("captions", false);
+        assets    = panels.value("assets", false);
     }
     if (doc["windows"].is_object()) {
         for (auto it = doc["windows"].begin(); it != doc["windows"].end(); ++it) {
@@ -60,7 +61,8 @@ std::string Session::serialise() const {
     nlohmann::ordered_json doc;
     doc["version"] = kVersion;
     doc["panels"] = {{"presenter", presenter}, {"deckView", deckView}, {"editor", editor},
-                     {"build", build}, {"captions", captions}};
+                     {"build", build}, {"captions", captions},
+                     {"assets", assets}};
     doc["windows"] = nlohmann::ordered_json::object();
     for (const auto& [name, place] : windows) {
         if (!place.placed()) continue;

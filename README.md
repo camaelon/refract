@@ -41,8 +41,9 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 | slide editor | `E` | the markdown behind a slide, the whole deck, or `settings.toml` |
 | build panel | `M` | refract's options, and a Rebuild button |
 | captions | `C` | the recorded narration, word by word |
+| assets | `I` | what is in `includes/`, which slides use it, and what nothing does |
 
-All six are in the **Window** menu too (`cmd`+`1`…`6`), with a tick beside whatever is open.
+All seven are in the **Window** menu too (`cmd`+`1`…`7`), with a tick beside whatever is open.
 
 The middle three write back to `slides.md` and re-run refract, so a deck can be rearranged
 and rewritten without leaving the player. It also records and replays a rehearsal, transcribes
@@ -661,7 +662,8 @@ transcript lands in `voice/NN.txt`, so a misheard word can be corrected there an
   `--record-audio`, replayed with `--auto-voice`), a deck view that reorders the deck by
   rewriting its markdown (`V`, or `--deck-view`), a build panel that re-runs refract with its
   options on screen (`M`, or `--build`), a slide editor that rewrites one slide's markdown
-  and rebuilds (`E`, or `--editor`), and export to PDF (`--pdf talk.pdf`) or
+  and rebuilds (`E`, or `--editor`), an asset window listing what is in `includes/` and which
+  slides use it (`I`, or `--assets`), and export to PDF (`--pdf talk.pdf`) or
   PNGs (`--images dir/`). This is what `refract.py --pdf` / `--images` run. Built from `player/`
   on top of the `rcplayer` library in the RemoteCompose `players/cpp` tree — playback,
   export and the custom-component hosts are shared with `rcviewer`, not forked.
