@@ -10,6 +10,7 @@
 #pragma once
 
 #include "App.h"
+#include "Asset.h"
 #include "TextBuffer.h"
 
 #include <functional>
@@ -54,6 +55,17 @@ public:
     void setSplitter(Splitter splitter);
     void setFileAccess(FileLoader loader, FileSaver saver);
 
+    // What can go between `<` and `>`. Typing an include and pausing offers the deck's
+    // assets — the names are the thing nobody remembers, and getting one wrong is a slide
+    // that builds and renders nothing.
+    using AssetLister = std::function<bool(std::vector<Asset>* out, std::string* deckDir,
+                                           std::string* error)>;
+    void setAssetLister(AssetLister lister);
+    // Ask for the list again. Done when the editor opens and after a rebuild rather than
+    // when the menu is wanted: the scan runs a script, and a pause between the keystroke
+    // and the menu is exactly where that would be felt.
+    void refreshAssets();
+
     // Point the editor at a slide, the whole of slides.md, or settings.toml. Refused while
     // there are unsaved changes: the buffer belongs to what it was opened on.
     void setTarget(EditTarget target);
@@ -84,6 +96,9 @@ private:
 
     void save();
     void revert();
+    // Put the chosen asset in the brackets: the name replaces whatever has been typed since
+    // the `<`, and the `>` is added, because an unclosed include is not one.
+    void acceptCompletion(int match);
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;

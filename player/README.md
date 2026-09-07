@@ -460,9 +460,45 @@ highlighting so much as making a slide's *shape* visible at a glance.
 | `Tab` | indent two spaces |
 | `Esc` | close (refuses while there are unsaved changes) |
 
+While the [include menu](#completing-an-include) is up, `↑`/`↓` walk it, `↩` or `Tab` inserts,
+and `Esc` dismisses it.
+
 A fifth click in the same place goes back to a plain caret. A repeat click has to be in the
 same place as well as soon after, so moving to another word and clicking is two first clicks
 rather than a double.
+
+### Completing an include
+
+Type `<`, pause for half a second, and a menu drops down under the bracket listing what the
+deck has to put in it:
+
+```
+    <lo|
+    ┌───────────────────────────────┐
+    │ logo.png                image │
+    │ old-logo.png            image │
+    └───────────────────────────────┘
+      ↩ inserts  ·  esc dismisses
+```
+
+Picking one writes the name and closes the bracket — `<logo.png>` — with the caret after it.
+Asset names are the thing nobody remembers, and getting one wrong is a slide that builds
+without complaint and renders nothing.
+
+Keep typing and the list narrows: what starts with what you typed comes before what merely
+contains it, and case is ignored, which is most of what the menu is for. The pause is
+deliberate — half a second is long enough that a `<` in the middle of a sentence goes by
+unnoticed, and short enough that stopping to ask "what have I got?" is answered at once.
+`Esc` dismisses the menu for that bracket; moving to another one offers again.
+
+The names offered are the ones **this file** can actually write. A slide spliced in from a
+sub-deck resolves `<name>` against that sub-deck's `includes/`, so it is offered its own
+assets and not the parent deck's — a name the file cannot resolve is not a name worth
+suggesting. `settings.toml` is offered nothing: `<>` is markdown's include, not TOML's.
+
+The list is the same scan the [asset window](#the-asset-window) shows, read when the editor
+opens and again after a rebuild rather than when the menu is wanted — the scan runs a script,
+and a pause between the keystroke and the menu is exactly where that would be felt.
 
 **Frame selection.** Hold `option` while extending and the selection becomes a rectangle:
 every line between the anchor and the caret, cut at the two columns they sit in, rather than a
@@ -1018,7 +1054,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Eight C++ suites, none of which needs a window or a GPU. Six of them need nothing but their
+Nine C++ suites, none of which needs a window or a GPU. Seven of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1027,7 +1063,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All eight, alongside the player:
+All nine, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1042,6 +1078,7 @@ ctest --test-dir player/build --output-on-failure
 | `deck_library` | starting a deck, and the list of ones opened before |
 | `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
 | `options` | the command line, and that every flag it takes is in the help text |
+| `completion` | the include being typed, where its names resolve, and what matches |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 
 The last two need more than their own source — `timing` links the engine, `deck_source` parses
@@ -1071,6 +1108,7 @@ python3 -m unittest discover -s tests
 | `src/DeckOrder.{h,cpp}` | the reordering arithmetic behind it, with no window attached |
 | `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
 | `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
+| `src/Completion.{h,cpp}` | which include is being typed, and which asset names match it |
 | `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
 | `src/DeckSource.{h,cpp}` | reading and rewriting the deck's own source through the tools |
 | `src/EditRunner.{h,cpp}` | the worker a rewrite runs on |
