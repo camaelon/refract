@@ -45,6 +45,17 @@ SkColor lineTone(const std::string& text, bool inFence) {
     return ui::kText;
 }
 
+// settings.toml is not markdown. Three rules cover it: a section, a key, and a comment.
+SkColor tomlTone(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) i++;
+    const std::string body = text.substr(i);
+    if (body.rfind("#", 0) == 0) return ui::kDim;
+    if (body.rfind("[", 0) == 0) return ui::kInclude;
+    if (body.find('=') != std::string::npos) return ui::kText;
+    return ui::kText;
+}
+
 bool togglesFence(const std::string& text) {
     size_t i = 0;
     while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) i++;
@@ -75,6 +86,11 @@ struct SlideEditor::Impl {
     Loader loader;
     Saver  saver;
     Splitter splitter;
+    FileLoader fileLoader;
+    FileSaver  fileSaver;
+    EditTarget target = EditTarget::Slide;
+    // The tabs, set while drawing and hit-tested on a click.
+    SkRect tabs[3];
     std::function<void()> onSaved;
 
     float scrollY = 0.0f, scrollX = 0.0f;
@@ -172,6 +188,12 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         }
         if (action != GLFW_PRESS) return;
         const float x = static_cast<float>(impl.mouseX), y = static_cast<float>(impl.mouseY);
+        for (int i = 0; i < 3; i++) {
+            if (!impl.tabs[i].contains(x, y)) continue;
+            self->setTarget(i == 0 ? EditTarget::Slide
+                                   : i == 1 ? EditTarget::Deck : EditTarget::Settings);
+            return;
+        }
         if (impl.autoButton.contains(x, y)) { impl.autoSave = !impl.autoSave; return; }
         if (impl.saveButton.contains(x, y)) { self->save(); return; }
         if (impl.revertButton.contains(x, y)) { self->revert(); return; }
@@ -233,6 +255,55 @@ bool SlideEditor::shouldClose() const {
 void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); }
 void SlideEditor::setSaver(Saver saver) { mImpl->saver = std::move(saver); }
 void SlideEditor::setSplitter(Splitter splitter) { mImpl->splitter = std::move(splitter); }
+
+void SlideEditor::setFileAccess(FileLoader loader, FileSaver saver) {
+    mImpl->fileLoader = std::move(loader);
+    mImpl->fileSaver = std::move(saver);
+}
+
+EditTarget SlideEditor::target() const { return mImpl->target; }
+
+namespace {
+// What each target is called, and which file it is.
+const char* targetLabel(EditTarget t) {
+    switch (t) {
+        case EditTarget::Deck: return "slides.md";
+        case EditTarget::Settings: return "settings.toml";
+        default: return "slide";
+    }
+}
+const char* targetPath(EditTarget t) {
+    return t == EditTarget::Settings ? "settings.toml" : "slides.md";
+}
+}  // namespace
+
+void SlideEditor::setTarget(EditTarget target) {
+    Impl& impl = *mImpl;
+    if (target == impl.target) return;
+    if (impl.buffer.dirty()) {
+        impl.setStatus("save or revert before moving to " + std::string(targetLabel(target)),
+                       true);
+        return;
+    }
+    impl.target = target;
+    impl.slide = -1;          // so a later showSlide reloads rather than seeing no change
+    if (target == EditTarget::Slide) {
+        impl.buffer.setText("");
+        impl.file.clear();
+        return;
+    }
+    std::string text, error;
+    if (impl.fileLoader && impl.fileLoader(targetPath(target), &text, &error)) {
+        impl.file = targetPath(target);
+        impl.shared = 1;
+        impl.buffer.setText(text);
+        impl.scrollX = impl.scrollY = 0;
+        impl.setStatus("", false);
+    } else {
+        impl.buffer.setText("");
+        impl.setStatus(error.empty() ? "cannot read that file" : error, true);
+    }
+}
 void SlideEditor::setOnSaved(std::function<void()> action) { mImpl->onSaved = std::move(action); }
 
 int  SlideEditor::slide() const { return mImpl->slide; }
@@ -242,6 +313,7 @@ bool SlideEditor::dirty() const { return mImpl->buffer.dirty(); }
 
 void SlideEditor::showSlide(int slide) {
     Impl& impl = *mImpl;
+    if (impl.target != EditTarget::Slide) return;   // a whole file does not follow the deck
     if (slide == impl.slide) return;
     // An unsaved edit is not thrown away because the deck moved on. The editor stays on the
     // slide being edited and says so; the player's own guard stops the deck moving at all
@@ -268,6 +340,14 @@ void SlideEditor::showSlide(int slide) {
 
 void SlideEditor::revert() {
     Impl& impl = *mImpl;
+    if (impl.target != EditTarget::Slide) {
+        const EditTarget target = impl.target;
+        impl.target = EditTarget::Slide;    // force setTarget to reload it
+        impl.buffer.markClean();
+        setTarget(target);
+        impl.setStatus("reverted", false);
+        return;
+    }
     const int slide = impl.slide;
     impl.slide = -1;               // force showSlide to reload it
     impl.buffer.markClean();
@@ -277,13 +357,18 @@ void SlideEditor::revert() {
 
 void SlideEditor::save() {
     Impl& impl = *mImpl;
-    if (!impl.saver || impl.slide < 0 || impl.saving) return;
+    if (impl.saving) return;
+    if (impl.target == EditTarget::Slide && (!impl.saver || impl.slide < 0)) return;
     if (!impl.buffer.dirty()) {
         impl.setStatus("no changes", false);
         return;
     }
     std::string error;
-    if (!impl.saver(impl.slide, impl.buffer.text(), &error)) {
+    const bool ok = impl.target == EditTarget::Slide
+        ? (impl.saver && impl.saver(impl.slide, impl.buffer.text(), &error))
+        : (impl.fileSaver && impl.fileSaver(targetPath(impl.target), impl.buffer.text(),
+                                            &error));
+    if (!ok) {
         impl.setStatus(error.empty() ? "the save could not be started" : error, true);
         return;
     }
@@ -475,16 +560,41 @@ void SlideEditor::render(App& app) {
     impl.textTop = kHeaderH + lineHeight;
 
     // ── Header ───────────────────────────────────────────────────────
-    const std::string title = impl.slide >= 0
-        ? "Slide " + std::to_string(impl.slide + 1) + " of " + std::to_string(app.deck.size())
-        : "No slide";
-    drawText(canvas, title, pad, 26, uiFont(15, true), ui::kText);
+    // Three things the editor can be pointed at, as tabs: this slide, the whole deck, and
+    // the deck's settings. The theme was the last thing that still needed a terminal.
+    static const struct { EditTarget target; const char* label; } kTabs[] = {
+        {EditTarget::Slide, "slide"},
+        {EditTarget::Deck, "slides.md"},
+        {EditTarget::Settings, "settings.toml"},
+    };
+    SkFont tabFont = uiFont(12, true);
+    float tabX = pad;
+    for (int i = 0; i < 3; i++) {
+        const bool on = impl.target == kTabs[i].target;
+        const float tw = textWidth(tabFont, kTabs[i].label) + 20;
+        impl.tabs[i] = SkRect::MakeXYWH(tabX, 12, tw, 24);
+        const bool hot = impl.tabs[i].contains(static_cast<float>(impl.mouseX),
+                                               static_cast<float>(impl.mouseY));
+        fillRoundRect(canvas, impl.tabs[i], 12, on ? ui::kPanel : ui::kBg);
+        strokeRoundRect(canvas, impl.tabs[i], 12,
+                        on ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
+        drawTextCentred(canvas, kTabs[i].label, impl.tabs[i], tabFont,
+                        on ? ui::kText : ui::kDim);
+        tabX += tw + 6;
+    }
+    const std::string title = impl.target != EditTarget::Slide
+        ? std::string()
+        : (impl.slide >= 0
+               ? "Slide " + std::to_string(impl.slide + 1) + " of "
+                     + std::to_string(app.deck.size())
+               : std::string("No slide"));
+    float titleEnd = tabX + 10;
+    if (!title.empty()) titleEnd += drawText(canvas, title, tabX + 10, 29, uiFont(13), ui::kDim);
     if (impl.buffer.dirty()) {
-        drawText(canvas, "  edited", pad + textWidth(uiFont(15, true), title), 26, uiFont(12),
-                 ui::kWarn);
+        drawText(canvas, "  edited", titleEnd, 29, uiFont(12), ui::kWarn);
     }
     std::string where = impl.file;
-    if (impl.shared > 1) {
+    if (impl.target == EditTarget::Slide && impl.shared > 1) {
         // Said out loud: editing any step of an expanded slide edits the source all of them
         // come from, and the surprise otherwise is finding four slides changed.
         where += "  —  one block, " + std::to_string(impl.shared) + " slides";
@@ -542,7 +652,9 @@ void SlideEditor::render(App& app) {
     for (int i = 0; i < impl.buffer.lineCount(); i++) {
         const std::string& text = impl.buffer.line(i);
         const bool fenceLine = togglesFence(text);
-        const SkColor tone = lineTone(text, inFence && !fenceLine);
+        const SkColor tone = impl.target == EditTarget::Settings
+                                 ? tomlTone(text)
+                                 : lineTone(text, inFence && !fenceLine);
         if (fenceLine) inFence = !inFence;
 
         const float y = impl.textTop + i * lineHeight - impl.scrollY;

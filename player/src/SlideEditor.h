@@ -20,6 +20,10 @@ struct GLFWwindow;
 
 namespace refract {
 
+// What the editor is pointed at. A slide is one `---`-separated block and follows the deck;
+// the other two are whole files and stay where they are put.
+enum class EditTarget { Slide, Deck, Settings };
+
 class SlideEditor {
 public:
     static std::unique_ptr<SlideEditor> Create(int width, int height);
@@ -31,6 +35,11 @@ public:
     // Fetch the markdown for a slide. Returns false and sets `error` when it cannot be read.
     using Loader = std::function<bool(int slide, std::string* text, std::string* file,
                                       int* sharedSlides, std::string* error)>;
+    // The same for a whole file under the deck, by its path relative to it.
+    using FileLoader = std::function<bool(const std::string& path, std::string* text,
+                                          std::string* error)>;
+    using FileSaver = std::function<bool(const std::string& path, const std::string& text,
+                                         std::string* error)>;
     // Write it back and rebuild. True when the work was *started* — it runs off the main
     // thread, and saveFinished() says how it went. False means it never began.
     using Saver = std::function<bool(int slide, const std::string& text, std::string* error)>;
@@ -43,6 +52,12 @@ public:
     using Splitter = std::function<bool(int slide, const std::string& text, int line,
                                         std::string* error)>;
     void setSplitter(Splitter splitter);
+    void setFileAccess(FileLoader loader, FileSaver saver);
+
+    // Point the editor at a slide, the whole of slides.md, or settings.toml. Refused while
+    // there are unsaved changes: the buffer belongs to what it was opened on.
+    void setTarget(EditTarget target);
+    EditTarget target() const;
 
     // Show this slide's source. Does nothing while there are unsaved changes — the editor
     // holds its ground rather than throwing away an edit because the deck moved on.

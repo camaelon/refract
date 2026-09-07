@@ -13,6 +13,11 @@ source, hand back an edited version, and have the deck rebuilt around it.
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --merge
     python3 player/tools/slide.py <deck-out-dir> --slide 12 --duplicate
 
+A whole file, rather than one slide's block — `slides.md` end to end, or `settings.toml`:
+
+    python3 player/tools/slide.py <deck-out-dir> --file settings.toml --read
+    python3 player/tools/slide.py <deck-out-dir> --file settings.toml --write new.toml
+
 `--split N` breaks the slide after line N of its markdown; combined with `--write` it applies
 the edit and splits it in one go, so the editor can break a slide it is holding unsaved
 changes to without saving twice. `--merge` joins it with the slide after it.
@@ -90,6 +95,71 @@ def rebuild(deck_dir: str, deck: dict) -> int:
                            stdout=sys.stderr)
 
 
+def whole_file(args, deck: dict, deck_dir: str, out_dir: str, as_json: bool) -> int:
+    """Read or replace a whole file under the deck — `slides.md` end to end, or `settings.toml`.
+
+    The same shape as editing one slide: recorded in the history, and the deck rebuilt after.
+    A theme change touches every slide, and the incremental build works that out for itself
+    from the documents it produces — there is nothing to tell it.
+    """
+    path = os.path.normpath(os.path.join(deck_dir, args.file))
+    # Inside the deck, and nowhere else. This is reached from a window, and a path that could
+    # climb out of the deck directory is not a thing to offer.
+    if os.path.commonpath([path, deck_dir]) != deck_dir:
+        return fail(f"{args.file} is outside the deck", as_json)
+
+    if args.read:
+        if not os.path.exists(path):
+            # A deck with no settings.toml is an ordinary deck. The editor opens an empty one,
+            # and writing it is what creates the file.
+            print(json.dumps({"ok": True, "file": args.file, "text": "", "exists": False}))
+            return 0
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError as e:
+            return fail(str(e), as_json)
+        print(json.dumps({"ok": True, "file": args.file, "text": text, "exists": True}))
+        return 0
+
+    try:
+        with open(args.write) as f:
+            new_text = f.read()
+    except OSError as e:
+        return fail(str(e), as_json)
+    try:
+        with open(path) as f:
+            old_text = f.read()
+    except OSError:
+        old_text = ""
+
+    changed = new_text != old_text
+    result = {"ok": True, "file": args.file, "changed": changed, "rebuilt": False}
+    if changed:
+        history.record(out_dir, args.file, old_text, new_text, f"edit {args.file}")
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".edit.tmp"
+        with open(tmp, "w") as f:
+            f.write(new_text)
+        os.replace(tmp, path)
+        if not args.no_rebuild:
+            before = manifest.outputs(out_dir)
+            rc = rebuild(deck_dir, deck)
+            result["outputs"] = manifest.changed_since(before, out_dir)
+            result["rebuilt"] = rc == 0
+            if rc != 0:
+                result["ok"] = False
+                result["error"] = f"refract.py exited with {rc}"
+
+    if as_json:
+        print(json.dumps(result))
+    elif not changed:
+        print("nothing to do: the file is unchanged")
+    else:
+        print(f"wrote {args.file}" + ("" if result["rebuilt"] else " (not rebuilt)"))
+    return 0 if result["ok"] else 1
+
+
 def fail(message: str, as_json: bool) -> int:
     if as_json:
         print(json.dumps({"ok": False, "error": message}))
@@ -101,7 +171,9 @@ def fail(message: str, as_json: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument("out_dir", help="the deck's out/ directory (the one holding deck.json)")
-    ap.add_argument("--slide", type=int, required=True, help="slide index, in deck order")
+    ap.add_argument("--slide", type=int, default=None, help="slide index, in deck order")
+    ap.add_argument("--file", default=None, metavar="PATH",
+                    help="a whole file under the deck, instead of one slide's block")
     ap.add_argument("--read", action="store_true", help="print the slide's markdown")
     ap.add_argument("--write", metavar="FILE", default=None,
                     help="replace the slide's markdown with the contents of FILE")
@@ -129,6 +201,10 @@ def main() -> int:
     if sum(1 for m in modes if m) != 1:
         ap.error("give exactly one of --read, --write, --new, --delete, --split, --merge "
                  "or --duplicate")
+    if (args.slide is None) == (args.file is None):
+        ap.error("give exactly one of --slide or --file")
+    if args.file is not None and any(structural):
+        ap.error("--file edits a whole file; the block operations need --slide")
     # A read always answers in JSON, so its failures do too — the caller is parsing stdout
     # either way, and an error on stderr would look to it like no answer at all.
     as_json = args.json or args.read
@@ -139,6 +215,9 @@ def main() -> int:
     except manifest.NotADeck as e:
         return fail(str(e), as_json)
     deck_dir = manifest.source_dir(out_dir, deck)
+
+    if args.file is not None:
+        return whole_file(args, deck, deck_dir, out_dir, as_json)
 
     try:
         src, block, shared = locate(deck, args.slide)

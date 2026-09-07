@@ -700,8 +700,12 @@ def run_once(args) -> int:
     # out/ (lone-video slides) and out/media/ (embedded); both are swept so a renamed clip
     # doesn't linger as an orphan slide/page.
     vid_exts = (".mp4", ".mov", ".m4v", ".webm")
+    # `.png` under media/ is the frozen snapshot a `freeze` slide is introduced with. It is
+    # named after the slide, so renaming or moving one leaves the old one behind — a
+    # full-size render, quietly, on every edit. Nothing else puts a png there: images are
+    # embedded in the document rather than copied beside it.
     managed = [(out_dir, (".rc", ".notes") + vid_exts), (json_dir, (".json",)),
-               (media_dir, (".rc",) + vid_exts)]
+               (media_dir, (".rc", ".png") + vid_exts)]
     # Incremental build. Nothing is deleted up front any more: each output is regenerated
     # only when its input changed, and the sweep for renamed or deleted slides happens at
     # the end, against the list of what this build actually produced.
@@ -839,6 +843,10 @@ def run_once(args) -> int:
         # plus the push it is frozen over.
         fingerprint = doc_fingerprint(doc)
         png = os.path.join(out_dir, "media", name + "_frozen.png")
+        # Claimed whether the slide is rebuilt or reused: the .rc points at this file, and a
+        # reused slide's snapshot must survive the sweep that removes the orphaned ones.
+        if freezing:
+            produced.add(os.path.abspath(png))
         if freezing:
             fingerprint = "freeze:" + hashlib.sha256(
                 f"{fingerprint}|{push_dur}|{tag}".encode()).hexdigest()

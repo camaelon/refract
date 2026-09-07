@@ -73,14 +73,17 @@ set(REFRACTPLAYER_SOURCES
     src/Captions.cpp
     src/Deck.cpp
     src/DeckOrder.cpp
+    src/EditRunner.cpp
     src/DeckView.cpp
     src/Navigator.cpp
     src/Presenter.cpp
     src/Session.cpp
     src/SlideEditor.cpp
+    src/SlideRecorder.cpp
     src/TextBuffer.cpp
     src/Thumbs.cpp
     src/Timing.cpp
+    src/Tools.cpp
     src/Ui.cpp
     src/ViewGeometry.cpp
     src/VoiceIndex.cpp
