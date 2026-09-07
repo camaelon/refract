@@ -4,7 +4,8 @@ A presenter's player for refract decks.
 
 ```sh
 player/build.sh                                   # build (once); binary -> prebuilt/refractplayer
-prebuilt/refractplayer examples/deck/out --presenter
+prebuilt/refractplayer examples/deck --presenter  # a deck; its out/ is built if it needs to be
+prebuilt/refractplayer                            # nothing named: the start window
 ```
 
 Playback is not reimplemented here. It comes from **`rcplayer`**, the library in the
@@ -19,6 +20,30 @@ players/cpp/lib/rcplayer   playback runtime  ──┬── players/cpp/apps/vi
 ```
 
 Pulling the upstream tree gets you every engine fix; nothing is vendored or forked.
+
+## Starting
+
+Point it at a **deck** — the folder with `slides.md` in it — and the `out/` underneath is
+found, and built if it is not there yet. Being handed the deck and told there are no slides in
+it was a silly answer to give, since the deck is right there. An `out/`, a single `.rc` or a
+`.zip` still work as they always did.
+
+With **nothing named** it opens a start window: the decks it has opened before, a button to
+open another, and a button to make one. Launched from a terminal the usage text is the useful
+answer and is still printed; launched by double-clicking it used to be a process that printed
+into nowhere and exited.
+
+**New deck…** asks where to put it and writes a `slides.md` with a title slide, a section and
+a slide with speaker notes — enough to show what the grammar looks like without being a
+tutorial to delete before you can think. It never writes over an existing deck: somebody
+pointing at the wrong folder is told, not left with a template where their talk was.
+
+The recent list is one path per line in `~/.config/refract/recent` — the only thing the player
+remembers that is not about a particular deck, and so the only thing it writes outside one. A
+deck that has been moved or deleted is not offered.
+
+Switching decks *during* a session is not supported: the start window runs before the player
+opens anything, and everything after that is pointed at the one deck.
 
 ## What is in here
 
@@ -944,7 +969,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Five C++ suites, none of which needs a window or a GPU. Four of them need nothing but their
+Six C++ suites, none of which needs a window or a GPU. Five of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -953,7 +978,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All five, alongside the player:
+All six, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -965,6 +990,7 @@ ctest --test-dir player/build --output-on-failure
 | `text_buffer` | the editor's caret, selection, UTF-8, frame selection and undo |
 | `timing` | the rehearsal trace, and the slide identity a build is keyed by |
 | `slide_recorder` | when a re-recorded take replaces the old one, and when it must not |
+| `deck_library` | starting a deck, and the list of ones opened before |
 | `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
 
 `view_geometry` exists because both of this player's visual bugs lived in coordinate arithmetic
@@ -998,6 +1024,9 @@ python3 -m unittest discover -s tests
 | `src/BuildPanel.{h,cpp}` | the build panel |
 | `src/AppMenu.{h,mm}` | the panels in the menu bar (Cocoa; a no-op elsewhere) |
 | `src/Session.{h,cpp}` | what was open and where, remembered per deck |
+| `src/StartWindow.{h,cpp}` | what is shown when no deck was named |
+| `src/DeckLibrary.{h,cpp}` | the decks opened before, and making a new one |
+| `src/FileDialog.{h,mm}` | the platform's own open/save panels (a no-op elsewhere) |
 | `src/Timing.{h,cpp}` | the rehearsal trace |
 | `src/VoiceIndex.{h,cpp}` | which narration belongs to which slide, across a reorder |
 | `src/Thumbs.{h,cpp}` | off-screen slide stills, rendered on a worker and cached |

@@ -24,6 +24,8 @@
 #include "Navigator.h"
 #include "Presenter.h"
 #include "Session.h"
+#include "DeckLibrary.h"
+#include "StartWindow.h"
 #include "SlideRecorder.h"
 #include "Tools.h"
 #include "SlideEditor.h"
@@ -162,6 +164,36 @@ double voicelessDwell();
 // Transcription and forced alignment are Python's — whisper and whisperx live there — so
 // this runs the script that does it. The player supplies the one thing the script cannot
 // work out on its own: which directory the narration was recorded into.
+
+// What to actually play, given what somebody named.
+//
+// A deck is a directory with a slides.md in it; the slides are in the out/ underneath. Being
+// handed the deck and told there are no slides in it is a silly answer to give — the deck is
+// right there — so the out/ is found, and built when it is not there yet. That is also what
+// makes a deck opened from the start window or the file dialog work: what a person picks is
+// the deck, not the directory a build happened to put things in.
+std::string resolveDeck(const std::string& input) {
+    std::error_code ec;
+    const fs::path path(input);
+    if (!fs::is_directory(path, ec)) return input;               // a .rc or a .zip
+    if (!fs::exists(path / "slides.md", ec)) return input;       // already an out/, or not a deck
+
+    const fs::path out = path / "out";
+    bool built = false;
+    if (fs::is_directory(out, ec)) {
+        for (const auto& entry : fs::directory_iterator(out, ec)) {
+            if (entry.path().extension() == ".rc") { built = true; break; }
+        }
+    }
+    if (!built) {
+        std::cerr << "refractplayer: building " << input << "\n";
+        if (refract::runTool("build.py", {out.string()}) != 0) {
+            std::cerr << "refractplayer: could not build " << input << "\n";
+            return input;
+        }
+    }
+    return out.string();
+}
 
 // ── Deck navigation ──────────────────────────────────────────────────
 
@@ -1317,7 +1349,6 @@ double parseDuration(const std::string& text) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) { usage(); return 1; }
 
     bool useMetal = true;
     bool startFullscreen = false;
@@ -1379,8 +1410,23 @@ int main(int argc, char* argv[]) {
         else positional.push_back(arg);
     }
 
-    if (positional.empty()) { usage(); return 1; }
-    input = positional[0];
+    if (positional.empty()) {
+        // Nothing named. From a terminal the usage text is the useful answer; double-clicked,
+        // it was a process that printed into nowhere and exited. So say it, then ask — the
+        // player can write a deck as well as play one, and "start a new one" is now something
+        // it can offer.
+        usage();
+        if (pdfOutput.empty() && imagesOutput.empty() && webOutput.empty() && !transcribe) {
+            if (!glfwInit()) return 1;
+            input = refract::runStartWindow();
+        }
+        if (input.empty()) {
+            glfwTerminate();
+            return 1;
+        }
+    } else {
+        input = positional[0];
+    }
     if (positional.size() >= 3) {
         initW = std::atoi(positional[1].c_str());
         initH = std::atoi(positional[2].c_str());
@@ -1404,6 +1450,9 @@ int main(int argc, char* argv[]) {
     }
 
     // ── Playlist ─────────────────────────────────────────────────────
+    input = resolveDeck(input);
+    refract::rememberDeck(fs::path(input).filename() == "out"
+                              ? fs::path(input).parent_path().string() : input);
     deckInput = input;
     if (getExt(input) == ".zip") {
         g.zip = std::make_unique<ZipArchive>();

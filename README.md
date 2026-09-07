@@ -20,8 +20,13 @@ the RemoteCompose engine via components, not pixel math.
 
 ```sh
 python3 refract.py examples/deck               # writes examples/deck/out/*.rc
-prebuilt/refractplayer examples/deck/out       # present it (→ steps, Tab jumps, H for keys)
+prebuilt/refractplayer examples/deck           # present it (→ steps, Tab jumps, H for keys)
+prebuilt/refractplayer                         # or start from the deck picker
 ```
+
+The player takes a deck folder and builds it if it needs to be; with nothing named it opens a
+start window offering the decks you have opened before, and a **New deck…** that writes a
+starter `slides.md` for you.
 
 Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
 `prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.

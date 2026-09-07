@@ -72,12 +72,14 @@ set(REFRACTPLAYER_SOURCES
     src/CaptionWindow.cpp
     src/Captions.cpp
     src/Deck.cpp
+    src/DeckLibrary.cpp
     src/DeckOrder.cpp
     src/EditRunner.cpp
     src/DeckView.cpp
     src/Navigator.cpp
     src/Presenter.cpp
     src/Session.cpp
+    src/StartWindow.cpp
     src/SlideEditor.cpp
     src/SlideRecorder.cpp
     src/TextBuffer.cpp
@@ -91,16 +93,18 @@ set(REFRACTPLAYER_SOURCES
 )
 
 if(APPLE)
-    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm)
+    list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
+                                      src/FileDialog.mm)
 else()
     list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp
-                                      src/AppMenuStub.cpp)
+                                      src/AppMenuStub.cpp src/FileDialogStub.cpp)
 endif()
 
 add_executable(refractplayer ${REFRACTPLAYER_SOURCES})
 
 if(APPLE)
     set_source_files_properties(src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
+                                src/FileDialog.mm
                                 PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
