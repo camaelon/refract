@@ -47,7 +47,11 @@ public final class Main {
             Path in = Path.of(args[i]);
             Path out = Path.of(args[i + 1]);
             try {
-                byte[] bytes = convert(Files.readString(in));
+                String json = Files.readString(in);
+                boolean deflate = wantsDeflate(json);
+                if (deflate) json = stripCompress(json); // the stock parser rejects unknown header tags
+                byte[] bytes = convert(json);
+                if (deflate) bytes = deflateContainer(bytes); // EXPERIMENTAL: "compress": "xdeflate" in the header
                 Files.write(out, bytes);
                 System.err.println("wrote " + out + " (" + bytes.length + " bytes)");
             } catch (Exception e) {
@@ -117,4 +121,38 @@ public final class Main {
     }
 
     private Main() {}
+
+    /** {@code "header": {"compress": "xdeflate"}} asks for the EXPERIMENTAL RCZ1 container (json2rc/EXPERIMENTAL.md). */
+    static boolean wantsDeflate(String json) {
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(json);
+            return root.has("header") && "xdeflate".equalsIgnoreCase(root.getJSONObject("header").optString("compress", ""));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** "RCZ1" + int32 BE inflated length + zlib stream of the whole document. */
+    static byte[] deflateContainer(byte[] doc) {
+        java.util.zip.Deflater d = new java.util.zip.Deflater(9);
+        d.setInput(doc);
+        d.finish();
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        bos.write('R'); bos.write('C'); bos.write('Z'); bos.write('1');
+        int n = doc.length;
+        bos.write((n >>> 24) & 0xFF); bos.write((n >>> 16) & 0xFF); bos.write((n >>> 8) & 0xFF); bos.write(n & 0xFF);
+        byte[] buf = new byte[8192];
+        while (!d.finished()) {
+            int k = d.deflate(buf);
+            bos.write(buf, 0, k);
+        }
+        d.end();
+        return bos.toByteArray();
+    }
+
+    static String stripCompress(String json) {
+        org.json.JSONObject root = new org.json.JSONObject(json);
+        root.getJSONObject("header").remove("compress");
+        return root.toString();
+    }
 }

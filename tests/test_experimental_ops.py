@@ -65,6 +65,14 @@ class ExperimentalOps(unittest.TestCase):
         self.assertLess(n1, n0, f"delta {n1} B should be under compact {n0} B")
         self.assertLess(np.sqrt(((a - b) ** 2).mean()), 0.6, "delta and compact paths render the same")
 
+    def test_deflate_container_is_smaller_and_identical(self):
+        import numpy as np
+        fill = [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}]}}, {"drawPath": "@paths.p"}]
+        n0, a = self.compile(doc([{"p": OPS}], fill), "plain")
+        d = doc([{"p": OPS}], fill); d["header"]["compress"] = "xdeflate"; n1, b = self.compile(d, "deflated")
+        self.assertLess(n1, n0, f"container {n1} B should be under plain {n0} B")
+        self.assertLess(np.sqrt(((a - b) ** 2).mean()), 0.01, "the container renders identically")
+
     def test_blur_softens_edges_only(self):
         n0, a = self.compile(doc([{"p": OPS}], [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}]}}, {"drawPath": "@paths.p"}]), "crisp")
         n1, b = self.compile(doc([{"p": OPS}], [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}, {"xBlur": 3.0}]}}, {"drawPath": "@paths.p"}]), "blur")

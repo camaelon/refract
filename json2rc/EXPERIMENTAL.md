@@ -57,3 +57,9 @@ a single value. The compiler encodes the list compactly — one byte per anchor 
 the anchors that differ from the line's default width (or the keyframes of a taper) within
 0.25 px — so a flat line costs 8 bytes and a typical fitted profile 10–14; see the player's
 `docs/EXPERIMENTAL_OPS.md` for the wire form.
+
+## Compressed document — `"header": {"compress": "xdeflate"}`
+
+json2rc writes the EXPERIMENTAL RCZ1 container: `RCZ1`, an int32 big-endian length, then a zlib
+stream of the whole document. About 40 % smaller; the rcX player inflates it on load
+(`players/cpp/docs/EXPERIMENTAL_OPS.md`). Other players cannot read it.
