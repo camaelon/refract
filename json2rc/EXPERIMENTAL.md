@@ -14,6 +14,9 @@ names carry an `x` prefix; other players ignore them. Origin: `Emoji/CONVERT.md`
                "encoding": "xcompact", "quantum": 0.0625, "winding": "evenOdd"}}]}}
 ```
 
+Add `"delta": true` (best with `"quantum": 0.125`) for the v2 form: int8 deltas from the previous
+point with an int16 escape, another third off the coordinates on blob-like paths.
+
 Same path, a third of the bytes: one byte per verb, no repeated current point, 16-bit
 fixed-point coordinates at `quantum` pixels per unit (default 1/16 px; the writer falls back to
 float coordinates when a coordinate does not fit in 16 bits, and to a standard path when the

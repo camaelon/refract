@@ -55,6 +55,16 @@ class ExperimentalOps(unittest.TestCase):
         self.assertLess(n1, n0 - 40, f"compact {n1} B should be well under standard {n0} B")
         self.assertLess(np.sqrt(((a - b) ** 2).mean()), 0.5, "compact and standard paths render the same")
 
+    def test_delta_compact_path_is_smaller_and_identical(self):
+        import numpy as np
+        fill = [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}]}}, {"drawPath": "@paths.p"}]
+        blob = [{"type": "moveTo", "x": 80, "y": 60}, {"type": "cubicTo", "x1": 84, "y1": 52, "x2": 96, "y2": 50, "x3": 100, "y3": 58},   # a blob-sized path: deltas fit in a byte
+                {"type": "cubicTo", "x1": 104, "y1": 66, "x2": 98, "y2": 78, "x3": 88, "y3": 76}, {"type": "cubicTo", "x1": 78, "y1": 74, "x2": 76, "y2": 68, "x3": 80, "y3": 60}, {"type": "close"}]
+        n0, a = self.compile(doc([{"p": {"value": blob, "encoding": "xcompact", "quantum": 0.0625}}], fill), "compact")
+        n1, b = self.compile(doc([{"p": {"value": blob, "encoding": "xcompact", "quantum": 0.125, "delta": True}}], fill), "delta")
+        self.assertLess(n1, n0, f"delta {n1} B should be under compact {n0} B")
+        self.assertLess(np.sqrt(((a - b) ** 2).mean()), 0.6, "delta and compact paths render the same")
+
     def test_blur_softens_edges_only(self):
         n0, a = self.compile(doc([{"p": OPS}], [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}]}}, {"drawPath": "@paths.p"}]), "crisp")
         n1, b = self.compile(doc([{"p": OPS}], [{"paint": {"ops": [{"style": "fill"}, {"color": "#3060C0"}, {"xBlur": 3.0}]}}, {"drawPath": "@paths.p"}]), "blur")
