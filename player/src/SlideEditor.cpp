@@ -1460,7 +1460,9 @@ void SlideEditor::render(App& app) {
             }
         }
         if (impl.menuRect.bottom() + 16 < viewBottom) {
-            drawText(canvas, "↩ inserts  ·  esc dismisses", impl.menuRect.left(),
+            // Spelled out rather than drawn as ↩: the chrome goes through one typeface with
+            // no font fallback, and a glyph it does not carry comes out as a tofu box.
+            drawText(canvas, "return inserts  ·  esc dismisses", impl.menuRect.left(),
                      impl.menuRect.bottom() + 13, uiFont(10), ui::kDim);
         }
     }

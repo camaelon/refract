@@ -16,7 +16,29 @@ refract emits the **androidx component JSON** format and lets the real `remote-c
 library serialize it — Python never touches the wire format, and layout is done by
 the RemoteCompose engine via components, not pixel math.
 
-## Quick start
+## Getting started
+
+**There is nothing to build and nothing to install into your system.** The tools ship in
+`prebuilt/` and run from the checkout.
+
+```sh
+git clone https://github.com/camaelon/refract          # clone, don't download a zip — see below
+cd refract
+python3 refract.py --check                             # what this machine has, and what it needs
+```
+
+`--check` is the whole answer in five lines:
+
+```
+  ok      python         3.13 at /opt/homebrew/opt/python@3.13/bin/python3.13
+  ok      json2rc        …/prebuilt/json2rc/bin/json2rc
+  ok      java           21 at /usr/bin/java
+  ok      refractplayer  …/prebuilt/refractplayer
+  ok      graphviz       /opt/homebrew/bin/dot
+```
+
+Anything it reports as `MISSING` comes with the command that fixes it. `absent` is something
+optional — you can build decks without it. Then:
 
 ```sh
 python3 refract.py examples/deck               # writes examples/deck/out/*.rc
@@ -28,8 +50,81 @@ The player takes a deck folder and builds it if it needs to be; with nothing nam
 start window offering the decks you have opened before, and a **New deck…** that writes a
 starter `slides.md` for you.
 
-Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on PATH.
-`prebuilt/` ships ready-to-run `json2rc`, `refractplayer`, `rcviewer` and `rc2image`.
+**Two tutorials**, both building the same small talk — the one in
+[`examples/tutorial/`](examples/tutorial), so you can open what you are reading about:
+
+- **[A deck from the command line](docs/tutorial-cli.md)** — `slides.md`, `refract.py`, and
+  the pieces a talk needs: sections, images, notes, code, panes, a theme.
+- **[Authoring in the player](docs/refractplayer.md)** — the same talk written, reordered and
+  presented in refractplayer's own windows, with screenshots of each.
+
+### What it needs
+
+Two things, and only two, because everything else is in the checkout:
+
+| | |
+|---|---|
+| **Python 3.11+** | `refract.py` is Python, and reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9 — `brew install python`. Put it **ahead of `/usr/bin` on `PATH`**: the player looks up `python3` itself for its editing tools, so a checkout where `python3` is Apple's works from the terminal and quietly fails inside the editor. `--check` reports both. |
+| **A JVM 21+** | `json2rc` compiles each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that step needs it — `--json-only` stops before it, and playing an already-built deck never touches it. |
+
+Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing else.
+
+### The prebuilt binaries
+
+| | |
+|---|---|
+| `prebuilt/refractplayer` | the player, and the deck editor |
+| `prebuilt/json2rc` | JSON → `.rc` compiler (a JVM launcher, not a native binary) |
+| `prebuilt/rcviewer` | the standalone viewer, and refract's fallback exporter |
+| `prebuilt/rc2image` | headless `.rc` → PNG, used for freeze snapshots |
+
+The three native ones are **arm64, macOS 11 or newer**, and link nothing outside macOS's own
+frameworks — no Homebrew, no `DYLD_*`, nothing to install. Check any of them yourself with
+`otool -L prebuilt/refractplayer`: everything listed is `/usr/lib` or `/System/Library`. An
+**Intel Mac** needs them rebuilt from source ([player/README.md](player/README.md)); Rosetta
+translates the other direction and cannot help.
+
+They can go **on your `PATH`** — a symlink is enough:
+
+```sh
+ln -s "$PWD/prebuilt/refractplayer" /usr/local/bin/refractplayer
+```
+
+The player resolves the symlink to find its own Python tools next to the checkout, so
+editing, reordering and rebuilding all keep working from anywhere. *Copying* the binary out
+of `prebuilt/` instead of linking it loses them: it would still play a deck, but the deck
+view, the editor and the build panel would have nothing to call.
+
+**Clone it, don't download a zip.** A file that arrives through a browser carries macOS's
+quarantine flag, and Gatekeeper refuses to run these (they are ad-hoc signed, not
+notarized). `git clone` sets no such flag. If you did download an archive:
+
+```sh
+xattr -dr com.apple.quarantine prebuilt
+```
+
+Updating is `git pull` — the binaries are in the repository, so they come with it.
+
+### Rebuilding them
+
+Only if you are changing the engine, or building for an Intel Mac:
+
+```sh
+player/build.sh                          # refractplayer, into prebuilt/
+(cd json2rc && ./gradlew installDist)    # json2rc
+
+# rcviewer and rc2image are upstream's, built from the players/cpp tree:
+cmake -B build -S ../remotecompose-experiments/players/cpp \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+cmake --build build -j
+cp build/apps/viewer/rcviewer build/tools/rc2image/rc2image prebuilt/
+codesign -f -s - prebuilt/rcviewer prebuilt/rc2image
+```
+
+`player/build.sh` finds the RemoteCompose `players/cpp` tree next to this repository, or
+takes `RCX_DIR=/path/to/players/cpp`. It fetches Skia the first time, which is a large
+download. The deployment target is set in `player/CMakeLists.txt` before `project()` — leave
+it alone unless you mean to raise the oldest macOS the result will run on.
 
 **`refractplayer`** is the deck player, and it is where a deck is presented *and* edited:
 
@@ -680,6 +775,10 @@ transcript lands in `voice/NN.txt`, so a misheard word can be corrected there an
   returns keyboard focus to the deck. Slides are laid out at their design size and
   scaled to fit the window, so they fill fullscreen.
 - `prebuilt/rc2image` — headless `.rc` → PNG (`--anim <sec>` pins the animation time)
+
+All three native tools are arm64, target **macOS 11**, and link only macOS's own frameworks —
+see [The prebuilt binaries](#the-prebuilt-binaries). `prebuilt/json2rc` is the odd one out: a
+Gradle launcher script plus jars, so it needs a JVM 21+ rather than being a binary at all.
 
 ## Architecture
 

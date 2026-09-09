@@ -3,10 +3,19 @@
 A presenter's player for refract decks.
 
 ```sh
-player/build.sh                                   # build (once); binary -> prebuilt/refractplayer
 prebuilt/refractplayer examples/deck --presenter  # a deck; its out/ is built if it needs to be
 prebuilt/refractplayer                            # nothing named: the start window
 ```
+
+**It ships built.** `prebuilt/refractplayer` is arm64, targets macOS 11, and links only
+macOS's own frameworks — nothing to install, no Homebrew, and it can be symlinked onto your
+`PATH` (see [the prebuilt binaries](../README.md#the-prebuilt-binaries)). Everything below is
+for changing it: `player/build.sh` rebuilds it into `prebuilt/`.
+
+**New here?** [docs/refractplayer.md](../docs/refractplayer.md) is the illustrated tour — a
+tutorial that writes a talk in the player's windows, then a screenshot of each one and what it
+is for. This page is the reference underneath it: every flag, every key, and why the awkward
+parts are the way they are.
 
 Playback is not reimplemented here. It comes from **`rcplayer`**, the library in the
 RemoteCompose `players/cpp` tree that also powers `rcviewer` — same engine, same
@@ -1177,6 +1186,14 @@ cmake --build player/build -j
 
 Skia is a large fetch. When the rcX tree has already been built once, `build.sh` reuses
 the archives it downloaded rather than pulling a second copy.
+
+**The shipped binary targets macOS 11**, and links glfw statically so it asks the machine for
+nothing outside the system frameworks. Both were accidents of the build before: CMake takes
+the *building* machine's OS as the deployment target unless told otherwise, so a build here
+shipped something only this year's macOS could launch; and the rcX build fetches a static
+glfw but its `find_library` was handed a file where it wanted a directory, so it fell through
+to Homebrew's dylib and asked for it by absolute path at run time. `CMAKE_OSX_DEPLOYMENT_TARGET`
+is set before `project()` — after it, it is too late.
 
 ### Tests
 

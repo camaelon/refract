@@ -9,6 +9,17 @@
 #
 # ./build.sh does the same with the sibling checkout auto-detected.
 cmake_minimum_required(VERSION 3.20)
+# How old a Mac the shipped binary will run on. Set before project(), which is when the
+# compiler checks are made and when it stops being changeable.
+#
+# Without this CMake takes the machine that happened to do the build, and the binary refuses
+# to launch on anything older — a build on this year's macOS ships something only this year's
+# macOS can run, which nobody chose and nobody sees until somebody else tries it. Skia's own
+# archive is built for 11.0, so that is the floor available.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS the build supports")
+endif()
+
 project(RefractPlayer VERSION 0.1.0 LANGUAGES C CXX)
 
 if(APPLE)
