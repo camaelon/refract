@@ -14,6 +14,7 @@
 #pragma once
 
 #include "Asset.h"
+#include "Meta.h"
 #include "EditRunner.h"
 
 #include <functional>
@@ -71,6 +72,11 @@ public:
     // A whole file under the deck: slides.md end to end, or settings.toml.
     bool readFile(const std::string& path, std::string* text, std::string* error);
     bool writeFile(const std::string& path, const std::string& text, std::string* error);
+
+    // ── The `::` line ────────────────────────────────────────────────
+    // What may be written on one. Not a deck's question — the grammar is refract's and the
+    // same for every deck — so this works even where there is no deck to read.
+    bool metaVocabulary(MetaVocabulary* out, std::string* error);
 
     // ── Assets ───────────────────────────────────────────────────────
     // What is in includes/ and which slides use it. `deckDir` comes back with them: the

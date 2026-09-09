@@ -153,7 +153,7 @@ void drawNavigator(SkCanvas* canvas, App& app, int width, int height) {
                  font, color);
 
         if (slide.hasNotes)
-            drawTextRight(canvas, "notes", row.right() - 4, baseline, uiFont(11), ui::kLine);
+            drawTextRight(canvas, "notes", row.right() - 4, baseline, uiFont(11), ui::kDim);
     }
     canvas->restore();
 

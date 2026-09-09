@@ -186,6 +186,41 @@ static void testRemoveAsset() {
     fs::remove_all(deck);
 }
 
+// The `::` vocabulary is refract's own and belongs to no deck — the editor asks for it
+// before a deck is even open, and a zip bundle has one too.
+static void testTheMetaVocabulary() {
+    refract::DeckSource source;          // deliberately not pointed at anything
+    refract::MetaVocabulary vocabulary;
+    std::string error;
+    CHECK(source.metaVocabulary(&vocabulary, &error), "the vocabulary reads with no deck");
+    CHECK(error.empty(), "with no error");
+    CHECK(!vocabulary.empty(), "and is not empty");
+
+    auto has = [](const std::vector<refract::MetaWord>& words, const std::string& name) {
+        for (const refract::MetaWord& word : words) {
+            if (word.name == name) return true;
+        }
+        return false;
+    };
+    CHECK(has(vocabulary.types, "content"), "the default slide type is offered");
+    CHECK(has(vocabulary.types, "section"), "and a section");
+    CHECK(has(vocabulary.flags, "steps"), "a flag is offered");
+    CHECK(has(vocabulary.keys, "transition"), "and a key");
+
+    for (const refract::MetaWord& word : vocabulary.types) {
+        CHECK(!word.doc.empty(), "every type says what it is for");
+    }
+    // A key with a closed set brings its values, which is what makes `transition=` worth
+    // completing rather than just naming.
+    for (const refract::MetaWord& word : vocabulary.keys) {
+        if (word.name != "transition") continue;
+        CHECK(word.values.size() >= 4, "transition offers its styles");
+        bool push = false;
+        for (const std::string& value : word.values) push = push || value == "push";
+        CHECK(push, "including push");
+    }
+}
+
 static void testNotADeck() {
     // An out directory with no deck.json in it: the tools should say so rather than crash.
     const fs::path dir = fs::temp_directory_path()
@@ -208,6 +243,7 @@ int main() {
     testReadFile();
     testScanAssets();
     testRemoveAsset();
+    testTheMetaVocabulary();
     testNotADeck();
     if (failures == 0) std::printf("deck_source: ok\n");
     return failures == 0 ? 0 : 1;

@@ -487,7 +487,7 @@ void AssetWindow::render(App& app) {
         } else {
             drawTextCentred(canvas, renderable(asset.path) ? "rendering…" : asset.kind, art,
                             uiFont(12, true),
-                            renderable(asset.path) ? ui::kLine : kindColour(asset.kind));
+                            renderable(asset.path) ? ui::kDim : kindColour(asset.kind));
         }
 
         float y = art.bottom() + 22;
@@ -495,7 +495,7 @@ void AssetWindow::render(App& app) {
                  impl.pane.left(), y, uiFont(13, true), ui::kText);
         y += 16;
         drawText(canvas, ellipsize(asset.path, uiFont(10), impl.pane.width()),
-                 impl.pane.left(), y, uiFont(10), ui::kLine);
+                 impl.pane.left(), y, uiFont(10), withAlpha(ui::kDim, 0xC0));
         y += 18;
         std::string facts = asset.kind + "   " + humanBytes(asset.size);
         if (!measured.empty()) facts += "   " + measured;
@@ -529,7 +529,7 @@ void AssetWindow::render(App& app) {
             ? "nothing in includes/ — images, sub-decks and clips live there"
             : impl.error;
         drawText(canvas, message, pad, kHeaderH + 34, uiFont(13),
-                 impl.error.empty() ? ui::kLine : ui::kOver);
+                 impl.error.empty() ? ui::kDim : ui::kOver);
     }
 
     // The button beside the keyboard's ⌫, so removing is not a key you have to know.

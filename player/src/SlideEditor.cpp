@@ -1,6 +1,7 @@
 #include "SlideEditor.h"
 
 #include "Completion.h"
+#include "Meta.h"
 #include "Scrolling.h"
 #include "Thumbs.h"
 #include "Utf8.h"
@@ -101,7 +102,29 @@ struct SlideEditor::Impl {
     // from the text rather than remembered: backspace, an arrow key, a click and an undo
     // all move the caret out of an include, and a flag would have to be cleared by each of
     // them. Reading the line back costs nothing and cannot fall out of step.
+    // ── What the menu is offering ────────────────────────────────────
+    // Assets and `::` words are different vocabularies behind one menu, so what the menu
+    // holds is a list of *candidates* rather than a list of assets: each knows what to show
+    // and what to put in the text, which is not always the same thing.
+    struct Item {
+        std::string name;      // shown, and matched against
+        std::string hint;      // dim, on the right: a kind, or what the word does
+        std::string insert;    // what goes in the text (a key brings its `=` with it)
+        std::string asset;     // the asset path, when this is one — for the preview
+    };
+    std::vector<Item> items;   // candidates for the context the caret is in
+    std::vector<std::string> itemNames;   // their names, for matching
+    // What `items` was built for. The decision runs every frame; building the list every
+    // frame would walk the whole asset list looking each name up in it, which is quadratic
+    // work to arrive at the answer it already had.
+    std::string itemsFor;
+
     AssetLister assetLister;
+    // The `::` vocabulary. Types and flags insert a word; a key inserts `key=` and opens
+    // again on its values.
+    std::vector<Item> metaTypes, metaFlags, metaKeys;
+    std::map<std::string, std::vector<Item>> metaValues;   // by key
+    std::vector<MetaWord> includeOpts;                     // kept whole: filtered by kind
     std::vector<Asset> assetList;
     std::string deckDir;                   // where the files are, for the preview
     std::vector<std::string> assetNames;   // as they would be written between < and >
@@ -114,7 +137,7 @@ struct SlideEditor::Impl {
     bool menuLatched = false;
     Caret menuAnchor{-1, -1};              // the `<` the menu belongs to
     bool menuDismissed = false;            // escape was pressed on this one
-    std::vector<int> menuMatches;          // indices into assetNames
+    std::vector<int> menuMatches;          // indices into `items`
     int menuPick = 0;
     int menuTop = 0;                       // first row drawn, for a list longer than the box
     SkRect menuRect = SkRect::MakeEmpty();
@@ -166,6 +189,88 @@ struct SlideEditor::Impl {
     Include includeAt() const {
         const Caret c = buffer.caret();
         return refract::includeAt(buffer.line(c.line), c.col);
+    }
+
+    void setItems(std::vector<Item> next) {
+        items = std::move(next);
+        itemNames.clear();
+        itemNames.reserve(items.size());
+        for (const Item& item : items) itemNames.push_back(item.name);
+    }
+
+    // The deck's assets, as the file being edited would write them.
+    void assetItems() {
+        const std::string want = "assets:" + file;
+        if (itemsFor == want && !items.empty()) return;
+        itemsFor = want;
+        std::vector<Item> next;
+        next.reserve(assetNames.size());
+        for (const std::string& name : assetNames) {
+            const Asset* asset = assetFor(name);
+            next.push_back({name, asset ? asset->kind : std::string(), name, name});
+        }
+        setItems(std::move(next));
+    }
+
+    // What an embed of *this* file can be told. Filtered by what the file is: `crop` on a
+    // .png does nothing, and offering it would be saying it does.
+    void includeOptionItems(const Include& include) {
+        const std::string want = "opt:" + std::to_string(static_cast<int>(include.want))
+                                 + ":" + include.key + ":" + include.name;
+        if (itemsFor == want) return;
+        itemsFor = want;
+
+        if (include.want == IncludeWant::Value) {
+            for (const MetaWord& option : includeOpts) {
+                if (option.name != include.key) continue;
+                std::vector<Item> values;
+                for (const std::string& value : option.values) {
+                    values.push_back({value, option.name, value, ""});
+                }
+                setItems(std::move(values));
+                return;
+            }
+            setItems({});
+            return;
+        }
+
+        // The named file's kind, when it names one the deck has. An unrecognised name — a
+        // typo, or something not yet added — is given everything rather than nothing.
+        const Asset* asset = assetFor(include.name);
+        std::vector<Item> next;
+        for (const MetaWord& option : includeOpts) {
+            if (asset && !option.appliesTo(asset->kind)) continue;
+            // One that takes a value brings its `=` and opens again on the values it has;
+            // a bare flag stands alone.
+            next.push_back({option.name, option.doc,
+                            option.takesValue ? option.name + "=" : option.name, ""});
+        }
+        setItems(std::move(next));
+    }
+
+    // The `::` vocabulary, for whichever of its three lists the caret is in. A key brings
+    // its `=` with it and the menu opens again on its values, which is the whole point of
+    // knowing that `transition=` has five of them.
+    void metaItems(const MetaContext& meta) {
+        const std::string want = "meta:" + std::to_string(static_cast<int>(meta.want))
+                                 + ":" + meta.key;
+        if (itemsFor == want) return;
+        itemsFor = want;
+        switch (meta.want) {
+            case MetaWant::Type: setItems(metaTypes); break;
+            case MetaWant::Word: {
+                std::vector<Item> both = metaFlags;
+                both.insert(both.end(), metaKeys.begin(), metaKeys.end());
+                setItems(std::move(both));
+                break;
+            }
+            case MetaWant::Value: {
+                auto it = metaValues.find(meta.key);
+                setItems(it == metaValues.end() ? std::vector<Item>() : it->second);
+                break;
+            }
+            case MetaWant::None: setItems({}); break;
+        }
     }
 
     // The names, in the shape the file being edited would have to write them. Recomputed
@@ -452,6 +557,31 @@ void SlideEditor::setAssetLister(AssetLister lister) {
     mImpl->assetLister = std::move(lister);
 }
 
+void SlideEditor::setMetaVocabulary(const MetaVocabulary& vocabulary) {
+    Impl& impl = *mImpl;
+    impl.metaTypes.clear();
+    impl.metaFlags.clear();
+    impl.metaKeys.clear();
+    impl.metaValues.clear();
+    for (const MetaWord& word : vocabulary.types) {
+        impl.metaTypes.push_back({word.name, word.doc, word.name, ""});
+    }
+    for (const MetaWord& word : vocabulary.flags) {
+        impl.metaFlags.push_back({word.name, word.doc, word.name, ""});
+    }
+    impl.includeOpts = vocabulary.includeOpts;
+    for (const MetaWord& word : vocabulary.keys) {
+        // A key brings its `=` with it, and the menu opens again on that key's values —
+        // which is the whole point of knowing that `transition=` has five of them.
+        impl.metaKeys.push_back({word.name + "=", word.doc, word.name + "=", ""});
+        std::vector<Impl::Item> values;
+        for (const std::string& value : word.values) {
+            values.push_back({value, word.name, value, ""});
+        }
+        if (!values.empty()) impl.metaValues[word.name] = std::move(values);
+    }
+}
+
 void SlideEditor::refreshAssets() {
     Impl& impl = *mImpl;
     if (!impl.assetLister) return;
@@ -469,6 +599,7 @@ void SlideEditor::refreshAssets() {
     impl.excerpts.clear();
     impl.namesReady = false;     // the names are worked out again for whatever is open
     impl.assetNames.clear();
+    impl.itemsFor.clear();
 }
 
 void SlideEditor::setFileAccess(FileLoader loader, FileSaver saver) {
@@ -599,17 +730,35 @@ void SlideEditor::save() {
 void SlideEditor::acceptCompletion(int match) {
     Impl& impl = *mImpl;
     if (match < 0 || match >= static_cast<int>(impl.menuMatches.size())) return;
-    const Include include = impl.includeAt();
-    if (!include.found) return;
-    const std::string name = impl.assetNames[impl.menuMatches[match]];
-
-    // Select what has been typed since the `<` and type over it — one edit, one undo step,
-    // and the same code path as any other insertion.
+    const Impl::Item& item = impl.items[impl.menuMatches[match]];
     const Caret caret = impl.buffer.caret();
+
+    // Where the word being replaced starts, and what to put there. An include reaches back
+    // past the `<`; a `::` word starts where it starts.
+    const Include include = impl.includeAt();
+    int from;
+    std::string text = item.insert;
+    if (include.want == IncludeWant::Name) {
+        from = include.start + 1;
+        text += ">";                 // an unclosed include is not one
+    } else if (include.found) {
+        // An option or a value goes where it is being typed; the `>` is already there or is
+        // still to come, and either way is not this word's business.
+        from = include.start;
+    } else {
+        const MetaContext meta = metaAt(impl.buffer.line(caret.line), caret.col);
+        if (meta.want == MetaWant::None) return;
+        from = meta.start;
+        // `::` with no space typed after it yet: the word needs one in front of it.
+        if (from > 0 && impl.buffer.line(caret.line)[from - 1] == ':') text = " " + text;
+    }
+
+    // Select what has been typed and type over it — one edit, one undo step, and the same
+    // code path as any other insertion.
     impl.buffer.setBlockMode(false);
-    impl.buffer.setCaret({caret.line, include.start + 1}, /*select=*/false);
+    impl.buffer.setCaret({caret.line, from}, /*select=*/false);
     impl.buffer.setCaret(caret, /*select=*/true);
-    impl.buffer.insert(name + ">");
+    impl.buffer.insert(text);
     impl.menuOpen = false;
     impl.caretBlinkFrom = glfwGetTime();
     impl.lastEditAt = glfwGetTime();
@@ -808,9 +957,30 @@ void SlideEditor::render(App& app) {
         // there rather than something of the wrong shape.
         const bool markdown = impl.target != EditTarget::Settings;
         const Include include = impl.includeAt();
-        if (markdown && !impl.assetList.empty() && include.found) {
+        const Caret caretNow = impl.buffer.caret();
+        const MetaContext meta =
+            markdown ? metaAt(impl.buffer.line(caretNow.line), caretNow.col) : MetaContext{};
+        std::string prefix;
+        int anchorCol = -1;
+        if (markdown && include.want == IncludeWant::Name && !impl.assetList.empty()) {
             impl.namesForFile();
-            const Caret anchor{impl.buffer.caret().line, include.start};
+            impl.assetItems();
+            prefix = include.prefix;
+            anchorCol = include.start;
+        } else if (markdown && include.found && !impl.includeOpts.empty()) {
+            impl.namesForFile();
+            impl.includeOptionItems(include);
+            prefix = include.prefix;
+            anchorCol = include.start;
+        } else if (meta.want != MetaWant::None) {
+            impl.metaItems(meta);
+            prefix = meta.prefix;
+            // Anchored to the word rather than to the `::`, since a `::` line offers three
+            // different lists at three different places along it.
+            anchorCol = meta.start;
+        }
+        if (anchorCol >= 0 && !impl.items.empty()) {
+            const Caret anchor{caretNow.line, anchorCol};
             if (anchor != impl.menuAnchor) {
                 // A different `<`: whatever was decided about the last one does not apply.
                 impl.menuAnchor = anchor;
@@ -819,7 +989,7 @@ void SlideEditor::render(App& app) {
                 impl.menuPick = 0;
                 impl.menuTop = 0;
             }
-            impl.menuMatches = matchNames(impl.assetNames, include.prefix);
+            impl.menuMatches = matchNames(impl.itemNames, prefix);
             impl.menuPick = std::max(0, std::min(impl.menuPick,
                                                  static_cast<int>(impl.menuMatches.size()) - 1));
             if (!impl.menuLatched && glfwGetTime() - impl.lastEditAt >= kIncludeIdleSec) {
@@ -1080,15 +1250,30 @@ void SlideEditor::render(App& app) {
                                             static_cast<int>(impl.menuMatches.size()) - rows));
 
         SkFont rowFont = uiMonoFont(kFontSize - 1);
-        SkFont kindFont = uiFont(10);
-        const float rowH = std::round(kFontSize + 10);
+        // Two sizes: an explanation is read, a one-word kind is glanced at.
+        SkFont hintFont = uiFont(11);
+        SkFont proseFont = uiFont(12);
+        // A one-word hint — "image", "document" — sits on the right of the name and reads
+        // fine there. A sentence does not fit beside it and is not worth cutting down to
+        // where it says nothing, so it takes a line of its own and the rows grow. Which one
+        // a menu uses follows from what it is offering: asset kinds are words, and the
+        // `::` vocabulary is explanations.
+        bool prose = false;
+        for (const Impl::Item& item : impl.items) {
+            prose = prose || item.hint.size() > 16;
+        }
+        if (prose) hintFont = proseFont;
+        const float rowH = std::round(prose ? kFontSize + 28 : kFontSize + 10);
         impl.menuRowH = rowH;
 
         float listW = 130;
         for (int i = 0; i < rows; i++) {
-            const std::string& name = impl.assetNames[impl.menuMatches[impl.menuTop + i]];
-            listW = std::max(listW, textWidth(rowFont, name)
-                                        + textWidth(kindFont, "document") + 46);
+            const Impl::Item& item = impl.items[impl.menuMatches[impl.menuTop + i]];
+            listW = std::max(listW, prose
+                                        ? std::max(textWidth(rowFont, item.name),
+                                                   textWidth(hintFont, item.hint)) + 32
+                                        : textWidth(rowFont, item.name)
+                                              + textWidth(hintFont, item.hint) + 46);
         }
         // The menu is at least tall enough for the preview to be worth looking at. One
         // match is exactly when you most want to see the file before taking it, and a
@@ -1122,8 +1307,8 @@ void SlideEditor::render(App& app) {
         const float rowsW = withPane ? boxW - paneSide - 10 : boxW;
         impl.menuListW = rowsW;
         for (int i = 0; i < rows; i++) {
-            const int index = impl.menuMatches[impl.menuTop + i];
-            const std::string& name = impl.assetNames[index];
+            const Impl::Item& item = impl.items[impl.menuMatches[impl.menuTop + i]];
+            const std::string& name = item.name;
             const SkRect row = SkRect::MakeXYWH(x + 4, y + 4 + i * rowH, rowsW - 8, rowH);
             const bool picked = impl.menuTop + i == impl.menuPick;
             const bool hot = row.contains(static_cast<float>(impl.mouseX),
@@ -1132,14 +1317,27 @@ void SlideEditor::render(App& app) {
                 fillRoundRect(canvas, row, 5,
                               picked ? withAlpha(ui::kAccent, 0x44) : withAlpha(ui::kBg, 0x60));
             }
-            const float baseline = row.centerY() + kFontSize * 0.35f;
-            const Asset* asset = impl.assetFor(name);
-            const float kindW = asset ? textWidth(kindFont, asset->kind) + 14 : 8;
-            drawText(canvas, ellipsize(name, rowFont, row.width() - kindW - 12),
-                     row.left() + 8, baseline, rowFont, picked ? ui::kText : ui::kDim);
-            if (asset && !asset->kind.empty()) {
-                drawTextRight(canvas, asset->kind, row.right() - 8, baseline, kindFont,
-                              ui::kLine);
+            if (prose) {
+                const float top = row.top() + kFontSize + 2;
+                drawText(canvas, ellipsize(name, rowFont, row.width() - 16), row.left() + 8,
+                         top, rowFont, picked ? ui::kText : ui::kDim);
+                if (!item.hint.empty()) {
+                    // The explanation is the reason this menu exists — the words are short
+                    // and their meanings are not — so it is readable rather than a whisper.
+                    drawText(canvas, ellipsize(item.hint, hintFont, row.width() - 16),
+                             row.left() + 8, top + 17, hintFont,
+                             picked ? ui::kDim : withAlpha(ui::kDim, 0xB0));
+                }
+            } else {
+                const float baseline = row.centerY() + kFontSize * 0.35f;
+                const float kindW =
+                    item.hint.empty() ? 8 : textWidth(hintFont, item.hint) + 14;
+                drawText(canvas, ellipsize(name, rowFont, row.width() - kindW - 12),
+                         row.left() + 8, baseline, rowFont, picked ? ui::kText : ui::kDim);
+                if (!item.hint.empty()) {
+                    drawTextRight(canvas, item.hint, row.right() - 8, baseline, hintFont,
+                                  ui::kDim);
+                }
             }
         }
 
@@ -1147,8 +1345,9 @@ void SlideEditor::render(App& app) {
         // What the name under the cursor actually is: the picture for a picture, the opening
         // lines for anything that is text. The names alone are not enough to tell two
         // screenshots apart, which is most of what the folder is.
-        if (withPane && impl.menuPick < static_cast<int>(impl.menuMatches.size())) {
-            const std::string& name = impl.assetNames[impl.menuMatches[impl.menuPick]];
+        if (withPane && impl.menuPick < static_cast<int>(impl.menuMatches.size())
+            && !impl.items[impl.menuMatches[impl.menuPick]].asset.empty()) {
+            const std::string& name = impl.items[impl.menuMatches[impl.menuPick]].asset;
             const Asset* asset = impl.assetFor(name);
             const SkRect pane = SkRect::MakeXYWH(x + boxW - paneSide - 4, y + 4,
                                                  paneSide, paneSide);
@@ -1178,7 +1377,8 @@ void SlideEditor::render(App& app) {
                 for (int step : {-1, 1}) {
                     const int at = impl.menuPick + step;
                     if (at < 0 || at >= static_cast<int>(impl.menuMatches.size())) continue;
-                    const std::string& near = impl.assetNames[impl.menuMatches[at]];
+                    const std::string& near = impl.items[impl.menuMatches[at]].asset;
+                    if (near.empty()) continue;
                     if (!Impl::renderable(near)) continue;
                     if (const Asset* other = impl.assetFor(near)) {
                         requestThumb(impl.fullPath(other->path), side, side);
@@ -1215,7 +1415,7 @@ void SlideEditor::render(App& app) {
                               + std::to_string(image->height());
                 }
             } else if (rendering) {
-                drawTextCentred(canvas, "rendering…", art, uiFont(11), ui::kLine);
+                drawTextCentred(canvas, "rendering…", art, uiFont(11), ui::kDim);
             } else if (Impl::textual(name)) {
                 const std::string& text = impl.excerpt(asset ? asset->path : name);
                 SkFont small = uiMonoFont(9);
@@ -1256,12 +1456,12 @@ void SlideEditor::render(App& app) {
                 drawTextRight(canvas,
                               std::to_string(impl.menuMatches.size() - rows) + " more",
                               impl.menuRect.right() - 8, impl.menuRect.bottom() + 13,
-                              uiFont(10), ui::kLine);
+                              uiFont(10), ui::kDim);
             }
         }
         if (impl.menuRect.bottom() + 16 < viewBottom) {
             drawText(canvas, "↩ inserts  ·  esc dismisses", impl.menuRect.left(),
-                     impl.menuRect.bottom() + 13, uiFont(10), ui::kLine);
+                     impl.menuRect.bottom() + 13, uiFont(10), ui::kDim);
         }
     }
 

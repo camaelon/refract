@@ -291,6 +291,7 @@ all run on their own:
 | `tools/build.py` | rebuild with a given set of options, and report what it did |
 | `tools/history.py` | undo and redo those edits |
 | `tools/assets.py` | list what is in `includes/`, and move an unused file to the trash |
+| `tools/meta.py` | what may be written on a `::` line, and after an include's `\|` |
 
 Each of them moves the narration index and the rehearsal trace along with the blocks it moves,
 in the same write and as one undoable edit — see the note on recordings under
@@ -460,12 +461,52 @@ highlighting so much as making a slide's *shape* visible at a glance.
 | `Tab` | indent two spaces |
 | `Esc` | close (refuses while there are unsaved changes) |
 
-While the [include menu](#completing-an-include) is up, `↑`/`↓` walk it, `↩` or `Tab` inserts,
-and `Esc` dismisses it.
+While the [completion menu](#completing-a--line) is up, `↑`/`↓` walk it, `↩` or `Tab`
+inserts, and `Esc` dismisses it. It offers the deck's assets inside `<…>` and refract's own
+vocabulary on a `::` line.
 
 A fifth click in the same place goes back to a plain caret. A repeat click has to be in the
 same place as well as soon after, so moving to another word and clicking is two first clicks
 rather than a double.
+
+### Completing a `::` line
+
+Type `::` and pause, and the same menu offers what may follow it — the slide types first,
+then, once there is a type, the flags and keys, and after a `key=` that key's own values:
+
+```
+    :: |
+    ┌────────────────────────────────────────────────────┐
+    │ content                                            │
+    │   the ordinary slide (the default, so it can be…   │
+    │ max                                                │
+    │   near-fullscreen: tight margins, smaller title…   │
+    │ section                                            │
+    │   a divider between parts of the talk              │
+    └────────────────────────────────────────────────────┘
+```
+
+Each word carries a line saying what it is for, on its own line under the word and at a size
+meant to be read — the words are short and the meanings are not, and that explanation is most
+of why the menu is worth having. (A one-word hint, like an asset's kind, still sits on the
+right of the name instead; the rows only grow where there is something to say.) A key inserts
+its `=` and the menu opens again on that key's values, so `transition=push` is a few
+keystrokes and two returns.
+
+**The vocabulary is refract's, not the player's.** It comes from
+[`refractkit/meta.py`](../refractkit/meta.py) through `tools/meta.py`, and the layout types
+in it are read out of `render.SLIDE_TYPES` rather than copied — a new slide type cannot be
+added without appearing in the menu. The Python tests check the rest against the code that
+honours it: every word is written onto a `::` line and has to come back out of `parse_meta`
+as the type, flag or override it claims to be, every include option is written after a `|`
+and has to come back out of the include parser, and the ones the vocabulary says reframe an
+embed have to actually reframe one in `deck._apply_include_opts` — and *not* reframe an image,
+which is the claim the kind filtering rests on. A menu that offers a word the build would not
+understand is worse than no menu.
+
+The `::` grammar has one edge worth naming: everything past a lone `:` is a sub-deck's name
+or a speaker rather than vocabulary, so nothing is offered there — but a colon inside a value
+or a `[2:3]` ratio is not that separator, and the words after it still are.
 
 ### Completing an include
 
@@ -519,6 +560,18 @@ contains it, and case is ignored, which is most of what the menu is for. The pau
 deliberate — half a second is long enough that a `<` in the middle of a sentence goes by
 unnoticed, and short enough that stopping to ask "what have I got?" is answered at once.
 `Esc` dismisses the menu for that bracket; moving to another one offers again.
+
+**Past a `|`, it offers the embed's options instead** — `<clip.mp4 | fit=fill stagger>`. The
+same three stages as a `::` line: the option names, then that option's values once it has an
+`=`. An option that takes a value brings its `=` along and the menu opens again on the values;
+a bare flag like `stagger` is inserted on its own.
+
+The options offered are the ones that would **do something to this file**. `crop`, `fit` and
+`ratio` reframe a video or an embedded document and are ignored on an image, so an image is
+offered only `title` and `stagger`. A menu that suggested `crop` on a `.png` would be telling
+you it does something. A name the deck does not have — a typo, or a file not added yet — is
+given the whole list rather than none. And a quoted value is prose being typed, not a choice
+from a list, so `title="Launcher…` closes the menu rather than sitting over it.
 
 The names offered are the ones **this file** can actually write. A slide spliced in from a
 sub-deck resolves `<name>` against that sub-deck's `includes/`, so it is offered its own
@@ -1191,7 +1244,7 @@ python3 -m unittest discover -s tests
 | `src/DeckOrder.{h,cpp}` | the reordering arithmetic behind it, with no window attached |
 | `src/ViewGeometry.{h,cpp}` | the grid and the editor's lines: where things are, and what a click is on |
 | `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
-| `src/Completion.{h,cpp}` | which include is being typed, and which asset names match it |
+| `src/Completion.{h,cpp}` | what is being typed — an include, or which part of a `::` line |
 | `src/Utf8.{h,cpp}` | keeping arbitrary file bytes safe to measure and draw |
 | `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
 | `src/DeckSource.{h,cpp}` | reading and rewriting the deck's own source through the tools |
@@ -1220,6 +1273,7 @@ python3 -m unittest discover -s tests
 | `tools/build.py` | rebuilding, and reporting how much of the deck it had to touch |
 | `tools/history.py` | undo and redo for every edit above |
 | `tools/assets.py` | what is in `includes/`, who uses it, and moving one to `out/.trash/` |
+| `tools/meta.py` | refract's `::` and include-option vocabulary, for the editor to offer |
 | `tools/captions.py` | transcription + forced alignment (whisper, whisperx) |
 | `tools/web.py` | the web player: assembles the deck, audio and captions into a page |
 | `tests/` | the C++ suites above |
