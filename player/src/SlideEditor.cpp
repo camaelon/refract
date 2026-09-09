@@ -1,6 +1,7 @@
 #include "SlideEditor.h"
 
 #include "Completion.h"
+#include "Scrolling.h"
 #include "Thumbs.h"
 #include "Utf8.h"
 
@@ -146,6 +147,12 @@ struct SlideEditor::Impl {
     double lastClickAt = -1.0;
     float  lastClickX = 0, lastClickY = 0;
     double caretBlinkFrom = 0.0;
+    // Set when the caret is *moved* — typed at, arrowed, clicked — and cleared by the
+    // render that scrolls to it. Following it on every frame instead would put the view
+    // back on the caret the moment the wheel moved it away, which reads as a window that
+    // will not scroll.
+    bool followCaret = true;
+    double lastScrollAt = -1.0;      // for the full-rate redraw while it is moving
 
     // Set while drawing, so a click can be turned into a caret position.
     float textLeft = 0, textTop = 0, lineHeight = 0;
@@ -331,14 +338,18 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         if (impl.dragging && impl.lineHeight > 0) {
             impl.buffer.setCaret(impl.caretAt(static_cast<float>(x), static_cast<float>(y)),
                                  /*select=*/true);
+            impl.followCaret = true;
             impl.caretBlinkFrom = glfwGetTime();
         }
     });
     glfwSetScrollCallback(window, [](GLFWwindow* w, double dx, double dy) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
-        self->mImpl->scrollY = std::max(0.0f, self->mImpl->scrollY - float(dy) * 40.0f);
-        self->mImpl->scrollX = std::max(0.0f, self->mImpl->scrollX - float(dx) * 20.0f);
+        self->mImpl->scrollY =
+            std::max(0.0f, self->mImpl->scrollY - scrollPixels(dy, self->mImpl->lineHeight));
+        self->mImpl->scrollX =
+            std::max(0.0f, self->mImpl->scrollX - scrollPixels(dx, 0.5f * self->mImpl->lineHeight));
+        self->mImpl->lastScrollAt = glfwGetTime();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int mods) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
@@ -378,6 +389,7 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         // Shift-click extends, the way a shifted arrow does.
         const bool extending = (mods & GLFW_MOD_SHIFT) != 0;
         impl.buffer.setCaret(impl.caretAt(x, y), extending);
+        impl.followCaret = true;
         impl.caretBlinkFrom = glfwGetTime();
         impl.lastEditAt = glfwGetTime();
 
@@ -425,6 +437,11 @@ SlideEditor::~SlideEditor() {
 
 bool SlideEditor::shouldClose() const {
     return mWindow && glfwWindowShouldClose(mWindow);
+}
+
+bool SlideEditor::scrolling() const {
+    return mImpl && mImpl->lastScrollAt > 0
+           && glfwGetTime() - mImpl->lastScrollAt < kScrollingFor;
 }
 
 void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); }
@@ -609,6 +626,7 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return false;
     Impl& impl = *mImpl;
     impl.caretBlinkFrom = glfwGetTime();
+    impl.followCaret = true;      // a key either moves the caret or types at it
     impl.lastEditAt = glfwGetTime();
 
     // Command on macOS, Control elsewhere — whichever this platform's shortcuts use.
@@ -755,6 +773,7 @@ void SlideEditor::handleChar(unsigned int codepoint) {
         utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
     }
     mImpl->buffer.insert(utf8);
+    mImpl->followCaret = true;
     mImpl->caretBlinkFrom = glfwGetTime();
     mImpl->lastEditAt = glfwGetTime();
 }
@@ -889,15 +908,18 @@ void SlideEditor::render(App& app) {
     const float viewTop = kHeaderH, viewBottom = h - kFooterH;
     const float viewH = viewBottom - viewTop;
 
-    // Keep the caret on screen — following it is the whole job of the scroll here. Unlike
-    // the deck view this follows on every frame, and should: the caret is where you are
-    // typing, and there is no separate selection to scroll away from.
+    // Bring the caret back into view whenever it has moved — typing must never run off the
+    // bottom of the window. Only when it has moved, though: doing it every frame would undo
+    // the wheel, and reading further down a slide than you are editing is a thing people do.
     const Caret caret = impl.buffer.caret();
-    impl.scrollY = scrollToShowLine(impl.lineGeometry(), caret.line, impl.scrollY, viewH);
     const float caretX = textWidth(mono, impl.buffer.line(caret.line).substr(0, caret.col));
     const float textW = w - impl.textLeft - pad;
-    if (caretX < impl.scrollX) impl.scrollX = std::max(0.0f, caretX - 40);
-    else if (caretX > impl.scrollX + textW - 20) impl.scrollX = caretX - textW + 40;
+    if (impl.followCaret) {
+        impl.followCaret = false;
+        impl.scrollY = scrollToShowLine(impl.lineGeometry(), caret.line, impl.scrollY, viewH);
+        if (caretX < impl.scrollX) impl.scrollX = std::max(0.0f, caretX - 40);
+        else if (caretX > impl.scrollX + textW - 20) impl.scrollX = caretX - textW + 40;
+    }
     const float maxScroll = std::max(0.0f, impl.buffer.lineCount() * lineHeight - viewH
                                                + lineHeight * 2);
     impl.scrollY = std::max(0.0f, std::min(maxScroll, impl.scrollY));

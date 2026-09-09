@@ -1,5 +1,7 @@
 #include "DeckView.h"
 
+#include "Scrolling.h"
+
 #include "DeckOrder.h"
 #include "ViewGeometry.h"
 #include "Thumbs.h"
@@ -158,6 +160,7 @@ struct DeckViewWindow::Impl {
     std::vector<SkRect> cards;      // one per *cell*, in window coordinates
     int   columns = 1;
     float cardW = 0, cardH = 0, thumbH = 0;
+    double lastScrollAt = -1.0;      // for the full-rate redraw while it is moving
     bool  canReorder = false;
 
     int groupAt(int slide) const {
@@ -246,8 +249,11 @@ std::unique_ptr<DeckViewWindow> DeckViewWindow::Create(int width, int height) {
     glfwSetScrollCallback(window, [](GLFWwindow* w, double, double dy) {
         auto* self = static_cast<DeckViewWindow*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
-        self->mImpl->scroll = std::max(0.0f, std::min(self->mImpl->scrollMax,
-                                                      self->mImpl->scroll - float(dy) * 48.0f));
+        // A notch moves a row of cards, which is what a grid's rows are.
+        self->mImpl->scroll = std::max(
+            0.0f, std::min(self->mImpl->scrollMax,
+                           self->mImpl->scroll - scrollPixels(dy, self->mImpl->cardH)));
+        self->mImpl->lastScrollAt = glfwGetTime();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int) {
         auto* self = static_cast<DeckViewWindow*>(glfwGetWindowUserPointer(w));
@@ -354,6 +360,11 @@ DeckViewWindow::~DeckViewWindow() {
 
 bool DeckViewWindow::shouldClose() const {
     return mWindow && glfwWindowShouldClose(mWindow);
+}
+
+bool DeckViewWindow::scrolling() const {
+    return mImpl && mImpl->lastScrollAt > 0
+           && glfwGetTime() - mImpl->lastScrollAt < kScrollingFor;
 }
 
 void DeckViewWindow::setOnOpenSlide(std::function<void(int)> action) {

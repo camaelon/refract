@@ -1,5 +1,7 @@
 #include "AssetWindow.h"
 
+#include "Scrolling.h"
+#include "Thumbs.h"
 #include "Ui.h"
 
 #include "rcplayer/CpuRenderBackend.h"
@@ -14,6 +16,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImage.h"
+#include "include/core/SkPathBuilder.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkSamplingOptions.h"
 
@@ -30,6 +33,42 @@ namespace {
 constexpr float kHeaderH = 74.0f;
 constexpr float kRowH    = 44.0f;
 constexpr float kPreview = 34.0f;   // the thumbnail down the left of a row
+// The pane down the right, showing the selected asset at a size worth looking at. Dropped
+// when the window is too narrow for it and the list — the list is what the window is for.
+constexpr float kPaneW   = 250.0f;
+constexpr float kPaneMinList = 300.0f;
+
+// What the still worker can turn into a picture, as opposed to what is decoded here. A
+// document is the deck's own format and a clip contributes its opening frame; both are the
+// engine's work, on its thread.
+bool renderable(const std::string& path) {
+    const std::string ext = rcplayer::getExt(path);
+    return ext == ".rc" || ext == ".rcd" || ext == ".json"
+           || rcplayer::isCodecVideoExt(ext) || rcplayer::isAvfVideoExt(ext);
+}
+
+bool isClip(const std::string& path) {
+    const std::string ext = rcplayer::getExt(path);
+    return rcplayer::isCodecVideoExt(ext) || rcplayer::isAvfVideoExt(ext);
+}
+
+// A ▸ over the corner of a frame, so a clip does not read as a photograph.
+void drawClipMark(SkCanvas* canvas, const SkRect& over) {
+    const float r = std::min(11.0f, over.height() * 0.18f);
+    if (r < 4) return;
+    const float cx = over.right() - r - 5, cy = over.bottom() - r - 5;
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setColor(withAlpha(SK_ColorBLACK, 0xA0));
+    canvas->drawCircle(cx, cy, r, paint);
+    SkPathBuilder play;
+    play.moveTo(cx - r * 0.28f, cy - r * 0.5f);
+    play.lineTo(cx + r * 0.5f, cy);
+    play.lineTo(cx - r * 0.28f, cy + r * 0.5f);
+    play.close();
+    paint.setColor(SK_ColorWHITE);
+    canvas->drawPath(play.detach(), paint);
+}
 
 // Which slides use it, in the space a row has. "slides 1, 4, 9" — and past a few, a count,
 // because the list stops meaning anything once it wraps.
@@ -76,6 +115,11 @@ struct AssetWindow::Impl {
     bool statusError = false;
 
     int cursor = 0;
+    // Set when the cursor is *moved*, and cleared by the render that scrolls to it. Without
+    // it the list scrolls back to the selection on every frame, which quietly undoes the
+    // wheel: scrolling away from the selection lasts until the next redraw and no longer.
+    bool followCursor = false;
+    double lastScrollAt = -1.0;             // for the full-rate redraw while it is moving
     int armedRemove = -1;      // the row a second ⌫ would remove
     float scroll = 0.0f, scrollMax = 0.0f;
     double mouseX = 0, mouseY = 0;
@@ -87,8 +131,27 @@ struct AssetWindow::Impl {
     // screenshots should not be decoded because a window opened.
     std::map<std::string, sk_sp<SkImage>> previews;
     std::string deckDir;
+    SkRect pane = SkRect::MakeEmpty();      // where the preview column is, when there is one
+
+    std::string fullPath(const std::string& relative) const {
+        return deckDir.empty() ? std::string() : deckDir + "/" + relative;
+    }
+
+    // The picture for an asset at this size: decoded here for an image, rendered by the
+    // still worker for a document or a clip. Null while the worker is still on it.
+    sk_sp<SkImage> pictureOf(const Asset& asset, int side, bool urgent) {
+        if (asset.kind == "image") return preview(asset.path);
+        if (!renderable(asset.path) || deckDir.empty()) return nullptr;
+        return urgent ? thumbIfReady(fullPath(asset.path), side, side)
+                      : thumbCached(fullPath(asset.path), side, side);
+    }
 
     void setStatus(const std::string& text, bool bad) { status = text; statusError = bad; }
+
+    void moveCursor(int to) {
+        cursor = to;
+        followCursor = true;
+    }
 
     sk_sp<SkImage> preview(const std::string& relative) {
         auto it = previews.find(relative);
@@ -133,7 +196,8 @@ std::unique_ptr<AssetWindow> AssetWindow::Create(int width, int height) {
         if (!self || !self->mImpl) return;
         Impl& impl = *self->mImpl;
         impl.scroll = std::max(0.0f, std::min(impl.scrollMax,
-                                              impl.scroll - static_cast<float>(dy) * 44.0f));
+                                              impl.scroll - scrollPixels(dy, kRowH)));
+        impl.lastScrollAt = glfwGetTime();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int) {
         auto* self = static_cast<AssetWindow*>(glfwGetWindowUserPointer(w));
@@ -149,7 +213,7 @@ std::unique_ptr<AssetWindow> AssetWindow::Create(int width, int height) {
         }
         for (size_t i = 0; i < impl.rows.size(); i++) {
             if (!impl.rows[i].contains(x, y)) continue;
-            impl.cursor = static_cast<int>(i);
+            impl.moveCursor(static_cast<int>(i));
             impl.armedRemove = -1;    // a new selection is not a confirmation of the old one
             return;
         }
@@ -179,6 +243,11 @@ bool AssetWindow::shouldClose() const {
     return mWindow && glfwWindowShouldClose(mWindow);
 }
 
+bool AssetWindow::scrolling() const {
+    return mImpl && mImpl->lastScrollAt > 0
+           && glfwGetTime() - mImpl->lastScrollAt < kScrollingFor;
+}
+
 void AssetWindow::setScanner(Scanner scanner) { mImpl->scanner = std::move(scanner); }
 void AssetWindow::setRemover(Remover remover) { mImpl->remover = std::move(remover); }
 
@@ -195,9 +264,14 @@ void AssetWindow::refresh() {
         impl.assets.clear();
         impl.error = error.empty() ? "cannot read this deck's assets" : error;
     }
-    impl.cursor = std::max(0, std::min(impl.cursor,
-                                       static_cast<int>(impl.assets.size()) - 1));
+    impl.moveCursor(std::max(0, std::min(impl.cursor,
+                                         static_cast<int>(impl.assets.size()) - 1)));
     impl.armedRemove = -1;
+    // Nothing about a file survives a rescan: it may be a different file under the same
+    // name, and a still of what it used to be is worse than none.
+    std::vector<std::string> stale;
+    for (const Asset& asset : impl.assets) stale.push_back(impl.fullPath(asset.path));
+    dropThumbs(stale);
     impl.previews.clear();
 }
 
@@ -209,10 +283,10 @@ bool AssetWindow::handleKey(int key, int action, int mods) {
     if (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE) impl.armedRemove = -1;
 
     switch (key) {
-        case GLFW_KEY_UP:    impl.cursor = std::max(0, impl.cursor - 1); return true;
-        case GLFW_KEY_DOWN:  impl.cursor = std::min(last, impl.cursor + 1); return true;
-        case GLFW_KEY_HOME:  impl.cursor = 0; return true;
-        case GLFW_KEY_END:   impl.cursor = std::max(0, last); return true;
+        case GLFW_KEY_UP:    impl.moveCursor(std::max(0, impl.cursor - 1)); return true;
+        case GLFW_KEY_DOWN:  impl.moveCursor(std::min(last, impl.cursor + 1)); return true;
+        case GLFW_KEY_HOME:  impl.moveCursor(0); return true;
+        case GLFW_KEY_END:   impl.moveCursor(std::max(0, last)); return true;
         case GLFW_KEY_R:     refresh(); return true;
         case GLFW_KEY_ESCAPE:
             glfwSetWindowShouldClose(mWindow, GLFW_TRUE);
@@ -296,26 +370,31 @@ void AssetWindow::render(App& app) {
     }
 
     // ── Rows ─────────────────────────────────────────────────────────
+    // The pane down the right takes its width off the list. Below a certain width there is
+    // no room for both, and the list wins: this window is a list first.
+    const bool withPane = w - kPaneW - pad >= kPaneMinList && !impl.assets.empty();
+    const float listRight = withPane ? w - kPaneW - pad : w - pad;
     const float listBottom = h - (impl.status.empty() ? 8.0f : 28.0f);
     const float viewH = listBottom - kHeaderH;
     impl.scrollMax = std::max(0.0f, impl.assets.size() * kRowH - viewH + 8);
 
-    {   // Keep the cursor in view when it has been moved by a key.
+    if (impl.followCursor) {   // ...only when it was actually moved. See followCursor.
+        impl.followCursor = false;
         const float top = impl.cursor * kRowH;
         if (top < impl.scroll) impl.scroll = top;
         else if (top + kRowH > impl.scroll + viewH) impl.scroll = top + kRowH - viewH;
-        impl.scroll = std::max(0.0f, std::min(impl.scrollMax, impl.scroll));
     }
+    impl.scroll = std::max(0.0f, std::min(impl.scrollMax, impl.scroll));
 
     canvas->save();
-    canvas->clipRect(SkRect::MakeLTRB(0, kHeaderH, w, listBottom));
+    canvas->clipRect(SkRect::MakeLTRB(0, kHeaderH, listRight, listBottom));
     impl.rows.assign(impl.assets.size(), SkRect::MakeEmpty());
     impl.hover = -1;
 
     for (size_t i = 0; i < impl.assets.size(); i++) {
         const Asset& asset = impl.assets[i];
         const float y = kHeaderH + i * kRowH - impl.scroll;
-        SkRect row = SkRect::MakeLTRB(pad, y + 3, w - pad, y + kRowH - 3);
+        SkRect row = SkRect::MakeLTRB(pad, y + 3, listRight, y + kRowH - 3);
         impl.rows[i] = row;
         if (row.bottom() < kHeaderH || row.top() > listBottom) continue;
 
@@ -329,12 +408,19 @@ void AssetWindow::render(App& app) {
         // A thumbnail for what has one; a coloured chip naming the kind for what does not.
         SkRect box = SkRect::MakeXYWH(row.left() + 8, row.centerY() - kPreview * 0.5f,
                                       kPreview * 1.6f, kPreview);
-        sk_sp<SkImage> image = asset.kind == "image" ? impl.preview(asset.path) : nullptr;
+        // Asked for unhurriedly: a list scrolling past should not push the row under the
+        // cursor out of the queue, and a row with no picture yet simply shows its kind.
+        const int rowSide = static_cast<int>(kPreview * 1.6f);
+        sk_sp<SkImage> image = impl.pictureOf(asset, rowSide, /*urgent=*/false);
+        if (!image && renderable(asset.path) && !impl.deckDir.empty()) {
+            requestThumb(impl.fullPath(asset.path), rowSide, rowSide);
+        }
         if (image) {
             fillRoundRect(canvas, box, 4, ui::kBg);
             canvas->save();
             canvas->clipRRect(SkRRect::MakeRectXY(box, 4, 4), true);
-            drawImageFit(canvas, image, box);
+            const SkRect drawn = drawImageFit(canvas, image, box);
+            if (isClip(asset.path)) drawClipMark(canvas, drawn);
             canvas->restore();
         } else {
             fillRoundRect(canvas, box, 4, ui::kBg);
@@ -345,7 +431,8 @@ void AssetWindow::render(App& app) {
         const float textLeft = box.right() + 12;
         const float baseline = row.centerY() - 1;
         const SkColor tone = asset.used ? ui::kText : ui::kDim;
-        const std::string name = ellipsize(asset.name, uiFont(14, true), w - textLeft - 260);
+        const std::string name = ellipsize(asset.name, uiFont(14, true),
+                                           row.right() - textLeft - 90);
         drawText(canvas, name, textLeft, baseline, uiFont(14, true), tone);
         // The folder it is in, when it is not the top one — a sub-deck's assets are its own,
         // and two decks can each have a diagram.png. Beside the name rather than under it:
@@ -363,6 +450,79 @@ void AssetWindow::render(App& app) {
                       ui::kDim);
     }
     canvas->restore();
+
+    // ── The preview pane ─────────────────────────────────────────────
+    // What the row under the cursor actually is, at a size worth looking at: a row's
+    // thumbnail is enough to tell two photographs apart and not enough for anything else,
+    // and a deck is mostly documents.
+    impl.pane = SkRect::MakeEmpty();
+    if (withPane && impl.cursor >= 0 && impl.cursor < static_cast<int>(impl.assets.size())) {
+        const Asset& asset = impl.assets[impl.cursor];
+        impl.pane = SkRect::MakeLTRB(listRight + pad * 0.5f, kHeaderH + 12, w - pad,
+                                     h - 38);   // clear of the trash button
+        fillRect(canvas, SkRect::MakeXYWH(listRight + 4, kHeaderH, 1,
+                                          listBottom - kHeaderH), ui::kLine);
+
+        const float side = impl.pane.width();
+        const SkRect art = SkRect::MakeXYWH(impl.pane.left(), impl.pane.top(), side, side);
+        fillRoundRect(canvas, art, 6, ui::kBg);
+        strokeRoundRect(canvas, art, 6, ui::kLine, 1.0f);
+
+        // Urgent here: this is the one the cursor is on, and the rows behind it are
+        // speculative by comparison.
+        sk_sp<SkImage> image = impl.pictureOf(asset, static_cast<int>(side), /*urgent=*/true);
+        std::string measured;
+        if (image) {
+            canvas->save();
+            canvas->clipRRect(SkRRect::MakeRectXY(art.makeInset(1, 1), 6, 6), true);
+            const SkRect drawn = drawImageFit(canvas, image, art.makeInset(6, 6));
+            if (isClip(asset.path)) drawClipMark(canvas, drawn);
+            canvas->restore();
+            // A document's still is square because the pane is; only a picture's own size
+            // is worth reporting.
+            if (asset.kind == "image" || isClip(asset.path)) {
+                measured = std::to_string(image->width()) + " × "
+                           + std::to_string(image->height());
+            }
+        } else {
+            drawTextCentred(canvas, renderable(asset.path) ? "rendering…" : asset.kind, art,
+                            uiFont(12, true),
+                            renderable(asset.path) ? ui::kLine : kindColour(asset.kind));
+        }
+
+        float y = art.bottom() + 22;
+        drawText(canvas, ellipsize(asset.name, uiFont(13, true), impl.pane.width()),
+                 impl.pane.left(), y, uiFont(13, true), ui::kText);
+        y += 16;
+        drawText(canvas, ellipsize(asset.path, uiFont(10), impl.pane.width()),
+                 impl.pane.left(), y, uiFont(10), ui::kLine);
+        y += 18;
+        std::string facts = asset.kind + "   " + humanBytes(asset.size);
+        if (!measured.empty()) facts += "   " + measured;
+        drawText(canvas, facts, impl.pane.left(), y, uiFont(11), ui::kDim);
+        y += 20;
+        // The whole list, not the row's four: the pane has the room, and "which slides
+        // would I break" is the question somebody about to delete something is asking.
+        drawText(canvas, asset.used ? "used by" : "used by nothing", impl.pane.left(), y,
+                 uiFont(11, true), asset.used ? ui::kDim : ui::kWarn);
+        y += 15;
+        std::string line;
+        for (int slide : asset.slides) {
+            const std::string one = slide == 0 ? "settings" : "slide " + std::to_string(slide);
+            const std::string next = line.empty() ? one : line + ", " + one;
+            if (textWidth(uiFont(11), next) > impl.pane.width()) {
+                drawText(canvas, line, impl.pane.left(), y, uiFont(11), ui::kDim);
+                y += 14;
+                line = one;
+                if (y > impl.pane.bottom() - 4) break;
+            } else {
+                line = next;
+            }
+        }
+        if (!line.empty() && y <= impl.pane.bottom()) {
+            drawText(canvas, line, impl.pane.left(), y, uiFont(11), ui::kDim);
+        }
+    }
 
     if (impl.assets.empty()) {
         const std::string message = impl.error.empty()
