@@ -715,6 +715,15 @@ void openSlideEditor() {
         return source.scanAssets(out, dir, error);
     });
     slideEditor->refreshAssets();
+    // What may be written on a `::` line. Read once — the grammar does not change while the
+    // player runs — and quietly skipped if the tools are not there.
+    {
+        refract::MetaVocabulary vocabulary;
+        std::string error;
+        if (source.metaVocabulary(&vocabulary, &error)) {
+            slideEditor->setMetaVocabulary(vocabulary);
+        }
+    }
     slideEditor->setFileAccess(
         [](const std::string& path, std::string* text, std::string* error) {
             return source.readFile(path, text, error);

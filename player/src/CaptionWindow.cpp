@@ -354,7 +354,7 @@ void CaptionWindow::render(const App& app, Captions& captions, double playbackTi
                  pad, pad, headerFont, ui::kDim);
         char counter[32];
         std::snprintf(counter, sizeof(counter), "%d / %d", app.current() + 1, app.deck.size());
-        drawTextRight(canvas, counter, w - pad, pad, headerFont, ui::kLine);
+        drawTextRight(canvas, counter, w - pad, pad, headerFont, ui::kDim);
     }
 
     // Edit / Done. Only offered when there is something to correct.
@@ -486,7 +486,7 @@ void CaptionWindow::render(const App& app, Captions& captions, double playbackTi
               "Enter next    Esc cancel"
             : "click a word to change it    shift-click a second to take in a span    "
               "Done to finish";
-        drawText(canvas, text, pad, h - pad * 0.5f, hint, ui::kLine);
+        drawText(canvas, text, pad, h - pad * 0.5f, hint, ui::kDim);
     }
 
     mImpl->backend.present();

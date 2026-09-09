@@ -11,6 +11,7 @@
 
 #include "App.h"
 #include "Asset.h"
+#include "Meta.h"
 #include "TextBuffer.h"
 
 #include <functional>
@@ -67,6 +68,10 @@ public:
     using AssetLister = std::function<bool(std::vector<Asset>* out, std::string* deckDir,
                                            std::string* error)>;
     void setAssetLister(AssetLister lister);
+
+    // What may be written on a `::` line — refract's own vocabulary, read once at startup.
+    // Without it the editor still completes includes; the `::` menu simply never appears.
+    void setMetaVocabulary(const MetaVocabulary& vocabulary);
     // Ask for the list again. Done when the editor opens and after a rebuild rather than
     // when the menu is wanted: the scan runs a script, and a pause between the keystroke
     // and the menu is exactly where that would be felt.

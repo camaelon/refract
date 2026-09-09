@@ -12,15 +12,28 @@
 
 namespace refract {
 
-// Where an include being typed starts, and what has been typed since.
-struct Include {
-    bool found = false;
-    int  start = 0;          // the column of the `<` itself
-    std::string prefix;      // between it and the caret
+// `<name>` names an asset; `<name | key=value … flag>` carries options for the embed it
+// makes. Which of those the caret is in decides what there is to offer — the deck's files,
+// the options that mean anything for *that* file, or one option's values.
+enum class IncludeWant {
+    None,     // the caret is not inside an unclosed `<`
+    Name,     // before the `|`: which asset
+    Option,   // after it: a key or a flag
+    Value,    // after `key=`
 };
 
-// The unclosed `<` the caret sits after on this line, if it sits after one. A `>` between it
-// and the caret means that include is already finished, and nothing is being typed into it.
+struct Include {
+    bool found = false;              // shorthand for want != None
+    IncludeWant want = IncludeWant::None;
+    int  start = 0;                  // the column of the `<`, or of the word being typed
+    std::string prefix;              // what has been typed of the word
+    std::string name;                // the asset named before the `|`, once past it
+    std::string key;                 // for Value: the option before the `=`
+};
+
+// The unclosed `<` the caret sits inside on this line, if it sits inside one, and which of
+// its three parts. A `>` between it and the caret means that include is already finished,
+// and nothing is being typed into it.
 Include includeAt(const std::string& line, int col);
 
 // The `includes/` directory a `<name>` written in `file` resolves against, relative to the
@@ -34,6 +47,30 @@ std::string includeBase(const std::string& file);
 // filenames, and remembering their capitalisation is the work this is meant to save. An
 // empty prefix matches everything, which is the state right after the `<` is typed.
 std::vector<int> matchNames(const std::vector<std::string>& names, const std::string& prefix);
+
+// ── The `::` line ────────────────────────────────────────────────────
+//
+// `:: <type> [flags] [key=value…] [: params]`. Which of those three vocabularies is wanted
+// depends on where the caret is, and the rules are small but not obvious: the first word is
+// a type and later bare words are flags, a word with an `=` in it wants that key's values,
+// and everything past a lone `:` is a sub-deck name or a speaker rather than vocabulary at
+// all.
+enum class MetaWant {
+    None,    // not on a `::` line, or past the `:` where the words stop being vocabulary
+    Type,    // the first word: what kind of slide this is
+    Word,    // a later bare word: a flag, or the start of a key
+    Value,   // after `key=`
+};
+
+struct MetaContext {
+    MetaWant want = MetaWant::None;
+    int start = 0;           // the column the word being typed starts at
+    std::string prefix;      // what has been typed of it
+    std::string key;         // for Value: the key before the `=`
+};
+
+// What the `::` line under the caret wants completed, if it wants anything.
+MetaContext metaAt(const std::string& line, int col);
 
 // The names an asset list offers a file: those under its `includes/`, written the way that
 // file would have to write them. Anything outside it cannot be named from there at all.

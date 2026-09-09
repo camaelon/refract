@@ -193,6 +193,38 @@ bool DeckSource::writeFile(const std::string& path, const std::string& text,
     return writeThroughTemp("file", {"--file", path}, text, "saved", error);
 }
 
+// ── The `::` line ────────────────────────────────────────────────────
+
+bool DeckSource::metaVocabulary(MetaVocabulary* out, std::string* error) {
+    nlohmann::json doc;
+    if (!ask("meta.py", {"--list"}, &doc, "cannot read refract's `::` vocabulary", error)) {
+        return false;
+    }
+    auto words = [](const nlohmann::json& list) {
+        std::vector<MetaWord> out;
+        if (!list.is_array()) return out;
+        for (const auto& rec : list) {
+            MetaWord word;
+            word.name = rec.value("name", std::string());
+            word.doc = rec.value("doc", std::string());
+            if (rec.contains("values") && rec["values"].is_array()) {
+                for (const auto& v : rec["values"]) word.values.push_back(v.get<std::string>());
+            }
+            if (rec.contains("kinds") && rec["kinds"].is_array()) {
+                for (const auto& k : rec["kinds"]) word.kinds.push_back(k.get<std::string>());
+            }
+            word.takesValue = rec.value("takes_value", true);
+            if (!word.name.empty()) out.push_back(std::move(word));
+        }
+        return out;
+    };
+    out->types = words(doc["types"]);
+    out->flags = words(doc["flags"]);
+    out->keys = words(doc["keys"]);
+    out->includeOpts = words(doc["include_opts"]);
+    return true;
+}
+
 // ── Assets ───────────────────────────────────────────────────────────
 
 bool DeckSource::scanAssets(std::vector<Asset>* out, std::string* dir, std::string* error) {
