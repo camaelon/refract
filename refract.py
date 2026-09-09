@@ -32,6 +32,7 @@ from refractkit.buildcache import (BuildCache, copy_fingerprint, doc_fingerprint
                                    prune, tool_stamp)
 from refractkit.deck import load_deck, resolve_blocks
 from refractkit.measure import content_height
+from refractkit.meta import parse_duration
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
                                build_same_doc, build_scroll_doc, build_snapshot_doc,
                                build_transition_doc, content_metrics, is_graph_slide,
@@ -229,6 +230,13 @@ def resolve_same_types(slides: list) -> list:
     return out
 
 
+def meta_duration(slide: dict) -> float:
+    """The planned length a slide's ``::`` line declares, in seconds, or 0."""
+    meta = slide.get("meta") or {}
+    raw = (meta.get("overrides") or {}).get("duration")
+    return parse_duration(raw) if raw is not None else 0.0
+
+
 def manifest_record(slide: dict, index: int, rc_path: str, deck_dir: str) -> dict:
     """One slide's entry in out/deck.json — what a player knows about it without opening it.
 
@@ -244,6 +252,19 @@ def manifest_record(slide: dict, index: int, rc_path: str, deck_dir: str) -> dic
     }
     if slide.get("section_number"):
         record["section"] = slide["section_number"]
+    # `:: section duration=12m` — how long this part of the talk is meant to take. The
+    # player adds these up for the deck's planned length and paces the run against them.
+    #
+    # Only on a slide that starts a section: a duration is a claim about a *part* of the
+    # talk, and the parts are the sections. Written anywhere else it would be summed into
+    # nothing, so the build says so rather than letting it look like it worked.
+    planned = meta_duration(slide)
+    if planned > 0:
+        if slide.get("section_number"):
+            record["duration"] = round(planned, 3)
+        else:
+            print(f"note: slide {index + 1} sets duration= but starts no section — "
+                  f"only `:: section` slides carry the talk's plan", file=sys.stderr)
     # Provenance: which markdown file this slide was parsed from, and which
     # `---`-separated chunk of it. Several rendered slides can share one chunk
     # (fragments, scroll pages, stagger steps); the deck view reorders whole chunks.

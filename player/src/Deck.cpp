@@ -117,6 +117,7 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
                 slide.type          = rec.value("type", slide.type);
                 slide.author        = rec.value("author", std::string());
                 slide.sectionNumber = rec.value("section", 0);
+                slide.duration = rec.value("duration", 0.0);
                 slide.hasNotes      = rec.value("notes", false);
                 slide.srcFile       = rec.value("src", std::string());
                 slide.srcIndex      = rec.value("src_index", -1);
@@ -150,9 +151,13 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
                                                      : static_cast<int>(mSections.size()) + 1;
             sec.title      = slide.title;
             sec.firstSlide = slide.index;
+            sec.duration   = slide.duration;
             mSections.push_back(sec);
         }
     }
+    // The talk's plan, in the shape the pacing arithmetic wants it.
+    mPlan.clear();
+    for (const Section& sec : mSections) mPlan.push_back({sec.firstSlide, sec.duration});
     // Tag each slide with the section it falls under, so the presenter can name where we are.
     int current = 0;
     for (auto& slide : mSlides) {

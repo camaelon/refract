@@ -168,7 +168,8 @@ void drawPaneLabel(SkCanvas* canvas, const SkRect& box, const std::string& label
 // at a glance, and where in it you are. With a rehearsal trace, a second marker shows where
 // that run had got to by now: the gap between the two *is* how far ahead or behind you are,
 // which reads faster than a number does.
-void drawProgress(SkCanvas* canvas, const SkRect& r, const App& app, float ghostFraction) {
+void drawProgress(SkCanvas* canvas, const SkRect& r, const App& app, float ghostFraction,
+                  bool ghostIsPlan) {
     const Deck& deck = app.deck;
     fillRoundRect(canvas, r, r.height() * 0.5f, ui::kPanel);
 
@@ -185,8 +186,10 @@ void drawProgress(SkCanvas* canvas, const SkRect& r, const App& app, float ghost
 
     if (ghostFraction >= 0.0f) {
         float x = r.left() + r.width() * std::min(1.0f, ghostFraction);
+        // A rehearsal is what the talk *did* take and reads as solid; a plan is what it is
+        // *meant* to take, and is drawn quieter so the two are never confused.
         fillRoundRect(canvas, SkRect::MakeXYWH(x - 1.5f, r.top() - 5, 3, r.height() + 10),
-                      1.5f, ui::kText);
+                      1.5f, ghostIsPlan ? ui::kDim : ui::kText);
     }
 }
 
@@ -373,6 +376,17 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                                        app.clock.elapsed, app.timeOnSlide(), &delta)) {
             PaceLabel label = paceLabel(delta, app.timing.total());
             drawText(canvas, label.text, subX, barY + 18, uiFont(11, true), label.color);
+        } else if (!deck.empty() && deck.plannedLength() > 0) {
+            // No rehearsal, but the deck says how long its parts should take. Behind is
+            // being further back in the deck than the plan expects, measured in the time
+            // the plan would have spent covering the difference.
+            const float should = plannedFraction(deck.plan(), deck.size(), app.clock.elapsed);
+            if (should >= 0.0f) {
+                const double here = static_cast<double>(app.current() + 1) / deck.size();
+                const double drift = (should - here) * deck.plannedLength();
+                PaceLabel label = paceLabel(drift, deck.plannedLength());
+                drawText(canvas, label.text, subX, barY + 18, uiFont(11, true), label.color);
+            }
         }
     }
 
@@ -383,6 +397,9 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     if (sectionIdx >= 0) {
         const auto& section = deck.sections()[sectionIdx];
         std::string name = std::to_string(section.number) + ". " + section.title;
+        // What this part of the talk is meant to be worth, when it says. Beside its name,
+        // because "twelve minutes" is only useful attached to what it is twelve minutes of.
+        if (section.duration > 0) name += "  ·  " + formatDuration(section.duration);
         drawTextRight(canvas, ellipsize(name, labelFont, fw * 0.4f), w - pad, barY + 18,
                       labelFont, ui::kDim);
     }
@@ -534,8 +551,11 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     }
 
     // ── Progress ─────────────────────────────────────────────────────
-    // Where the rehearsal had got to by now, as a fraction of the deck.
+    // Where you should be by now. A rehearsal is the better answer — it is what this talk
+    // actually took — so it wins; the deck's own `:: section duration=` plan stands in when
+    // there has been no rehearsal, which is every talk until the first one.
     float ghost = -1.0f;
+    bool ghostIsPlan = false;
     if (!app.timing.empty() && !deck.empty() && app.clock.running) {
         double through = 0.0;
         std::string file = app.timing.positionAt(app.clock.elapsed, &through);
@@ -543,8 +563,12 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         if (index >= 0) {
             ghost = static_cast<float>((index + through) / deck.size());
         }
+    } else if (!deck.empty() && app.clock.running) {
+        ghost = plannedFraction(deck.plan(), deck.size(), app.clock.elapsed);
+        ghostIsPlan = ghost >= 0.0f;
     }
-    drawProgress(canvas, SkRect::MakeXYWH(pad, h - pad - progressH, fw, progressH), app, ghost);
+    drawProgress(canvas, SkRect::MakeXYWH(pad, h - pad - progressH, fw, progressH), app, ghost,
+                 ghostIsPlan);
 
     // The navigator, the help card and a pending jump live here rather than on the slide
     // window whenever this window is open.

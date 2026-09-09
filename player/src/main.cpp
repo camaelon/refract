@@ -1111,6 +1111,15 @@ int main(int argc, char* argv[]) {
         voice = refract::AudioPlayer::Create();
         if (voice) g.voiceOverEnabled = false;
     }
+    // How long the deck says it should take, when nothing on the command line said. A talk
+    // that writes its plan into its sections should not also have to repeat it as a flag.
+    if (app.clock.target <= 0 && app.deck.plannedLength() > 0) {
+        app.clock.target = app.deck.plannedLength();
+        std::cerr << "refractplayer: planned length "
+                  << refract::formatDuration(app.deck.plannedLength())
+                  << " from the deck's sections\n";
+    }
+
     std::cerr << "refractplayer: " << app.deck.size() << " slides, "
               << app.deck.sections().size() << " sections"
               << (app.deck.hasManifest() ? " (deck.json)" : " (no deck.json — filenames only)")

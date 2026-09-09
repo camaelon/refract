@@ -10,6 +10,8 @@
 #include "DeckOrder.h"
 
 #include <filesystem>
+#include "Plan.h"
+
 #include <string>
 #include <vector>
 
@@ -31,6 +33,7 @@ struct Slide {
     std::string type;          // "title" | "section" | "content" | "split" | …
     std::string author;        // @author attribution, when the deck has one
     int sectionNumber = 0;     // set when this slide *is* a section heading
+    double duration = 0.0;     // `duration=` on a section heading, in seconds
     int inSection = 0;         // the section this slide falls under (0 = front matter)
     bool hasNotes = false;
     std::string notes;         // loaded on demand by notesFor()
@@ -77,6 +80,9 @@ struct Section {
     int number = 0;
     std::string title;
     int firstSlide = 0;        // index of the section heading slide
+    // `:: section duration=12m` — how long this part of the talk is meant to take, in
+    // seconds. 0 when the section said nothing about it.
+    double duration = 0.0;
 };
 
 class Deck {
@@ -89,6 +95,12 @@ public:
     int  size()  const { return static_cast<int>(mSlides.size()); }
     const std::vector<Slide>&   slides()   const { return mSlides; }
     const std::vector<Section>& sections() const { return mSections; }
+
+    // The talk as the deck plans it: the sections, with what each said it is worth. Empty
+    // when no section states a duration.
+    const std::vector<PlanSection>& plan() const { return mPlan; }
+    // How long the deck says it should take, in seconds; 0 when nothing was planned.
+    double plannedLength() const { return plannedTotal(mPlan); }
     bool hasManifest() const { return mHasManifest; }
     const std::string& name() const { return mName; }
 
@@ -123,6 +135,7 @@ public:
 private:
     std::vector<Slide>   mSlides;
     std::vector<Section> mSections;
+    std::vector<PlanSection> mPlan;
     bool mHasManifest = false;
     std::string mName;
 };
