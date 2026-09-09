@@ -28,10 +28,22 @@ import sys
 import time
 from dataclasses import replace
 
+# Checked before the refractkit imports, which need 3.11 for tomllib (settings.toml). macOS
+# ships 3.9, so this is the first thing somebody hits on a stock Mac — and three imports deep
+# it arrives as an ImportError that says nothing about what to do.
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        f"refract needs Python 3.11 or newer; this is "
+        f"{sys.version_info[0]}.{sys.version_info[1]} at {sys.executable}.\n"
+        "macOS ships 3.9. `brew install python` gives a current one, then run refract.py\n"
+        "with it (or put it ahead of /usr/bin on PATH — the player looks up `python3` too).\n")
+    raise SystemExit(2)
+
 from refractkit.buildcache import (BuildCache, copy_fingerprint, doc_fingerprint, file_digest,
                                    prune, tool_stamp)
 from refractkit.deck import load_deck, resolve_blocks
 from refractkit.measure import content_height
+from refractkit import preflight
 from refractkit.meta import parse_duration
 from refractkit.render import (build_doc, build_graph_transition_doc, build_push_doc,
                                build_same_doc, build_scroll_doc, build_snapshot_doc,
@@ -670,7 +682,15 @@ def main() -> int:
                     help="rebuild every slide, ignoring the incremental build cache")
     ap.add_argument("--json-only", action="store_true", help="emit JSON only; do not run json2rc")
     ap.add_argument("--json2rc", default=None, help="path to the json2rc launcher (default: auto-detect)")
+    ap.add_argument("--check", action="store_true",
+                    help="report what this machine has and what it is missing, then exit")
     args = ap.parse_args()
+
+    if args.check:
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        checks = preflight.check(repo_root)
+        print(preflight.report(checks))
+        return 1 if preflight.blocking(checks) else 0
 
     if args.watch:
         deck_dir = os.path.abspath(args.deck)
@@ -953,12 +973,26 @@ def run_once(args) -> int:
               "or pass --json-only to stop at JSON.", file=sys.stderr)
         return 2
 
+    # A JVM, before it is needed. Without this the failure is a message from Apple's `java`
+    # stub about a missing runtime, which says nothing about which runtime or why.
+    java = preflight.java_check(repo_root)
+    if not java.ok:
+        print(f"java: {java.detail}\n{java.fix}\n"
+              "`--json-only` stops before this step.", file=sys.stderr)
+        return 2
+    java_env = dict(os.environ)
+    bundled = preflight.bundled_jre(repo_root)
+    if bundled:
+        # A JRE shipped in the checkout, when somebody put one there — the launcher takes
+        # JAVA_HOME over whatever is on PATH, so this needs no change to the launcher.
+        java_env["JAVA_HOME"] = bundled
+
     rc = 0
     if convert:
         cmd = [json2rc]
         for json_path, rc_path in convert:
             cmd += [json_path, rc_path]
-        rc = subprocess.run(cmd).returncode
+        rc = subprocess.run(cmd, env=java_env).returncode
         if rc == 0:
             # Only a clean run is remembered. A fingerprint recorded for a .rc that was not
             # actually produced would be skipped forever after; forgetting costs one rebuild.
@@ -985,8 +1019,8 @@ def run_once(args) -> int:
                                       width, height, job["i"], args.debug)
             with open(snap_json, "w") as f:
                 json.dump(snap, f)
-            env = {**os.environ, "RC_FRAMES": "2"}   # 2 paints so Impulse-driven embeds settle
-            if (subprocess.run([json2rc, snap_json, snap_rc]).returncode == 0
+            env = {**java_env, "RC_FRAMES": "2"}   # 2 paints so Impulse-driven embeds settle
+            if (subprocess.run([json2rc, snap_json, snap_rc], env=env).returncode == 0
                     and subprocess.run([rc2image, snap_rc, png, str(width), str(height),
                                         "--anim", "3.0"], env=env).returncode == 0):
                 freeze = {"png": os.path.abspath(png),
@@ -999,7 +1033,7 @@ def run_once(args) -> int:
                 fj = os.path.join(json_dir, nm + ".json")
                 with open(fj, "w") as f:
                     json.dump(final, f)
-                if subprocess.run([json2rc, fj, job["rc_path"]]).returncode == 0:
+                if subprocess.run([json2rc, fj, job["rc_path"]], env=java_env).returncode == 0:
                     cache.keep(job["rc_path"], job["fingerprint"])
                     print(f"froze {nm}  [snapshot transition]")
             else:
