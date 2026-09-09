@@ -52,7 +52,7 @@ rest are for the person driving it.
 
 | | | |
 |---|---|---|
-| **[Presenter](#the-presenter-window)** | `P`, `--presenter` | clock, timer, notes, what's next, pace against a rehearsal |
+| **[Presenter](#the-presenter-window)** | `P`, `--presenter` | clock, timer, notes, what's next, pace against a rehearsal or the deck's own plan |
 | **[Navigator](#the-navigator)** | `Tab` `G` | the deck as a list, to jump somewhere |
 | **[Deck view](#the-deck-view)** | `V`, `--deck-view` | every slide at once — and where the deck is reordered |
 | **[Slide editor](#the-slide-editor)** | `E`, `--editor` | the markdown behind the slide on screen |
@@ -774,6 +774,36 @@ Once a trace exists, every later run reads it and the presenter window shows the
   gap between it and your position *is* how far off you are, which reads faster than a
   number.
 
+### Planning a talk without rehearsing it
+
+The pace above needs a rehearsal, which every talk lacks until the first one. A deck can say
+what it *intends* instead, a section at a time:
+
+```markdown
+:: section duration=12m
+# Part One: what a document is
+```
+
+`12m`, `90s`, `1h30m`, or a bare `45` for minutes — the same grammar `--duration` takes, so a
+length is written the same way wherever it is written.
+
+Two things follow. The **talk clock** counts down against the sum of them, so a deck that
+plans its parts does not also have to repeat the total on the command line (`--duration` still
+wins if given). And the **ghost marker** on the progress bar appears without a rehearsal,
+showing where the plan says you should be — drawn in a quieter tone than the rehearsal's, so
+what the talk *did* take and what it is *meant* to take are never confused. The pace under the
+timer reads off it too. The current section's own budget sits beside its name.
+
+Two decisions worth knowing, both in [`Plan.{h,cpp}`](src/Plan.h) and tested there. A section
+with no `duration=` is worth the **average** of those that have one: given zero it would be
+instantaneous and every section after it would read as late. And the first section's budget
+starts at the top of the deck rather than at its own heading, so a title slide in front of it
+is inside the plan rather than in a gap before it.
+
+A `duration=` on a slide that starts no section is **reported by the build** rather than
+silently doing nothing — a duration is a claim about a part of the talk, and the parts are
+the sections.
+
 ### Narration
 
 `--record-audio` also captures the microphone, writing one wav per slide straight into the
@@ -1150,7 +1180,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Twelve C++ suites, none of which needs a window or a GPU. Nine of them need nothing but their
+Thirteen C++ suites, none of which needs a window or a GPU. Ten of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1159,7 +1189,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All twelve, alongside the player:
+All thirteen, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1177,6 +1207,7 @@ ctest --test-dir player/build --output-on-failure
 | `completion` | the include being typed, where its names resolve, and what matches |
 | `utf8` | that no string the chrome trims or cuts can come out invalid |
 | `scrolling` | how far a wheel notch and a trackpad swipe each move a view |
+| `plan` | the talk's planned length, and where in the deck it says you should be |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 
@@ -1261,6 +1292,7 @@ python3 -m unittest discover -s tests
 | `src/DeckLibrary.{h,cpp}` | the decks opened before, and making a new one |
 | `src/FileDialog.{h,mm}` | the platform's own open/save panels (a no-op elsewhere) |
 | `src/Timing.{h,cpp}` | the rehearsal trace |
+| `src/Plan.{h,cpp}` | the talk as planned: what each section is worth, and where that puts you |
 | `src/VoiceIndex.{h,cpp}` | which narration belongs to which slide, across a reorder |
 | `src/Thumbs.{h,cpp}` | off-screen slide stills, rendered on a worker and cached |
 | `src/Ui.{h,cpp}` | text, boxes and images for the chrome |

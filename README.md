@@ -35,7 +35,7 @@ Requires Python ≥ 3.11 (stdlib `tomllib`). Graphs need `graphviz` (`dot`) on P
 
 | | | |
 |---|---|---|
-| presenter window | `P` | clock, timer, notes, the next slide, pace against a rehearsal |
+| presenter window | `P` | clock, timer, notes, the next slide, pace against a rehearsal or `:: section duration=` |
 | navigator | `Tab` | the deck as a list, to jump somewhere |
 | deck view | `V` | every slide at once; drag to reorder, fold sections, add and delete |
 | slide editor | `E` | the markdown behind a slide, the whole deck, or `settings.toml`; `<` offers the deck's assets |
@@ -108,6 +108,10 @@ digraph G { rankdir=LR; A -> B -> C }
   - `[ratio]` sets pane widths (see Panes); `key=value` are per-slide overrides
     (`bg`, `accent`, `shader=none`, `transition=push`…); bare-word `flags` include
     `fragment` (see Fragments).
+  - `duration=` on a **`:: section`** says how long that part of the talk should take
+    (`12m`, `90s`, `1h30m`, or a bare `45` for minutes). The player adds them up for the
+    talk clock and paces the run against them — see
+    [Planning a talk](player/README.md#planning-a-talk-without-rehearsing-it).
 - The first `# heading` is the title.
 - An `*italic*` line right under the title is a **subtitle** (accent colour).
 - Inline **`**bold**`**, *`*italic*`* and `` `code` `` work inside any text/bullet; a

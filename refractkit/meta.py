@@ -13,7 +13,38 @@ checks the parts that can be checked against the code that honours them.
 
 from __future__ import annotations
 
+import re
+
 from .render import DEFAULT_TYPE, SLIDE_TYPES
+
+
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([hms]?)", re.I)
+
+
+def parse_duration(text) -> float:
+    """``"12m"``, ``"90s"``, ``"1h30m"``, ``"45"`` (minutes) → seconds. 0 for anything else.
+
+    The same grammar the player's ``--duration`` takes, deliberately: a talk's planned length
+    is written the same way whether it is said on the command line or on a ``:: section``.
+    """
+    if isinstance(text, (int, float)):
+        return float(text) * 60.0        # a bare number is minutes
+    if not isinstance(text, str) or not text.strip():
+        return 0.0
+    total = 0.0
+    sawDigit = False
+    for value, unit in _DURATION_RE.findall(text):
+        sawDigit = True
+        n = float(value)
+        if unit.lower() == "h":
+            total += n * 3600.0
+        elif unit.lower() == "m":
+            total += n * 60.0
+        elif unit.lower() == "s":
+            total += n
+        else:
+            total += n * 60.0            # no unit: minutes
+    return total if sawDigit else 0.0
 
 
 # The first word. The layout types come from render; these are what each is for, and the
@@ -74,6 +105,9 @@ KEYS = [
     ("freeze",              "hold a still of the outgoing slide through the push",
      ["true", "false"]),
     ("gate",                "how long an embed waits before it starts, in seconds", []),
+    # On a `:: section`: how long that part of the talk is meant to take. The player adds
+    # them up for the deck's planned length, and paces the talk against them.
+    ("duration",            "on a section: how long it should take — 12m, 90s, 1h5m", []),
 ]
 
 
