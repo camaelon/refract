@@ -1,14 +1,14 @@
 # refractplayer
 
-A deck is markdown, but you do not have to write it in a text editor and you do not have to
-leave the player to change it. This is the tool a talk gets *made* in, and then given from.
+A deck is markdown, but you need neither a text editor to write it nor a terminal to change
+it. Write the talk here, then give it here.
 
-Two halves to this page: a **[tutorial](#tutorial-write-a-talk-without-a-terminal)** that
+This page has two halves: a **[tutorial](#tutorial-write-a-talk-without-a-terminal)** that
 builds a small talk in the player's own windows, and a **[reference](#the-windows)** for each
-window. The deck used throughout is [`examples/tutorial/`](../examples/tutorial), so anything
-here can be opened and poked at.
+window. Both use [`examples/tutorial/`](../examples/tutorial), so you can open every screen
+you see here.
 
-For the same deck built from a terminal instead, see
+To build the same deck from a terminal instead, read
 **[the command-line tutorial](tutorial-cli.md)**.
 
 ---
@@ -23,12 +23,12 @@ prebuilt/refractplayer
 
 <img src="images/start-window.png" width="560" alt="The start window: Open a deck, New deck, and a list of recent decks">
 
-**New deck…** asks where to put it and writes a starter `slides.md` — a real deck of a few
-slides, not an empty file, so there is something to change rather than something to invent.
-**Open a deck…** takes any folder with a `slides.md` in it. Decks you have opened before are
-listed underneath; the player remembers them across runs.
+**New deck…** asks where to put it, then writes a starter `slides.md` — a few real slides
+rather than an empty file, so you have something to change instead of something to invent.
+**Open a deck…** takes any folder with a `slides.md` in it. Underneath sit the decks you opened
+before; the player remembers them between runs.
 
-Name a deck on the command line and it skips straight past this:
+Name a deck on the command line and it goes straight past all this:
 
 ```sh
 prebuilt/refractplayer examples/tutorial
@@ -38,51 +38,52 @@ prebuilt/refractplayer examples/tutorial
 
 <img src="images/slide-window.png" width="700" alt="The slide window showing the title slide">
 
-This window is what the room sees. Arrows move, `Space` advances, `H` brings up the key card,
-`F` goes fullscreen, `B` blanks the screen. Everything else in the player is a second window
-that leaves this one alone.
+The room sees this window and nothing else. Arrows move, `Space` advances, `H` brings up the
+key card, `F` fills the screen, `B` blanks it. Every other part of the player is a second
+window, and none of them touch this one.
 
-Point it at a deck folder and `out/` is found underneath — and **built if it is not there**,
-so a deck you have only written is one command from being presented.
+Point it at a deck folder and it finds `out/` underneath — and **builds it if nothing is
+there**, so a deck you have only written is one command away from a talk.
 
 ### See the whole talk: `V`
 
 <img src="images/deck-view.png" width="800" alt="The deck view: every slide as a card, with section bars beneath">
 
-Every slide at once. The bars under the rows are **sections** and the sub-decks an
+Every slide at once. The bars under the rows are **sections**, and the sub-decks an
 `:: include` pulled in: click one to fold it away, drag one to move the whole run. Drag a
-single card to reorder it, and the markdown behind it is rewritten and the deck rebuilt —
-this is not a preview of a reorder, it *is* the reorder.
+single card and the player rewrites the markdown behind it and rebuilds the deck. This is not
+a preview of a reorder — it is the reorder.
 
-`N` adds a slide, `⌫` twice deletes one, `shift`+`D` duplicates, `J` joins two, and `cmd`+`Z`
-takes any of it back. A slide with narration recorded against it shows it here, and a slide
-with speaker notes is marked `note`.
+`N` adds a slide, `⌫` twice deletes one, `shift`+`D` duplicates, `J` joins two, `cmd`+`Z` takes
+any of it back. A card shows whether that slide has narration, and a `note` mark whether it has
+speaker notes.
 
 ### Change a slide: `E`
 
 <img src="images/editor.png" width="480" alt="The slide editor showing the title slide's markdown">
 
-The markdown behind whatever is on screen. It follows the deck as you move, so navigating is
-how you choose what to edit. `cmd`+`S` saves, and the deck rebuilds and reloads underneath.
+The markdown behind whatever is on screen. It follows the deck as you move, so you pick what to
+edit by walking to it. `cmd`+`S` saves; the deck then rebuilds and reloads underneath.
 
-The tabs at the top point it at one **slide**, the whole **slides.md**, or the deck's
-**settings.toml** — the theme was the last thing that needed a terminal, and now it does not.
+The tabs at the top aim it at one **slide**, the whole **slides.md**, or the deck's
+**settings.toml**. The theme was the last thing here that needed a terminal.
 
-### It knows the vocabulary
+### It knows the words
 
-Type `::` and pause, and it offers what may follow, with a line saying what each one is for:
+Type `::` and pause. It offers what may follow, and says what each word does:
 
 <img src="images/menu-meta.png" width="480" alt="The completion menu after typing a colon-colon, listing slide types with explanations">
 
-That list is not the player's idea of refract's grammar — it is refract's own, read out of the
-build. A slide type that exists is offered; one that does not, is not.
+That list is not the player's idea of refract's grammar. It comes out of refract itself, so
+the menu offers every slide type that exists and no word the build would reject.
 
-Type `<` and pause, and it offers **the deck's own files**, with a preview of the one under
-the cursor. A document or a clip is *rendered*, by the same engine that plays the deck:
+Type `<` and pause. Now it offers **the deck's own files**, and shows you the one under the
+cursor. The engine that plays the deck draws the preview, so a document or a clip arrives as a
+picture of itself:
 
 <img src="images/menu-include.png" width="480" alt="The include menu listing card.json and logo.png, with a rendered preview of the selected document">
 
-Past a `|`, it offers what that embed can be told — and only what would do something to *that*
+Past a `|` it offers what you can tell that embed — and only what would do something to *that*
 kind of file:
 
 <img src="images/menu-options.png" width="480" alt="The options menu after a pipe, listing crop, fit, ratio, title and stagger">
@@ -91,30 +92,29 @@ kind of file:
 
 <img src="images/build-panel.png" width="260" alt="The build panel: refract's options, a Rebuild button, and a watch switch">
 
-refract's options with a button, attached alongside the deck view. **Watch** rebuilds whenever
-the markdown changes, so the deck follows the file without anybody pressing anything. The
-build says what it actually did — how many slides it rebuilt and how many it reused.
+refract's options, a button, and a column that sits against the deck view. **Watch** rebuilds
+whenever the markdown changes, so the deck follows the file and you press nothing. Each build
+reports what it did: how many slides it rebuilt, and how many it reused.
 
 ### See what the deck is made of: `I`
 
 <img src="images/assets.png" width="640" alt="The asset window listing card.json and logo.png with previews and which slides use them">
 
-Everything under `includes/`, with a picture of it and which slides use it. What nothing uses
-is called out as unused — an `includes/` folder collects a lot over the life of a talk.
-Removing something moves it to `out/.trash/` rather than deleting it.
+Everything under `includes/`, with a picture of it and the slides that use it. The window
+marks anything nothing uses as unused, and an `includes/` folder gathers plenty of that over the life of a
+talk. Removing a file moves it to `out/.trash/`; it deletes nothing.
 
 ### Then give the talk: `P`
 
 <img src="images/presenter.png" width="700" alt="The presenter window: clock, timer, the current and next slides, notes, and a progress bar">
 
 The wall clock, the talk timer, the slide that is up, the one coming next, and your notes. The
-"now" pane is the **real frame the projector is showing** — mid-animation, mid-video, whatever
-is actually there.
+"now" pane holds the **frame the projector is showing this moment** — part way through an
+animation, part way through a video, whatever is there.
 
-The timer above reads `10:00` because the deck's three `:: section duration=` lines add up to
-ten minutes. That plan also puts a marker on the progress bar showing where you *should* be,
-so a talk can be paced the first time it is given, before there is any rehearsal to compare
-against.
+The timer reads `10:00` because the deck's three `:: section duration=` lines add up to ten
+minutes. That plan also marks the progress bar with where you should be, so you can pace the
+talk the first time you give it, with no rehearsal to measure against.
 
 ---
 
@@ -124,30 +124,30 @@ against.
 |---|---|---|
 | [Presenter](#presenter) | `P` · `cmd`+`1` | clock, timer, notes, what's next, pace |
 | [Deck view](#deck-view) | `V` · `cmd`+`2` | every slide; reorder, fold, add, delete |
-| [Slide editor](#slide-editor) | `E` · `cmd`+`3` | the markdown, with completion |
+| [Slide editor](#slide-editor) | `E` · `cmd`+`3` | the markdown, with a completion menu |
 | [Build panel](#build-panel) | `M` · `cmd`+`4` | refract's options and a Rebuild button |
 | [Captions](#captions) | `C` · `cmd`+`5` | the narration, word by word |
 | [Navigator](#navigator) | `Tab` · `cmd`+`6` | the deck as a list, to jump |
 | [Assets](#assets) | `I` · `cmd`+`7` | what is in `includes/`, and what uses it |
 
-Every panel is in the **Window** menu with a tick beside whatever is open, and each remembers
-where you put it, per deck.
+The **Window** menu lists every panel and ticks the ones that are open. Each panel remembers
+where you put it, deck by deck.
 
 ### Presenter
 
 <img src="images/presenter.png" width="700" alt="The presenter window">
 
 Clock, talk timer, the live frame, the next slide as a still, notes, and a progress bar with a
-tick per section. Blank the room's screen and this keeps showing the slide, with a marker
-saying the audience cannot see it.
+tick per section. Blank the room's screen and this window keeps the slide, with a mark saying
+the audience cannot see it.
 
-The **ghost marker** on the progress bar is where you should be by now — from a rehearsal if
-there is one, from the deck's `:: section duration=` plan otherwise, and drawn quieter when it
-is the plan, since what a talk *did* take and what it is *meant* to take are different claims.
-Under the timer: `2:15 behind`, `0:40 ahead`, or `on pace`.
+The **ghost marker** on the progress bar says where you should be by now. It follows a
+rehearsal if you have one, and the deck's `:: section duration=` plan if you have not. The plan
+draws quieter than the rehearsal, because what a talk took and what it should take are two
+different claims. Under the timer: `2:15 behind`, `0:40 ahead`, or `on pace`.
 
-The button at the bottom re-records the current slide's narration without re-recording the
-talk.
+The button at the foot records the current slide's narration again, and leaves the rest of the
+talk alone.
 
 Full detail: [player/README.md § the presenter window](../player/README.md#the-presenter-window).
 
@@ -166,48 +166,50 @@ Full detail: [player/README.md § the presenter window](../player/README.md#the-
 | `cmd`+`Z` / `shift`+`cmd`+`Z` | undo / redo |
 | `/` | find a slide by name |
 
-Every one of those rewrites `slides.md` and rebuilds. The narration index and the rehearsal
-trace move with the slides, in the same write.
+Every one of those rewrites `slides.md` and rebuilds the deck. The narration index and the
+rehearsal trace travel with the slides, in the same write.
 
 ### Slide editor
 
 <img src="images/editor.png" width="480" alt="The slide editor">
 
-`cmd`+`S` saves; auto-save saves once typing stops. `cmd`+`Enter` splits a slide in two at the
-caret. Selection does words, lines and paragraphs on repeated clicks, and `option` makes a
-selection a **rectangle** rather than a run — for a column of a table, or the indent down a
-bullet list.
+`cmd`+`S` saves; auto-save waits until you stop typing. `cmd`+`Enter` cuts a slide in two at the
+caret. Click again and again to take a word, then the line, then the paragraph; hold `option`
+and the selection becomes a **rectangle** instead of a run, which is how you take a column out
+of a table or the indent down a list.
 
-The completion menu covers `::` lines, `<includes>` and their options — see
-[the tutorial above](#it-knows-the-vocabulary) and
+The menu completes `::` lines, `<includes>` and their options — see
+[the tutorial above](#it-knows-the-words) and
 [player/README.md § completing a `::` line](../player/README.md#completing-a--line).
 
 ### Build panel
 
 <img src="images/build-panel.png" width="260" alt="The build panel">
 
-A column that sits against the deck view or the presenter. The options are read from how the
-deck was actually built, not from defaults, so it opens telling the truth. **Watch** rebuilds
-on change. A build runs on a worker — the window stays live while refract works.
+A column that sits against the deck view or the presenter. It reads its options from the way
+the deck was built rather than from defaults, so it opens telling the truth. **Watch**
+rebuilds on every change. Builds run on a worker thread, so the window stays alive while
+refract works.
 
 ### Assets
 
 <img src="images/assets.png" width="640" alt="The asset window">
 
-Each row carries a picture of what it is: an image decoded, a document or a clip rendered by
-the engine. The pane on the right shows the selected one large, with its path, size,
-dimensions and **every** slide that uses it — the question somebody about to delete something
-is actually asking. `⌫` twice moves it to `out/.trash/`.
+Each row carries a picture of what it holds: the player decodes an image itself and hands a
+document or a clip to the engine to draw. The pane on the right shows the one you are on,
+large, with its path, its size and **every** slide that uses it — which is the question you
+want answered before you throw anything away. `⌫` twice moves it to `out/.trash/`.
 
 ### Captions
 
-`C`. A recorded narration, transcribed and aligned, with each word lit as it is spoken —
-and editable where the transcription got it wrong. Needs `--transcribe` to have been run.
+`C`. Your recorded narration, transcribed and lined up with the audio, lighting each word as
+you speak it. Where the transcription heard you wrong, correct it here. Run `--transcribe`
+first.
 
 ### Navigator
 
-`Tab` or `G`. The deck as a list, over the slide — or over the presenter window when that is
-open, so it never lands on the projector. `/` filters by name; `Enter` goes.
+`Tab` or `G`. The deck as a list, laid over the slide — or over the presenter window when you
+have one open, so it never reaches the projector. `/` filters by name; `Enter` goes.
 
 ---
 
@@ -225,8 +227,8 @@ open, so it never lands on the projector. `/` filters by name; `Enter` goes.
 | `H` | the key card |
 | `Q` `Esc` | quit |
 
-Two screens: `--display 1` puts the slides on the second monitor and the presenter window on
-the other one.
+With two screens, `--display 1` throws the slides on the second monitor and keeps the presenter
+window on the first.
 
 ## Rehearsing
 
@@ -238,10 +240,10 @@ prebuilt/refractplayer mytalk --auto-voice          # play it back, slide by sli
 prebuilt/refractplayer mytalk --web site/           # ...or as a web page
 ```
 
-A recorded run writes `timing.json` beside the slides, and every later run reads it: that is
-where the presenter's pace and its ghost marker come from. Narration is one wav per slide in
-`<deck>/voice/`, and it **follows the slides through a reorder** — the trace is keyed by the
-source block a slide was written in, not by its position or its filename.
+A recorded run writes `timing.json` beside the slides, and every later run reads it. That file
+is where the presenter gets your pace and its ghost marker. The narration goes to one wav per
+slide in `<deck>/voice/`, and it **follows the slides through a reorder**: the trace names the
+block of markdown a slide came from, not its position and not its filename.
 
 Full detail: [player/README.md § rehearsing](../player/README.md#rehearsing).
 
@@ -252,9 +254,9 @@ prebuilt/refractplayer mytalk --pdf talk.pdf        # one page per slide
 prebuilt/refractplayer mytalk --images shots/       # one PNG per slide
 ```
 
-`refract.py --pdf` / `--images` run exactly this.
+`refract.py --pdf` and `--images` run these.
 
 ## Everything else
 
-[player/README.md](../player/README.md) is the full reference — every flag, every key, and the
-reasoning behind the parts that are not obvious.
+[player/README.md](../player/README.md) holds the full reference: every flag, every key, and
+the reasoning behind the parts that are not obvious.

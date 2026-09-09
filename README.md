@@ -18,8 +18,8 @@ the RemoteCompose engine via components, not pixel math.
 
 ## Getting started
 
-**There is nothing to build and nothing to install into your system.** The tools ship in
-`prebuilt/` and run from the checkout.
+**Nothing to build, and nothing to install into your system.** The tools ship in `prebuilt/`
+and run from the checkout.
 
 ```sh
 git clone https://github.com/camaelon/refract          # clone, don't download a zip — see below
@@ -37,8 +37,8 @@ python3 refract.py --check                             # what this machine has, 
   ok      graphviz       /opt/homebrew/bin/dot
 ```
 
-Anything it reports as `MISSING` comes with the command that fixes it. `absent` is something
-optional — you can build decks without it. Then:
+Whatever it calls `MISSING`, it also tells you how to fix. `absent` marks something you can
+do without. Then:
 
 ```sh
 python3 refract.py examples/deck               # writes examples/deck/out/*.rc
@@ -46,9 +46,9 @@ prebuilt/refractplayer examples/deck           # present it (→ steps, Tab jump
 prebuilt/refractplayer                         # or start from the deck picker
 ```
 
-The player takes a deck folder and builds it if it needs to be; with nothing named it opens a
-start window offering the decks you have opened before, and a **New deck…** that writes a
-starter `slides.md` for you.
+Hand the player a deck folder and it builds the deck if it must. Name nothing and it opens a
+start window listing the decks you opened before, beside a **New deck…** that writes you a
+starter `slides.md`.
 
 **Two tutorials**, both building the same small talk — the one in
 [`examples/tutorial/`](examples/tutorial), so you can open what you are reading about:
@@ -60,12 +60,12 @@ starter `slides.md` for you.
 
 ### What it needs
 
-Two things, and only two, because everything else is in the checkout:
+Two things, and only two, since the checkout holds the rest:
 
 | | |
 |---|---|
-| **Python 3.11+** | `refract.py` is Python, and reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9 — `brew install python`. Put it **ahead of `/usr/bin` on `PATH`**: the player looks up `python3` itself for its editing tools, so a checkout where `python3` is Apple's works from the terminal and quietly fails inside the editor. `--check` reports both. |
-| **A JVM 21+** | `json2rc` compiles each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that step needs it — `--json-only` stops before it, and playing an already-built deck never touches it. |
+| **Python 3.11+** | `refract.py` is Python, and it reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9, so: `brew install python`. Put it **ahead of `/usr/bin` on `PATH`** — the player looks `python3` up itself for its editing tools, and where that finds Apple's, refract works from the terminal and fails quietly inside the editor. `--check` reports both. |
+| **A JVM 21+** | `json2rc` turns each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that one step wants it. `--json-only` stops before it, and playing a deck someone has already built never reaches it. |
 
 Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing else.
 
@@ -78,11 +78,11 @@ Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing
 | `prebuilt/rcviewer` | the standalone viewer, and refract's fallback exporter |
 | `prebuilt/rc2image` | headless `.rc` → PNG, used for freeze snapshots |
 
-The three native ones are **arm64, macOS 11 or newer**, and link nothing outside macOS's own
-frameworks — no Homebrew, no `DYLD_*`, nothing to install. Check any of them yourself with
-`otool -L prebuilt/refractplayer`: everything listed is `/usr/lib` or `/System/Library`. An
-**Intel Mac** needs them rebuilt from source ([player/README.md](player/README.md)); Rosetta
-translates the other direction and cannot help.
+The three native ones want **arm64 and macOS 11 or newer**, and they link nothing outside
+macOS's own frameworks: no Homebrew, no `DYLD_*`, nothing to install. Check for yourself with
+`otool -L prebuilt/refractplayer` — every line it prints starts `/usr/lib` or
+`/System/Library`. An **Intel Mac** needs them built again from source
+([player/README.md](player/README.md)); Rosetta translates the other way and cannot help.
 
 They can go **on your `PATH`** — a symlink is enough:
 
@@ -90,20 +90,20 @@ They can go **on your `PATH`** — a symlink is enough:
 ln -s "$PWD/prebuilt/refractplayer" /usr/local/bin/refractplayer
 ```
 
-The player resolves the symlink to find its own Python tools next to the checkout, so
-editing, reordering and rebuilding all keep working from anywhere. *Copying* the binary out
-of `prebuilt/` instead of linking it loses them: it would still play a deck, but the deck
-view, the editor and the build panel would have nothing to call.
+The player follows the symlink back to the checkout to find its own Python tools, so editing,
+reordering and rebuilding go on working from anywhere. *Copy* the binary out of `prebuilt/`
+rather than linking it and you lose them: it still plays a deck, but the deck view, the editor
+and the build panel have nothing left to call.
 
 **Clone it, don't download a zip.** A file that arrives through a browser carries macOS's
-quarantine flag, and Gatekeeper refuses to run these (they are ad-hoc signed, not
-notarized). `git clone` sets no such flag. If you did download an archive:
+quarantine flag, and Gatekeeper then refuses to run these, which carry an ad-hoc signature
+rather than a notarized one. `git clone` sets no such flag. If you did download an archive:
 
 ```sh
 xattr -dr com.apple.quarantine prebuilt
 ```
 
-Updating is `git pull` — the binaries are in the repository, so they come with it.
+To update, `git pull`. The repository holds the binaries, so they come with it.
 
 ### Rebuilding them
 
@@ -121,10 +121,10 @@ cp build/apps/viewer/rcviewer build/tools/rc2image/rc2image prebuilt/
 codesign -f -s - prebuilt/rcviewer prebuilt/rc2image
 ```
 
-`player/build.sh` finds the RemoteCompose `players/cpp` tree next to this repository, or
-takes `RCX_DIR=/path/to/players/cpp`. It fetches Skia the first time, which is a large
-download. The deployment target is set in `player/CMakeLists.txt` before `project()` — leave
-it alone unless you mean to raise the oldest macOS the result will run on.
+`player/build.sh` looks for the RemoteCompose `players/cpp` tree beside this repository, or
+takes `RCX_DIR=/path/to/players/cpp`. The first build fetches Skia, which is a large download.
+`player/CMakeLists.txt` sets the deployment target before `project()`; leave it alone unless
+you mean to raise the oldest macOS the result will run on.
 
 **`refractplayer`** is the deck player, and it is where a deck is presented *and* edited:
 

@@ -1,11 +1,11 @@
 # Tutorial: a deck from the command line
 
-Fifteen minutes, one file, and a talk you can present. Everything here runs against
-[`examples/tutorial/`](../examples/tutorial), which is the deck this page builds — read along,
-or type it out and compare.
+One file, fifteen minutes, a talk you can give. Every command here runs against
+[`examples/tutorial/`](../examples/tutorial), the deck this page builds — read along, or type
+it out and compare.
 
-If you have not run refract before, start with
-[Getting started](../README.md#getting-started) and `python3 refract.py --check`.
+New to refract? Start at [Getting started](../README.md#getting-started), then run
+`python3 refract.py --check`.
 
 ## 1. A deck is a folder with a slides.md in it
 
@@ -13,12 +13,11 @@ If you have not run refract before, start with
 mkdir coffee && cd coffee
 ```
 
-That is the whole ceremony. No project file, no config — a `settings.toml` is optional and
-comes later.
+That is all of it. No project file, no config. A `settings.toml` can come later, or never.
 
 ## 2. Write two slides
 
-Put this in `slides.md`. Slides are separated by `---` on a line of its own:
+Put this in `slides.md`. A `---` line of its own ends one slide and starts the next:
 
 ```markdown
 :: title
@@ -33,9 +32,9 @@ Put this in `slides.md`. Slides are separated by `---` on a line of its own:
 - Something you can buy again
 ```
 
-Two things to notice. The `::` line sets what kind of slide this is — `title` is centred and
-large; leave it out and you get `content`, which is what the second slide is. And the first
-`# heading` is the slide's title, with an `*italic*` line under it becoming a subtitle.
+Two things to notice. The `::` line says what kind of slide this is: `title` centres the text
+and makes it large. Leave the line out and you get `content`, like the second slide. And the
+first `# heading` is the slide's title; an `*italic*` line under it becomes the subtitle.
 
 ## 3. Build it
 
@@ -43,8 +42,8 @@ large; leave it out and you get `content`, which is what the second slide is. An
 python3 ../refract.py .
 ```
 
-refract reads `slides.md`, lays each slide out with the RemoteCompose engine, and writes one
-`.rc` file per slide into `out/`:
+refract reads `slides.md`, hands each slide to the RemoteCompose engine to lay out, and writes
+one `.rc` file per slide into `out/`:
 
 ```
 out/01_making_coffee.rc
@@ -52,8 +51,8 @@ out/02_what_to_buy.rc
 out/deck.json            ← the outline: titles, sections, where each slide came from
 ```
 
-Building again only rewrites what changed. There is a cache keyed on the *generated document*,
-so editing one slide rebuilds one slide.
+Build again and it rewrites only what changed. The cache keys on the document refract
+generates, not on the markdown, so editing one slide rebuilds one slide.
 
 ## 4. Look at it
 
@@ -61,11 +60,11 @@ so editing one slide rebuilds one slide.
 ../prebuilt/refractplayer .
 ```
 
-Arrow keys move, `H` shows the key card, `Q` quits. The player takes the deck folder and finds
-`out/` underneath — and builds it first if it is not there, so step 3 is optional once you are
-used to it.
+Arrow keys move, `H` shows the key card, `Q` quits. Hand the player a deck folder and it finds
+`out/` underneath — and builds it first if it finds nothing there. Once you know that, you can
+skip step 3.
 
-## 5. Add the pieces a talk actually needs
+## 5. Add the pieces a talk needs
 
 ### Sections
 
@@ -78,13 +77,13 @@ A `:: section` slide is a divider, and it numbers itself:
 # Part One: The Beans
 ```
 
-`duration=` is how long that part should take — `3m`, `90s`, `1h30m`, or a bare number for
-minutes. Add them up and you have the talk's planned length, which the player counts down
-against and paces you with. It is optional; without it you get no plan and no ghost marker.
+`duration=` says how long that part should take: `3m`, `90s`, `1h30m`, or a plain number for
+minutes. The player adds them up, counts the talk down against the total, and tells you whether
+you are ahead or behind. Leave it out and you get no plan.
 
 ### An image
 
-Anything in `includes/` can be dropped on a slide by name, in angle brackets:
+Drop anything in `includes/` on a slide by name, in angle brackets:
 
 ```sh
 mkdir includes && cp ~/Pictures/beans.jpg includes/
@@ -97,9 +96,10 @@ mkdir includes && cp ~/Pictures/beans.jpg includes/
 <beans.jpg>
 ```
 
-The extension can be left off — `<beans>` finds it. The same syntax embeds a video
-(`<clip.mp4>`), a web page (`<https://example.com>`) or a prebuilt RemoteCompose document
-(`<card.json>`), which is drawn live by the engine rather than pasted in as a picture.
+Leave the extension off and `<beans>` still finds it. The same brackets take a video
+(`<clip.mp4>`), a web page (`<https://example.com>`) and a RemoteCompose document
+(`<card.json>`) — and the engine draws that document live on the slide, rather than pasting a
+picture of it.
 
 ### Speaker notes
 
@@ -112,11 +112,11 @@ Everything after a `???` line is yours, not the audience's:
 The ratio is the only number worth remembering. Everything else is taste.
 ```
 
-They show in the presenter window, and in `out/notes.md`.
+The presenter window shows them, and so does `out/notes.md`.
 
 ### Code
 
-Fenced blocks are syntax-highlighted:
+refract colours fenced code by language:
 
 ````markdown
 ```python
@@ -141,18 +141,18 @@ def brew(beans_g, water_g=None):
 - Grind finer, or wait longer
 ```
 
-## 6. Work with it running
+## 6. Leave it building
 
 ```sh
 python3 ../refract.py . --watch
 ```
 
-Rebuilds whenever `slides.md`, `settings.toml` or `includes/` changes. Leave it running in one
-window and the player in another, and the deck reloads under you.
+It rebuilds whenever `slides.md`, `settings.toml` or `includes/` changes. Keep it in one
+window and the player in another, and the deck reloads under you as you type.
 
-## 7. Give it a look
+## 7. Change how it looks
 
-A `settings.toml` beside `slides.md` sets the theme — colours, fonts, the slide size,
+A `settings.toml` beside `slides.md` sets the colours, the fonts, the slide size and the
 transitions:
 
 ```toml
@@ -169,9 +169,9 @@ heading = 76
 body    = 44
 ```
 
-There is a lot of it; [the settings reference](../README.md#settingstoml) has the whole list.
-Nothing is required, and a deck with no `settings.toml` uses the defaults you have been
-looking at.
+There is a lot of it — [the settings reference](../README.md#settingstoml) lists all of it.
+You need none of it. A deck with no `settings.toml` uses the defaults you have been looking
+at.
 
 ## 8. Hand it to someone
 
@@ -183,11 +183,11 @@ python3 ../refract.py . --images shots/        # one PNG per slide
 
 ## Where to go next
 
-- **[Authoring in the player](refractplayer.md)** — the same deck, edited and presented in
-  refractplayer's own windows, without going back to a terminal.
+- **[Writing a talk in the player](refractplayer.md)** — the same deck, written, reordered and
+  given in refractplayer's own windows, without a terminal.
 - **[The markdown grammar](../README.md#markdown-grammar)** — every block type, in one table.
-- **[Transitions and magic move](../README.md#transitions--magic-move)** — how slides move,
-  and how to make an element travel between them.
+- **[Transitions and magic move](../README.md#transitions--magic-move)** — how slides move, and
+  how to send an element travelling from one to the next.
 
 ## The commands used here
 
@@ -196,6 +196,6 @@ python3 ../refract.py . --images shots/        # one PNG per slide
 | `refract.py .` | build the deck in this folder |
 | `refract.py . --watch` | rebuild whenever anything changes |
 | `refract.py . --force` | rebuild every slide, ignoring the cache |
-| `refract.py . --json-only` | stop at the component JSON (no JVM needed) |
-| `refract.py --check` | what this machine has, and what it is missing |
+| `refract.py . --json-only` | stop at the component JSON; skips the Java step |
+| `refract.py --check` | what this machine has, and what it lacks |
 | `refractplayer .` | play it |
