@@ -74,6 +74,7 @@ set(REFRACTPLAYER_SOURCES
     src/Windowing.cpp
     src/BuildRunner.cpp
     src/Completion.cpp
+    src/Scrolling.cpp
     src/Utf8.cpp
     src/BuildPanel.cpp
     src/CaptionWindow.cpp

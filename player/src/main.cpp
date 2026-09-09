@@ -1483,7 +1483,8 @@ int main(int argc, char* argv[]) {
         if (slideEditor) {
             if (slideEditor->shouldClose()) {
                 slideEditor.reset();
-            } else if (elapsed - lastEditorDraw >= kCaptionInterval) {
+            } else if (slideEditor->scrolling()
+                       || elapsed - lastEditorDraw >= kCaptionInterval) {
                 // At the caption window's rate rather than the presenter's: a caret that
                 // blinks at 20 Hz is a caret that stutters while you type.
                 slideEditor->render(app);
@@ -1495,7 +1496,8 @@ int main(int argc, char* argv[]) {
             if (assetWindow->shouldClose()) {
                 assetWindow.reset();
                 saveSessionIfChanged();
-            } else if (elapsed - lastAssetDraw >= kPresenterInterval) {
+            } else if (assetWindow->scrolling()
+                       || elapsed - lastAssetDraw >= kPresenterInterval) {
                 assetWindow->render(app);
                 lastAssetDraw = elapsed;
             }
@@ -1543,7 +1545,8 @@ int main(int argc, char* argv[]) {
         if (deckView) {
             if (deckView->shouldClose()) {
                 deckView.reset();
-            } else if (elapsed - lastDeckViewDraw >= kPresenterInterval) {
+            } else if (deckView->scrolling()
+                       || elapsed - lastDeckViewDraw >= kPresenterInterval) {
                 deckView->render(app);
                 lastDeckViewDraw = elapsed;
             }

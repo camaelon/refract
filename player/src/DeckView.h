@@ -34,6 +34,12 @@ public:
     GLFWwindow* window() const { return mWindow; }
     bool shouldClose() const;
 
+    // Being scrolled right now. Drawing a panel at twenty frames a second is fine for a
+    // clock and wrong for a moving list — the distance is right and the picture arrives in
+    // steps, which is what "slow scrolling" usually turns out to mean. The loop draws it
+    // every frame while this is true.
+    bool scrolling() const;
+
     // Jump the deck to a slide — a double-click, or Enter on the cursor.
     void setOnOpenSlide(std::function<void(int)> action);
 

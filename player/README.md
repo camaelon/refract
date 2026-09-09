@@ -779,19 +779,33 @@ recording timings without audio.
 
 ## The asset window
 
-`I`, or `--assets`. Every file under the deck's `includes/`, with its size, a thumbnail where
-one can be drawn, and — the reason the window exists — which slides use it.
+`I`, or `--assets`. Every file under the deck's `includes/`, with its size, a picture of it,
+and — the reason the window exists — which slides use it.
 
 ```
-Assets  mytalk                                      6 files   1.4 MB
-─────────────────────────────────────────────────────────────────────
- [img]  logo.png                                              1.4 MB
-        slides 1, 10, 12, 13
- [img]  old-logo.png                                          1.4 MB
-        unused
- [deck] slides.md   intro                                       201 B
-        slides 2, 3
+Assets  mytalk                                      7 files   1.6 MB
+──────────────────────────────────────────────────┬──────────────────
+ ▨   logo.png                            1.4 MB   │   ┌────────────┐
+     slides 1, 10, 12, 13                         │   │            │
+ ▨   old-logo.png                        1.4 MB   │   │     ▨      │
+     unused                                       │   │            │
+ ▨   card.json                             375 B  │   └────────────┘
+     slide 11                                     │  card.json
+ ▸   intro.mp4                           184 KB   │  includes/card.json
+     slide 4                                      │  document   375 B
+ ▨   slides.md   intro                     201 B  │  used by
+     slides 2, 3                                  │  slide 11
 ```
+
+Every row carries a picture of what it is, not a label saying what kind of file it is: a
+document and a clip are rendered by the engine that plays the deck, on the same worker as the
+presenter's stills, and an image is decoded here. A clip is marked with a ▸ so its opening
+frame does not read as a photograph.
+
+Down the right, the same picture for the row under the cursor at a size worth looking at,
+with its full path and **every** slide that uses it rather than the row's first few — "which
+slides would I break" being the question somebody about to delete something is asking. The
+column gives way to the list when the window is too narrow for both.
 
 An `includes/` folder collects things over the life of a talk — the screenshot that was
 replaced, the diagram from the version that got cut, the clip nobody ended up playing.
@@ -1083,7 +1097,7 @@ the archives it downloaded rather than pulling a second copy.
 
 ### Tests
 
-Eleven C++ suites, none of which needs a window or a GPU. Eight of them need nothing but their
+Twelve C++ suites, none of which needs a window or a GPU. Nine of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1092,7 +1106,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All eleven, alongside the player:
+All twelve, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1109,6 +1123,7 @@ ctest --test-dir player/build --output-on-failure
 | `options` | the command line, and that every flag it takes is in the help text |
 | `completion` | the include being typed, where its names resolve, and what matches |
 | `utf8` | that no string the chrome trims or cuts can come out invalid |
+| `scrolling` | how far a wheel notch and a trackpad swipe each move a view |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 
@@ -1137,6 +1152,25 @@ well, so bad bytes draw as `?` rather than ending the process.
 buried inside a render function — the grid scrolling back to the cursor every frame, and a
 click landing a line high — and both were reported by a person rather than caught by anything.
 That arithmetic is now a separate unit, with a test named after each bug.
+
+The first of those has since turned up twice more, in the asset window and the editor, and is
+worth naming: a view that scrolls to its cursor **on every frame** cannot be scrolled by the
+wheel at all. The wheel moves it and the next redraw puts it straight back, which reads as a
+window that scrolls a little and then refuses. Every scrolling view here follows its cursor
+only on the frame after the cursor actually *moved* — `followCursor` in the deck view and the
+asset window, `followCaret` in the editor.
+
+`scrolling` is the arithmetic under the other half of that complaint. A wheel notch and a
+two-finger swipe arrive through one GLFW callback with nothing to say which is which: a notch
+comes through as a whole ±1, a trackpad's pixels come through scaled by a tenth as a stream of
+fractions. They want different distances — a notch is "move down a bit" and should cover
+three rows, a swipe is already a distance and only wants a gain — so they are told apart by
+the shape of the number. A notch scales with the view's own rows, which is why one notch is
+three lines in the editor and a row of cards in the deck view.
+
+Distance is only half of it. A panel drawn at 20Hz scrolls in visible steps however far it
+goes, and that reads as slowness too, so a panel that is being scrolled says so
+(`scrolling()`) and the loop draws it every frame until it settles.
 
 The other half of the same features — turning a move into a rewritten `slides.md`, the
 incremental build, the tools — is covered by refract's Python suite:

@@ -30,6 +30,12 @@ public:
     GLFWwindow* window() const { return mWindow; }
     bool shouldClose() const;
 
+    // Being scrolled right now. Drawing a panel at twenty frames a second is fine for a
+    // clock and wrong for a moving list — the distance is right and the picture arrives in
+    // steps, which is what "slow scrolling" usually turns out to mean. The loop draws it
+    // every frame while this is true.
+    bool scrolling() const;
+
     // Ask the deck what it has. Called when the window opens and after anything is removed.
     // `deckDir` comes back with them: the window reads the image files themselves to draw a
     // thumbnail, and only the scan knows where the deck actually lives.
