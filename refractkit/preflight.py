@@ -117,12 +117,52 @@ def java_check(repo_root: str) -> Check:
                  f"json2rc needs {MIN_JAVA} or newer. `brew install openjdk@{MIN_JAVA}`.")
 
 
+def json2rc_classpath(launcher: str) -> list[str]:
+    """The jars the launcher will put on its classpath, as absolute paths.
+
+    Read out of the launcher rather than listed here: it is a generated script with the six
+    jars written into it by name, and a check that guessed at them could pass while the one
+    that matters was missing. Empty when the line cannot be found.
+    """
+    home = os.path.dirname(os.path.dirname(os.path.abspath(launcher)))
+    try:
+        with open(launcher, errors="replace") as f:
+            for line in f:
+                if not line.startswith("CLASSPATH="):
+                    continue
+                value = line.split("=", 1)[1].strip()
+                return [entry.replace("$APP_HOME", home).replace("${APP_HOME}", home)
+                        for entry in value.split(":") if entry]
+    except OSError:
+        pass
+    return []
+
+
 def json2rc_check(repo_root: str) -> Check:
+    """The compiler, *and* the jars it runs from.
+
+    Checking only for the launcher is what let this reach somebody: the script is a few
+    kilobytes and the jars are three megabytes, and a checkout that has the first without the
+    second starts a JVM and fails with `Could not find or load main class`, which names
+    neither json2rc nor the missing file.
+    """
     launcher = os.path.join(repo_root, "prebuilt", "json2rc", "bin", "json2rc")
-    ok = os.path.isfile(launcher) and os.access(launcher, os.X_OK)
-    return Check("json2rc", ok, launcher if ok else "not in prebuilt/",
-                 "The compiler that turns a slide's JSON into .rc. Build it with "
-                 "`(cd json2rc && ./gradlew installDist)`.")
+    build = "The compiler that turns a slide's JSON into .rc. Build it with " \
+            "`(cd json2rc && ./gradlew installDist)`."
+    if not (os.path.isfile(launcher) and os.access(launcher, os.X_OK)):
+        return Check("json2rc", False, "not in prebuilt/", build)
+
+    jars = json2rc_classpath(launcher)
+    missing = [os.path.basename(j) for j in jars if not os.path.isfile(j)]
+    if missing:
+        shown = ", ".join(missing[:3]) + ("…" if len(missing) > 3 else "")
+        return Check("json2rc", False,
+                     f"launcher is there, {len(missing)} of its {len(jars)} jars are not "
+                     f"({shown})",
+                     "prebuilt/json2rc/lib is where they go. If this is a fresh clone, the "
+                     "jars did not come with it — `git pull`, or rebuild them with "
+                     "`(cd json2rc && ./gradlew installDist)`.")
+    return Check("json2rc", True, f"{launcher}  ({len(jars)} jars)", build)
 
 
 def player_check(repo_root: str) -> Check:

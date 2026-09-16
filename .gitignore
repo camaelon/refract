@@ -221,3 +221,10 @@ __marimo__/
 out/
 json2rc/build/
 json2rc/.gradle/
+
+# The Python template above ignores `lib/` for a virtualenv, and that rule also swallowed
+# prebuilt/json2rc/lib — every jar json2rc runs from. The launcher script was committed and
+# the jars were not, so a fresh clone had a json2rc that started a JVM and then failed with
+# "Could not find or load main class". These are shipped deliberately; keep them.
+!prebuilt/json2rc/lib/
+!prebuilt/json2rc/lib/*.jar
