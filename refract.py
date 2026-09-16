@@ -692,6 +692,21 @@ def main() -> int:
         print(preflight.report(checks))
         return 1 if preflight.blocking(checks) else 0
 
+    # Whether this machine can finish the job, before it starts one. A deck of forty slides
+    # is a minute of work, and finding out at the end that the compiler cannot run is a
+    # minute nobody gets back. `--json-only` stops before the compiler, so it needs none of
+    # this.
+    if not args.json_only:
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        for check in (preflight.json2rc_check(repo_root), preflight.java_check(repo_root)):
+            if check.ok:
+                continue
+            # The fix goes last: the player's build panel shows the final line of this,
+            # and a window has no command line for `--json-only` to be typed on.
+            print(f"{check.name}: {check.detail}\n"
+                  f"(`--json-only` stops before this step.)\n{check.fix}", file=sys.stderr)
+            return 2
+
     if args.watch:
         deck_dir = os.path.abspath(args.deck)
         print(f"watching {deck_dir} … (Ctrl-C to stop)")
@@ -973,12 +988,25 @@ def run_once(args) -> int:
               "or pass --json-only to stop at JSON.", file=sys.stderr)
         return 2
 
+    # The jars the launcher runs from, before the JVM is asked to find them. Without this the
+    # failure is "Could not find or load main class refract.json2rc.Main", which names neither
+    # json2rc nor the file that is missing.
+    missing = [j for j in preflight.json2rc_classpath(json2rc) if not os.path.isfile(j)]
+    if missing:
+        print(f"json2rc is missing {len(missing)} of the jars it runs from:", file=sys.stderr)
+        for jar in missing:
+            print(f"  {jar}", file=sys.stderr)
+        print("(`--json-only` stops before this step.)\n"
+              "Rebuild it with `(cd json2rc && ./gradlew installDist)`, or `git pull` if this "
+              "is a fresh clone.", file=sys.stderr)
+        return 2
+
     # A JVM, before it is needed. Without this the failure is a message from Apple's `java`
     # stub about a missing runtime, which says nothing about which runtime or why.
     java = preflight.java_check(repo_root)
     if not java.ok:
-        print(f"java: {java.detail}\n{java.fix}\n"
-              "`--json-only` stops before this step.", file=sys.stderr)
+        print(f"java: {java.detail}\n(`--json-only` stops before this step.)\n{java.fix}",
+              file=sys.stderr)
         return 2
     java_env = dict(os.environ)
     bundled = preflight.bundled_jre(repo_root)

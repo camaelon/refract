@@ -51,6 +51,54 @@ class Checks(unittest.TestCase):
             self.assertIn(name, text)
 
 
+class Json2rc(unittest.TestCase):
+    """The compiler *and* the jars it runs from.
+
+    This is here because of a real failure: .gitignore's `lib/` rule — meant for a
+    virtualenv — also matched prebuilt/json2rc/lib, so a fresh clone got the launcher script
+    and none of the six jars. json2rc started a JVM and died with "Could not find or load
+    main class", which names neither json2rc nor the missing files, and `--check` said it was
+    fine because it had only looked for the script.
+    """
+
+    def test_the_classpath_is_read_out_of_the_launcher(self):
+        launcher = os.path.join(REPO, "prebuilt", "json2rc", "bin", "json2rc")
+        jars = preflight.json2rc_classpath(launcher)
+        self.assertTrue(jars, "no CLASSPATH line found in the launcher")
+        self.assertTrue(any(j.endswith("json2rc.jar") for j in jars),
+                        "the launcher's classpath does not mention json2rc.jar")
+        for jar in jars:
+            self.assertTrue(os.path.isabs(jar), f"{jar} is not an absolute path")
+
+    def test_every_jar_the_launcher_names_is_here(self):
+        launcher = os.path.join(REPO, "prebuilt", "json2rc", "bin", "json2rc")
+        missing = [j for j in preflight.json2rc_classpath(launcher) if not os.path.isfile(j)]
+        self.assertEqual(missing, [], "json2rc would fail to start")
+
+    def test_the_jars_are_not_ignored_by_git(self):
+        # The actual bug: present on the machine that built them, absent from every clone.
+        jars = preflight.json2rc_classpath(
+            os.path.join(REPO, "prebuilt", "json2rc", "bin", "json2rc"))
+        if not jars:
+            self.skipTest("no launcher to read")
+        p = subprocess.run(["git", "check-ignore", *jars], cwd=REPO,
+                           capture_output=True, text=True)
+        self.assertEqual(p.stdout.strip(), "",
+                         "git ignores jars json2rc needs; a clone would not get them")
+
+    def test_a_launcher_with_no_jars_is_reported_as_missing(self):
+        fake = tempfile.mkdtemp()
+        os.makedirs(os.path.join(fake, "prebuilt", "json2rc", "bin"))
+        launcher = os.path.join(fake, "prebuilt", "json2rc", "bin", "json2rc")
+        with open(launcher, "w") as f:
+            f.write("#!/bin/sh\nCLASSPATH=$APP_HOME/lib/json2rc.jar:$APP_HOME/lib/other.jar\n")
+        os.chmod(launcher, 0o755)
+        check = preflight.json2rc_check(fake)
+        self.assertFalse(check.ok, "a launcher with no jars behind it is not usable")
+        self.assertIn("jars", check.detail)
+        self.assertIn("json2rc.jar", check.detail)
+
+
 class Java(unittest.TestCase):
     def test_a_missing_runtime_is_zero_not_a_crash(self):
         self.assertEqual(preflight.java_version("/nonexistent/java"), 0)

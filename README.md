@@ -31,7 +31,7 @@ python3 refract.py --check                             # what this machine has, 
 
 ```
   ok      python         3.13 at /opt/homebrew/opt/python@3.13/bin/python3.13
-  ok      json2rc        …/prebuilt/json2rc/bin/json2rc
+  ok      json2rc        …/prebuilt/json2rc/bin/json2rc  (6 jars)
   ok      java           21 at /usr/bin/java
   ok      refractplayer  …/prebuilt/refractplayer
   ok      graphviz       /opt/homebrew/bin/dot
