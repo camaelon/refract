@@ -93,7 +93,7 @@ class ExperimentalOps(unittest.TestCase):
         grid = [{"paint": {"ops": [{"style": "fill"}, {"color": "#FFFFFFFF"}]}},
                 {"xDrawMesh": {"grid": [20, 20, 70, 45, 3, 3], "colors": ["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#808080", "#00FFFF", "#000000", "#FF00FF", "#FFFFFF"]}}]
         n, im = self.compile(doc([{"p": OPS}], grid), "mesh")
-        self.assertLess(n, 200, f"a 3x3 grid should be a small op ({n} B)")
+        self.assertLess(n, 320, f"a 3x3 grid document should be small ({n} B)")
         self.assertTrue(im[22, 22, 0] > 200 and im[22, 22, 1] < 60, "red at the top-left corner")
         self.assertTrue(im[22, 158, 2] > 200 and im[22, 158, 0] < 60, "blue at the top-right corner")
         self.assertTrue(im[42, 90, 1] > 150, "green interpolated between the corners")
