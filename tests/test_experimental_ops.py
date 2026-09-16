@@ -88,6 +88,17 @@ class ExperimentalOps(unittest.TestCase):
         self.assertLess(n1, n0 - 40, f"compact gradients {n1} B should be well under {n0} B")
         self.assertLess(np.sqrt(((a - b) ** 2).mean()), 1.0, "compact and standard gradients render the same")
 
+    def test_mesh_grid_interpolates_and_is_small(self):
+        import numpy as np
+        grid = [{"paint": {"ops": [{"style": "fill"}, {"color": "#FFFFFFFF"}]}},
+                {"xDrawMesh": {"grid": [20, 20, 70, 45, 3, 3], "colors": ["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#808080", "#00FFFF", "#000000", "#FF00FF", "#FFFFFF"]}}]
+        n, im = self.compile(doc([{"p": OPS}], grid), "mesh")
+        self.assertLess(n, 200, f"a 3x3 grid should be a small op ({n} B)")
+        self.assertTrue(im[22, 22, 0] > 200 and im[22, 22, 1] < 60, "red at the top-left corner")
+        self.assertTrue(im[22, 158, 2] > 200 and im[22, 158, 0] < 60, "blue at the top-right corner")
+        self.assertTrue(im[42, 90, 1] > 150, "green interpolated between the corners")
+        self.assertTrue((im[5, 5] == 255).all(), "outside the mesh stays white")
+
     def test_path_strip_width_follows_diameters(self):
         import numpy as np
         line = [{"type": "moveTo", "x": 15, "y": 65}, {"type": "lineTo", "x": 165, "y": 65}]

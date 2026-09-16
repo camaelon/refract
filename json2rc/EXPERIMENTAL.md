@@ -63,3 +63,18 @@ the anchors that differ from the line's default width (or the keyframes of a tap
 json2rc writes the EXPERIMENTAL RCZ1 container: `RCZ1`, an int32 big-endian length, then a zlib
 stream of the whole document. About 40 % smaller; the rcX player inflates it on load
 (`players/cpp/docs/EXPERIMENTAL_OPS.md`). Other players cannot read it.
+
+## Colour meshes — `"xDrawMesh"`
+
+```json
+{"xDrawMesh": {"grid": [20, 20, 70, 45, 3, 3], "colors": ["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#808080", "#00FFFF", "#000000", "#FF00FF", "#FFFFFF"]}}
+{"xDrawMesh": {"mode": "triangles", "vertices": [[30, 125], [90, 60], [150, 125]], "colors": ["#80FF0000", "#8000FF00", "#800000FF"]}}
+```
+
+A Gouraud-shaded triangle mesh (the canvas `drawVertices` capability), drawn with the current
+paint's alpha and blend mode. The grid form is an implicit lattice — `x0, y0, dx, dy, cols, rows`
+and one colour per vertex, row-major, two triangles per cell — so only the colours are stored (3
+bytes each when all are opaque, 4 with alpha). The explicit form takes vertices, colours and
+optional indices, with `"mode"` triangles, strip or fan; coordinates go as 16-bit fixed point
+when they fit. Emoji uses the grid form to shade a region with a lattice of fitted colours
+(`Emoji/CONVERT.md` §43).
