@@ -416,7 +416,8 @@ def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
             else bool(type_trans.get("fx", False))
     if not fx_on:
         changes["transition_shader"] = ""
-    changes.update(theme_overrides(overrides, theme, slide.get("base_dir", ".")))
+    changes.update(theme_overrides(overrides, theme, slide.get("base_dir", "."),
+                                   [slide.get("root_dir")] if slide.get("root_dir") else ()))
 
     style = (overrides.get("transition") or type_trans.get("style")
              or trans_cfg.get("style", "fade"))
@@ -563,8 +564,10 @@ def _same_scroll_frac(meta: dict) -> float:
         return 0.0
 
 
-def theme_overrides(overrides: dict, theme, base_dir: str = ".") -> dict:
-    """Map per-slide ``key=value`` metadata to Theme field changes."""
+def theme_overrides(overrides: dict, theme, base_dir: str = ".", fallback_dirs=()) -> dict:
+    """Map per-slide ``key=value`` metadata to Theme field changes. Asset-valued keys (``bg``,
+    ``bg_doc``) resolve in ``base_dir`` first, then in ``fallback_dirs`` — the root deck, for a
+    slide that came in through ``:: include``."""
     from refractkit.theme import _resolve_asset_path
     changes = {}
     if "bg" in overrides or "background" in overrides:
@@ -574,7 +577,7 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".") -> dict:
         elif val.lower() in ("none", "off", "false"):
             changes["bg_doc_override"] = ""
         else:
-            p = _resolve_asset_path(val, base_dir)
+            p = _resolve_asset_path(val, base_dir, fallback_dirs)
             if p is not None:
                 changes["bg_doc_override"] = p
     if "bg_doc" in overrides:
@@ -582,7 +585,7 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".") -> dict:
         if val.lower() in ("none", "off", "false"):
             changes["bg_doc_override"] = ""
         else:
-            p = _resolve_asset_path(val, base_dir)
+            p = _resolve_asset_path(val, base_dir, fallback_dirs)
             if p is not None:
                 changes["bg_doc_override"] = p
     if "accent" in overrides:

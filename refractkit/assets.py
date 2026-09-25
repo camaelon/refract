@@ -86,7 +86,7 @@ def used_by(deck_dir: str) -> dict:
         for k in ("bg", "background", "bg_doc"):
             v = ovr.get(k)
             if isinstance(v, str) and not v.startswith("#"):
-                p = _resolve_asset_path(v, sbase)
+                p = _resolve_asset_path(v, sbase, [deck_dir])
                 if p:
                     note_with_deps(p, i)
         try:

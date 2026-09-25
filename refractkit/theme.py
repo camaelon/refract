@@ -281,22 +281,26 @@ class Theme:
         }
 
 
-def _resolve_asset_path(val, deck_dir: str) -> str | None:
-    """Resolve a relative asset path (in deck_dir, deck_dir/includes, or deck_dir/theme/include) to an absolute path."""
+def _resolve_asset_path(val, deck_dir: str, fallback_dirs=()) -> str | None:
+    """Resolve a relative asset path (in deck_dir, deck_dir/includes, or deck_dir/theme/include) to an
+    absolute path. ``fallback_dirs`` (the root deck, for a sub-deck slide) are searched the same way
+    when the deck's own folders have no such file."""
     if not val or not isinstance(val, str):
         return None
     s = val.strip()
     if not s or s.lower() in ("none", "off", "false"):
         return ""
-    candidates = [
-        os.path.join(deck_dir, s),
-        os.path.join(deck_dir, "includes", s),
-        os.path.join(deck_dir, "theme", "include", s),
-        os.path.join(deck_dir, "theme", "includes", s),
-        os.path.join(deck_dir, "themes", "include", s),
-        os.path.join(deck_dir, "themes", "includes", s),
-        s,
-    ]
+    candidates = []
+    for base in [deck_dir, *[d for d in fallback_dirs if d and os.path.abspath(d) != os.path.abspath(deck_dir)]]:
+        candidates += [
+            os.path.join(base, s),
+            os.path.join(base, "includes", s),
+            os.path.join(base, "theme", "include", s),
+            os.path.join(base, "theme", "includes", s),
+            os.path.join(base, "themes", "include", s),
+            os.path.join(base, "themes", "includes", s),
+        ]
+    candidates.append(s)
     for cand in candidates:
         if os.path.isfile(cand):
             return os.path.abspath(cand)

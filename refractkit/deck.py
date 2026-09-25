@@ -15,9 +15,14 @@ INCLUDE_PROBE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".rc", ".json",
                  ".mp4", ".mov", ".m4v", ".kt", ".java", ".py", ".ts")
 
 
-def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
-    """Return a flat list of slides, expanding ``:: include : <deck>`` references."""
+def load_deck(deck_dir: str, visited: set[str], root_dir: str | None = None) -> list[dict]:
+    """Return a flat list of slides, expanding ``:: include : <deck>`` references.
+
+    ``root_dir`` is the outermost deck (the one being built); every slide records it as
+    ``root_dir`` so a sub-deck's lookups — ``:: as:`` templates, ``bg_doc`` plates,
+    ``theme/include`` assets — can fall back to the main deck's folders."""
     deck_dir = os.path.abspath(deck_dir)
+    root_dir = os.path.abspath(root_dir) if root_dir else deck_dir
     md_path = os.path.join(deck_dir, "slides.md")
     if not os.path.isfile(md_path):
         raise FileNotFoundError(f"no slides.md in {deck_dir}")
@@ -32,7 +37,7 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
             sub_dir = os.path.join(deck_dir, "includes", name)
             sub_md = os.path.join(sub_dir, "slides.md")
             if name and os.path.isfile(sub_md) and os.path.abspath(sub_dir) not in visited:
-                sub_slides = load_deck(sub_dir, visited | {os.path.abspath(sub_dir)})
+                sub_slides = load_deck(sub_dir, visited | {os.path.abspath(sub_dir)}, root_dir)
                 # Where the include *itself* is written. A sub-deck's slides live in their own
                 # slides.md, so reordering one of them rewrites that file — but moving the
                 # whole sub-deck means moving this one ``:: include`` line in *this* file, and
@@ -57,14 +62,16 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
                     "title": None,
                     "blocks": [{"kind": "text", "text": f"<section {name} will go there>"}],
                     "base_dir": deck_dir,
+                    "root_dir": root_dir,
                     "src_file": md_path,
                     "src_index": slide.get("src_index"),
                 })
         else:
             slide["base_dir"] = deck_dir
+            slide["root_dir"] = root_dir
             slide["src_file"] = md_path
             from .as_theme import resolve_as_slide
-            resolve_as_slide(slide, deck_dir)
+            resolve_as_slide(slide, deck_dir, [root_dir])
             result.append(slide)
     return result
 
@@ -187,6 +194,16 @@ def resolve_blocks(slide: dict) -> list[dict]:
         os.path.join(deck_dir, "themes", "include"),
         os.path.join(deck_dir, "themes", "includes"),
     ]
+    root_dir = slide.get("root_dir")
+    if root_dir and os.path.abspath(root_dir) != os.path.abspath(deck_dir):
+        # a sub-deck falls back to the main deck's theme assets (and its includes/)
+        extra_dirs += [
+            os.path.join(root_dir, "theme", "include"),
+            os.path.join(root_dir, "theme", "includes"),
+            os.path.join(root_dir, "themes", "include"),
+            os.path.join(root_dir, "themes", "includes"),
+            os.path.join(root_dir, "includes"),
+        ]
     for sec in slide.get("sections", []):
         sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir, extra_dirs)
     return _resolve_block_list(slide["blocks"], includes_dir, extra_dirs)

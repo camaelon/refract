@@ -10,25 +10,27 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-def find_theme_toml(name: str, deck_dir: str) -> str | None:
-    """Find a theme TOML file by name in deck_dir/theme/, deck_dir/themes/, or deck_dir/."""
+def find_theme_toml(name: str, deck_dir: str, fallback_dirs=()) -> str | None:
+    """Find a theme TOML file by name in deck_dir/theme/, deck_dir/themes/, or deck_dir/.
+
+    ``fallback_dirs`` are searched the same way when the deck's own folders have no such
+    file: a sub-deck that names a template it does not carry gets the root deck's copy, so
+    a template lives once, in the main deck, and every ``:: include`` can use it."""
     if not name:
         return None
     filename = name if name.endswith(".toml") else f"{name}.toml"
-    candidates = [
-        os.path.join(deck_dir, "theme", filename),
-        os.path.join(deck_dir, "themes", filename),
-        os.path.join(deck_dir, filename),
-    ]
-    for cand in candidates:
-        if os.path.isfile(cand):
-            return os.path.abspath(cand)
+    for base in [deck_dir, *[d for d in fallback_dirs if d and os.path.abspath(d) != os.path.abspath(deck_dir)]]:
+        for cand in (os.path.join(base, "theme", filename),
+                     os.path.join(base, "themes", filename),
+                     os.path.join(base, filename)):
+            if os.path.isfile(cand):
+                return os.path.abspath(cand)
     return None
 
 
-def load_theme_toml(name: str, deck_dir: str) -> dict:
+def load_theme_toml(name: str, deck_dir: str, fallback_dirs=()) -> dict:
     """Read and parse a theme TOML file."""
-    path = find_theme_toml(name, deck_dir)
+    path = find_theme_toml(name, deck_dir, fallback_dirs)
     if not path:
         return {}
     try:
@@ -199,8 +201,10 @@ def parse_theme_toml(data: dict) -> dict:
     }
 
 
-def resolve_as_slide(slide: dict, deck_dir: str) -> dict:
-    """If slide is `type == 'as'`, resolve its theme TOML settings into the slide."""
+def resolve_as_slide(slide: dict, deck_dir: str, fallback_dirs=()) -> dict:
+    """If slide is `type == 'as'`, resolve its theme TOML settings into the slide. Templates
+    missing from ``deck_dir`` are looked up in ``fallback_dirs`` (the root deck, for a slide
+    that came in through ``:: include``)."""
     meta = slide.get("meta") or {}
     if (meta.get("type") or "").lower() != "as":
         return slide
@@ -210,7 +214,7 @@ def resolve_as_slide(slide: dict, deck_dir: str) -> dict:
     if not name:
         return slide
 
-    toml_data = load_theme_toml(name, deck_dir)
+    toml_data = load_theme_toml(name, deck_dir, fallback_dirs)
     if not toml_data:
         return slide
 
