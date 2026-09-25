@@ -25,8 +25,8 @@ prebuilt/refractplayer
 
 **New deck…** asks where to put it, then writes a starter `slides.md` — a few real slides
 rather than an empty file, so you have something to change instead of something to invent.
-**Open a deck…** takes any folder with a `slides.md` in it. Underneath sit the decks you opened
-before; the player remembers them between runs.
+**Open a deck…** takes any folder with a `slides.md` in it. Underneath sit the decks you
+opened before; the player remembers them between runs.
 
 Name a deck on the command line and it goes straight past all this:
 
@@ -55,18 +55,21 @@ single card and the player rewrites the markdown behind it and rebuilds the deck
 a preview of a reorder — it is the reorder.
 
 `N` adds a slide, `⌫` twice deletes one, `shift`+`D` duplicates, `J` joins two, `cmd`+`Z` takes
-any of it back. A card shows whether that slide has narration, and a `note` mark whether it has
-speaker notes.
+any of it back. A card shows whether that slide has narration, and a `note` mark whether it
+has speaker notes.
 
 ### Change a slide: `E`
 
 <img src="images/editor.png" width="480" alt="The slide editor showing the title slide's markdown">
 
-The markdown behind whatever is on screen. It follows the deck as you move, so you pick what to
-edit by walking to it. `cmd`+`S` saves; the deck then rebuilds and reloads underneath.
+The markdown behind whatever is on screen. It follows the deck as you move, so you pick what
+to edit by walking to it. `cmd`+`S` saves; the deck then rebuilds and reloads underneath.
 
 The tabs at the top aim it at one **slide**, the whole **slides.md**, or the deck's
 **settings.toml**. The theme was the last thing here that needed a terminal.
+
+Long lines wrap, so nothing runs off the right-hand edge, and `↑` and `↓` walk the rows a
+wrapped paragraph becomes rather than jumping over all of them.
 
 ### It knows the words
 
@@ -101,8 +104,8 @@ reports what it did: how many slides it rebuilt, and how many it reused.
 <img src="images/assets.png" width="640" alt="The asset window listing card.json and logo.png with previews and which slides use them">
 
 Everything under `includes/`, with a picture of it and the slides that use it. The window
-marks anything nothing uses as unused, and an `includes/` folder gathers plenty of that over the life of a
-talk. Removing a file moves it to `out/.trash/`; it deletes nothing.
+marks anything nothing uses as unused, and an `includes/` folder gathers plenty of that over
+the life of a talk. Removing a file moves it to `out/.trash/`; it deletes nothing.
 
 ### Then give the talk: `P`
 
@@ -142,9 +145,9 @@ tick per section. Blank the room's screen and this window keeps the slide, with 
 the audience cannot see it.
 
 The **ghost marker** on the progress bar says where you should be by now. It follows a
-rehearsal if you have one, and the deck's `:: section duration=` plan if you have not. The plan
-draws quieter than the rehearsal, because what a talk took and what it should take are two
-different claims. Under the timer: `2:15 behind`, `0:40 ahead`, or `on pace`.
+rehearsal if you have one, and the deck's `:: section duration=` plan if you have not. The
+plan draws quieter than the rehearsal, because what a talk took and what it should take are
+two different claims. Under the timer: `2:15 behind`, `0:40 ahead`, or `on pace`.
 
 The button at the foot records the current slide's narration again, and leaves the rest of the
 talk alone.
@@ -173,10 +176,14 @@ rehearsal trace travel with the slides, in the same write.
 
 <img src="images/editor.png" width="480" alt="The slide editor">
 
-`cmd`+`S` saves; auto-save waits until you stop typing. `cmd`+`Enter` cuts a slide in two at the
-caret. Click again and again to take a word, then the line, then the paragraph; hold `option`
-and the selection becomes a **rectangle** instead of a run, which is how you take a column out
-of a table or the indent down a list.
+`cmd`+`S` saves; auto-save waits until you stop typing. `cmd`+`Enter` cuts a slide in two at
+the caret. Click again and again to take a word, then the line, then the paragraph; hold
+`option` and the selection becomes a **rectangle** instead of a run, which is how you take a
+column out of a table or the indent down a list.
+
+Long lines **wrap**. A line too long for the window used to run off the right-hand edge and
+stop there, which in a narrow window hid most of a paragraph. `↑` and `↓` move by row, so a
+wrapped paragraph is walked rather than skipped, and there is no sideways scrolling left to do.
 
 The menu completes `::` lines, `<includes>` and their options — see
 [the tutorial above](#it-knows-the-words) and
@@ -187,9 +194,8 @@ The menu completes `::` lines, `<includes>` and their options — see
 <img src="images/build-panel.png" width="260" alt="The build panel">
 
 A column that sits against the deck view or the presenter. It reads its options from the way
-the deck was built rather than from defaults, so it opens telling the truth. **Watch**
-rebuilds on every change. Builds run on a worker thread, so the window stays alive while
-refract works.
+the deck was built rather than from defaults, so it opens telling the truth. **Watch** rebuilds
+on every change. Builds run on a worker thread, so the window stays alive while refract works.
 
 ### Assets
 
@@ -227,8 +233,8 @@ have one open, so it never reaches the projector. `/` filters by name; `Enter` g
 | `H` | the key card |
 | `Q` `Esc` | quit |
 
-With two screens, `--display 1` throws the slides on the second monitor and keeps the presenter
-window on the first.
+With two screens, `--display 1` throws the slides on the second monitor and keeps the
+presenter window on the first.
 
 ## Rehearsing
 
@@ -260,3 +266,5 @@ prebuilt/refractplayer mytalk --images shots/       # one PNG per slide
 
 [player/README.md](../player/README.md) holds the full reference: every flag, every key, and
 the reasoning behind the parts that are not obvious.
+[architecture-editor.md](architecture-editor.md) is the editor from the inside, for changing
+it rather than using it.

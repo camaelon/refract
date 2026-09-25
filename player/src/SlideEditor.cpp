@@ -159,7 +159,16 @@ struct SlideEditor::Impl {
     SkRect tabs[3];
     std::function<void()> onSaved;
 
-    float scrollY = 0.0f, scrollX = 0.0f;
+    float scrollY = 0.0f;
+    // A long line used to run off the right edge and stop there, reachable only by scrolling
+    // sideways. It wraps now, so there is nothing to the right to scroll to.
+    std::vector<WrapRow> rows;
+    float rowsWidth = -1;            // the width `rows` was laid out for
+    unsigned rowsRevision = ~0u;     // the buffer revision it was laid out from
+    float rowsFontSize = 0;          // ...and the size it was measured with
+    // Which x an up/down arrow is aiming for, so walking down a ragged paragraph does not
+    // drift left. Cleared by anything that is not an up or a down.
+    float goalX = -1.0f;
     double mouseX = 0, mouseY = 0;
     SkRect saveButton = SkRect::MakeEmpty();
     SkRect revertButton = SkRect::MakeEmpty();
@@ -385,21 +394,94 @@ struct SlideEditor::Impl {
         return excerpts.emplace(relative, std::move(text)).first->second;
     }
 
-    // The caret position under a point in the window.
+    // The caret position under a point in the window. Measured in *rows* — one per wrapped
+    // slice of a line — since that is what is on screen.
     Lines lineGeometry() const { return {textTop, lineHeight, kLineGap}; }
 
-    Caret caretAt(float x, float y) const {
-        // The line mapping is in ViewGeometry, tested without a window: `textTop` is line 0's
-        // *baseline*, its box starts a line higher, and measuring from the wrong one put
-        // every click a line above where it was aimed.
-        const int line = lineAt(lineGeometry(), y, scrollY, buffer.lineCount());
-        return {line, columnAt(buffer.line(line), x)};
+    // Wrap the text to `width`, unless that has already been done for this text at this
+    // width and size. Every line has to be measured, so a long slides.md is real work; the
+    // three things that can change the answer are all cheap to compare.
+    void layout(float width, const SkFont& font, float fontSize) {
+        if (rowsWidth == width && rowsRevision == buffer.revision()
+            && rowsFontSize == fontSize && !rows.empty()) {
+            return;
+        }
+        rowsWidth = width;
+        rowsRevision = buffer.revision();
+        rowsFontSize = fontSize;
+        const std::vector<std::string>& lines = buffer.lines();
+        rows = wrapLines(lines, width, [&lines, &font](int line, int from, int to) {
+            return textWidth(font, lines[line].substr(from, to - from));
+        });
     }
 
-    // The byte column in `line` nearest to an x in window coordinates. Measured prefix by
+    int rowCount() const { return static_cast<int>(rows.size()); }
+
+    // The row the caret is on, and where in the window that row is.
+    int caretRow() const {
+        const Caret c = buffer.caret();
+        const int row = rowOfCaret(rows, c.line, c.col);
+        return row < 0 ? 0 : row;
+    }
+
+    // How far along a row an x lands, as a byte column of the *line*.
+    Caret caretInRow(int row, float x) const {
+        if (rows.empty()) return {0, 0};
+        row = std::max(0, std::min(row, rowCount() - 1));
+        const WrapRow& r = rows[row];
+        const std::string slice = buffer.line(r.line).substr(r.from, r.to - r.from);
+        int col = r.from + columnAt(slice, x);
+        // A row that was broken after a space ends *past* the space; a click at its right
+        // edge should put the caret before the break, not after it.
+        if (col > r.to) col = r.to;
+        return {r.line, col};
+    }
+
+    // Up and down a *row* rather than a line. On a paragraph that wraps to five rows, moving
+    // by line would skip all five, which is not what an arrow key means to anybody looking at
+    // the screen. The x is remembered across a run of them so walking down a ragged paragraph
+    // does not drift left; TextBuffer keeps its own goal column for the unwrapped case, and
+    // this is the same idea one layer up.
+    void moveByRow(int delta, bool select, const SkFont& font) {
+        if (rows.empty()) return;
+        const int from = caretRow();
+        if (goalX < 0) goalX = caretX(font);
+        const int to = from + delta;
+        if (to < 0 || to >= rowCount()) {
+            // Off the top or the bottom: go to the very start or the very end, which is what
+            // every editor does and what stops the caret feeling stuck.
+            if (delta < 0) buffer.moveDocStart(select);
+            else buffer.moveDocEnd(select);
+            return;
+        }
+        const float x = goalX;
+        buffer.setCaret(caretInRow(to, x), select);
+        goalX = x;                     // setCaret cannot know this was an up or a down
+    }
+
+    // Where a caret sits across its row, in window coordinates.
+    float caretX(const SkFont& font) const {
+        if (rows.empty()) return textLeft;
+        const Caret c = buffer.caret();
+        const WrapRow& r = rows[caretRow()];
+        const std::string& line = buffer.line(c.line);
+        const int from = std::min<int>(r.from, static_cast<int>(line.size()));
+        const int to = std::max(from, std::min<int>(c.col, static_cast<int>(line.size())));
+        return textLeft + textWidth(font, line.substr(from, to - from));
+    }
+
+    Caret caretAt(float x, float y) const {
+        // The row mapping is in ViewGeometry, tested without a window: `textTop` is row 0's
+        // *baseline*, its box starts a line higher, and measuring from the wrong one put
+        // every click a line above where it was aimed.
+        const int row = lineAt(lineGeometry(), y, scrollY, std::max(1, rowCount()));
+        return caretInRow(row, x);
+    }
+
+    // The byte column in `text` nearest to an x in window coordinates. Measured prefix by
     // prefix rather than divided by a character width: the fallback face may not be mono.
     int columnAt(const std::string& text, float x) const {
-        const float from = textLeft - scrollX;
+        const float from = textLeft;
         int best = 0;
         float bestDist = std::fabs(x - from);
         for (size_t i = 1; i <= text.size(); i++) {
@@ -447,13 +529,12 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
             impl.caretBlinkFrom = glfwGetTime();
         }
     });
-    glfwSetScrollCallback(window, [](GLFWwindow* w, double dx, double dy) {
+    // Vertical only: the text wraps, so there is nothing off to the right to scroll to.
+    glfwSetScrollCallback(window, [](GLFWwindow* w, double, double dy) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
         self->mImpl->scrollY =
             std::max(0.0f, self->mImpl->scrollY - scrollPixels(dy, self->mImpl->lineHeight));
-        self->mImpl->scrollX =
-            std::max(0.0f, self->mImpl->scrollX - scrollPixels(dx, 0.5f * self->mImpl->lineHeight));
         self->mImpl->lastScrollAt = glfwGetTime();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int mods) {
@@ -494,6 +575,7 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         // Shift-click extends, the way a shifted arrow does.
         const bool extending = (mods & GLFW_MOD_SHIFT) != 0;
         impl.buffer.setCaret(impl.caretAt(x, y), extending);
+        impl.goalX = -1.0f;
         impl.followCaret = true;
         impl.caretBlinkFrom = glfwGetTime();
         impl.lastEditAt = glfwGetTime();
@@ -643,7 +725,7 @@ void SlideEditor::setTarget(EditTarget target) {
         impl.file = targetPath(target);
         impl.shared = 1;
         impl.buffer.setText(text);
-        impl.scrollX = impl.scrollY = 0;
+        impl.scrollY = 0;
         impl.setStatus("", false);
     } else {
         impl.buffer.setText("");
@@ -680,7 +762,7 @@ void SlideEditor::showSlide(int slide) {
     impl.file = file;
     impl.shared = std::max(1, shared);
     impl.buffer.setText(text);
-    impl.scrollX = impl.scrollY = 0;
+    impl.scrollY = 0;
     impl.setStatus("", false);
 }
 
@@ -776,6 +858,10 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
     Impl& impl = *mImpl;
     impl.caretBlinkFrom = glfwGetTime();
     impl.followCaret = true;      // a key either moves the caret or types at it
+    if (key != GLFW_KEY_UP && key != GLFW_KEY_DOWN && key != GLFW_KEY_PAGE_UP
+        && key != GLFW_KEY_PAGE_DOWN) {
+        impl.goalX = -1.0f;       // only a run of ups and downs keeps aiming at one x
+    }
     impl.lastEditAt = glfwGetTime();
 
     // Command on macOS, Control elsewhere — whichever this platform's shortcuts use.
@@ -871,18 +957,15 @@ bool SlideEditor::handleKey(int key, int action, int mods) {
         case GLFW_KEY_RIGHT:
             if (word) impl.buffer.moveWordRight(false); else impl.buffer.moveRight(shift);
             return true;
-        case GLFW_KEY_UP:        impl.buffer.moveUp(shift); return true;
-        case GLFW_KEY_DOWN:      impl.buffer.moveDown(shift); return true;
+        case GLFW_KEY_UP:        impl.moveByRow(-1, shift, impl.mono); return true;
+        case GLFW_KEY_DOWN:      impl.moveByRow(1, shift, impl.mono); return true;
         case GLFW_KEY_HOME:      impl.buffer.moveHome(shift); return true;
         case GLFW_KEY_END:       impl.buffer.moveEnd(shift); return true;
         case GLFW_KEY_PAGE_UP:
         case GLFW_KEY_PAGE_DOWN: {
             const int step = std::max(1, static_cast<int>((impl.height - kHeaderH - kFooterH)
                                                           / std::max(1.0f, impl.lineHeight)));
-            for (int i = 0; i < step; i++) {
-                if (key == GLFW_KEY_PAGE_UP) impl.buffer.moveUp(shift);
-                else impl.buffer.moveDown(shift);
-            }
+            impl.moveByRow(key == GLFW_KEY_PAGE_UP ? -step : step, shift, impl.mono);
             return true;
         }
         case GLFW_KEY_BACKSPACE: impl.buffer.backspace(); return true;
@@ -1081,19 +1164,21 @@ void SlideEditor::render(App& app) {
     // Bring the caret back into view whenever it has moved — typing must never run off the
     // bottom of the window. Only when it has moved, though: doing it every frame would undo
     // the wheel, and reading further down a slide than you are editing is a thing people do.
-    const Caret caret = impl.buffer.caret();
-    const float caretX = textWidth(mono, impl.buffer.line(caret.line).substr(0, caret.col));
+    // Wrap to the width there is. Done before anything is drawn or hit-tested, because
+    // every y on screen is now a *row* rather than a line.
     const float textW = w - impl.textLeft - pad;
+    impl.layout(textW, mono, kFontSize);
+
+    const Caret caret = impl.buffer.caret();
+    const int caretRow = impl.caretRow();
+    const float caretX = impl.caretX(mono);
     if (impl.followCaret) {
         impl.followCaret = false;
-        impl.scrollY = scrollToShowLine(impl.lineGeometry(), caret.line, impl.scrollY, viewH);
-        if (caretX < impl.scrollX) impl.scrollX = std::max(0.0f, caretX - 40);
-        else if (caretX > impl.scrollX + textW - 20) impl.scrollX = caretX - textW + 40;
+        impl.scrollY = scrollToShowLine(impl.lineGeometry(), caretRow, impl.scrollY, viewH);
     }
-    const float maxScroll = std::max(0.0f, impl.buffer.lineCount() * lineHeight - viewH
+    const float maxScroll = std::max(0.0f, impl.rowCount() * lineHeight - viewH
                                                + lineHeight * 2);
     impl.scrollY = std::max(0.0f, std::min(maxScroll, impl.scrollY));
-    impl.scrollX = std::max(0.0f, impl.scrollX);
 
     canvas->save();
     canvas->clipRect(SkRect::MakeLTRB(0, viewTop, w, viewBottom));
@@ -1124,70 +1209,90 @@ void SlideEditor::render(App& app) {
     SkFont gutterFont = uiMonoFont(kFontSize - 2);
     bool inFence = false;
 
-    for (int i = 0; i < impl.buffer.lineCount(); i++) {
-        const std::string& text = impl.buffer.line(i);
-        const bool fenceLine = togglesFence(text);
-        const SkColor tone = impl.target == EditTarget::Settings
-                                 ? tomlTone(text)
-                                 : lineTone(text, inFence && !fenceLine);
-        if (fenceLine) inFence = !inFence;
+    // One pass over the *rows*. A wrapped line contributes several, and its colour and its
+    // fence state belong to the line, so those are worked out when a first row comes past.
+    SkColor tone = ui::kText;
+    for (int r = 0; r < impl.rowCount(); r++) {
+        const WrapRow& row = impl.rows[r];
+        const std::string& text = impl.buffer.line(row.line);
+        if (row.first) {
+            const bool fenceLine = togglesFence(text);
+            tone = impl.target == EditTarget::Settings
+                       ? tomlTone(text)
+                       : lineTone(text, inFence && !fenceLine);
+            if (fenceLine) inFence = !inFence;
+        }
 
-        const float y = impl.textTop + i * lineHeight - impl.scrollY;
+        const float y = impl.textTop + r * lineHeight - impl.scrollY;
         if (y < viewTop - lineHeight || y > viewBottom + lineHeight) continue;
 
-        if (i == caret.line && !selecting) {
-            fillRect(canvas, SkRect::MakeLTRB(0, y - lineHeight + kLineGap, w, y + kLineGap),
-                     ui::kPanel);
+        const float top = y - lineHeight + kLineGap, bottom = y + kLineGap;
+        // The caret's row is lit, not the caret's whole line: on a wrapped paragraph the
+        // line can be most of the window, and lighting all of it says nothing.
+        if (r == caretRow && !selecting) {
+            fillRect(canvas, SkRect::MakeLTRB(0, top, w, bottom), ui::kPanel);
         }
-        drawTextRight(canvas, std::to_string(i + 1), pad + kGutterW - 10, y, gutterFont,
-                      i == caret.line ? ui::kDim : ui::kLine);
+        // The number belongs to the line, so only its first row carries one. A continuation
+        // row is left blank, which is how you can see that it is one.
+        if (row.first) {
+            drawTextRight(canvas, std::to_string(row.line + 1), pad + kGutterW - 10, y,
+                          gutterFont, row.line == caret.line ? ui::kDim : ui::kLine);
+        }
 
-        // Selection, clipped to this line.
-        if (selecting && i >= selFrom.line && i <= selTo.line) {
-            const float top = y - lineHeight + kLineGap, bottom = y + kLineGap;
+        // Selection, clipped to this row.
+        if (selecting && row.line >= selFrom.line && row.line <= selTo.line) {
             if (framed) {
                 // The frame is drawn over the whole column span, on every line it crosses —
                 // that is what makes it read as a rectangle rather than as a run that
                 // happens to be ragged. Where a line stops short there is nothing to take,
                 // so that part is a wash rather than a selection.
-                const auto [from, to] = impl.buffer.blockRangeOn(i);
-                const float x0 = impl.textLeft - impl.scrollX + frameLeftX;
-                const float x1 = impl.textLeft - impl.scrollX + frameRightX;
+                const auto [from, to] = impl.buffer.blockRangeOn(row.line);
+                const float x0 = impl.textLeft + frameLeftX;
+                const float x1 = impl.textLeft + frameRightX;
                 fillRect(canvas, SkRect::MakeLTRB(x0, top, x1, bottom),
                          withAlpha(ui::kAccent, 0x1E));
-                if (to > from) {
-                    const float t0 = impl.textLeft - impl.scrollX
-                                     + textWidth(mono, text.substr(0, from));
-                    const float t1 = impl.textLeft - impl.scrollX
-                                     + textWidth(mono, text.substr(0, to));
+                const int cut0 = std::max(from, row.from), cut1 = std::min(to, row.to);
+                if (cut1 > cut0) {
+                    const float t0 = impl.textLeft
+                                     + textWidth(mono, text.substr(row.from, cut0 - row.from));
+                    const float t1 = impl.textLeft
+                                     + textWidth(mono, text.substr(row.from, cut1 - row.from));
                     fillRect(canvas, SkRect::MakeLTRB(t0, top, t1, bottom),
                              withAlpha(ui::kAccent, 0x44));
                 }
             } else {
-                const int from = i == selFrom.line ? selFrom.col : 0;
-                const int to = i == selTo.line ? selTo.col : static_cast<int>(text.size());
-                const float x0 = impl.textLeft - impl.scrollX
-                                 + textWidth(mono, text.substr(0, from));
-                float x1 = impl.textLeft - impl.scrollX + textWidth(mono, text.substr(0, to));
-                // A selected line break shows as a sliver past the end, so a multi-line
-                // selection does not look like it stops at the last character.
-                if (i < selTo.line) x1 += textWidth(mono, " ");
-                fillRect(canvas, SkRect::MakeLTRB(x0, top, x1, bottom),
-                         withAlpha(ui::kAccent, 0x44));
+                const int lineFrom = row.line == selFrom.line ? selFrom.col : 0;
+                const int lineTo = row.line == selTo.line ? selTo.col
+                                                          : static_cast<int>(text.size());
+                const int from = std::max(lineFrom, row.from);
+                const int to = std::min(lineTo, row.to);
+                if (to >= from) {
+                    const float x0 = impl.textLeft
+                                     + textWidth(mono, text.substr(row.from, from - row.from));
+                    float x1 = impl.textLeft
+                               + textWidth(mono, text.substr(row.from, to - row.from));
+                    // A selected line break shows as a sliver past the end, so a multi-line
+                    // selection does not look like it stops at the last character. Only at
+                    // the real end of a line — a wrap is not a break.
+                    if (row.line < selTo.line && row.to == static_cast<int>(text.size())) {
+                        x1 += textWidth(mono, " ");
+                    }
+                    fillRect(canvas, SkRect::MakeLTRB(x0, top, x1, bottom),
+                             withAlpha(ui::kAccent, 0x44));
+                }
             }
         }
 
-        drawText(canvas, text, impl.textLeft - impl.scrollX, y, mono, tone);
+        drawText(canvas, text.substr(row.from, row.to - row.from), impl.textLeft, y, mono,
+                 tone);
     }
 
     // The caret blinks from the last keystroke, so it is solid while you are typing.
     const double since = glfwGetTime() - impl.caretBlinkFrom;
     if (std::fmod(since, 1.06) < 0.6) {
-        const float y = impl.textTop + caret.line * lineHeight - impl.scrollY;
-        fillRect(canvas, SkRect::MakeLTRB(impl.textLeft - impl.scrollX + caretX,
-                                          y - lineHeight + kLineGap,
-                                          impl.textLeft - impl.scrollX + caretX + 1.5f,
-                                          y + kLineGap),
+        const float y = impl.textTop + caretRow * lineHeight - impl.scrollY;
+        fillRect(canvas, SkRect::MakeLTRB(caretX, y - lineHeight + kLineGap,
+                                          caretX + 1.5f, y + kLineGap),
                  ui::kAccent);
     }
     canvas->restore();
@@ -1288,11 +1393,20 @@ void SlideEditor::render(App& app) {
         const bool withPane = listW + paneSide + 10 <= room;
         const float boxW = std::min(withPane ? listW + paneSide + 10 : listW, room);
 
+        // Anchored to the row the `<` or the `::` is actually on, which on a wrapped line
+        // is not the row the line starts at.
+        const int anchorRow = rowOfCaret(impl.rows, impl.menuAnchor.line, impl.menuAnchor.col);
+        const WrapRow& anchor = impl.rows[std::max(0, anchorRow)];
         const std::string& anchorLine = impl.buffer.line(impl.menuAnchor.line);
-        const float anchorX = impl.textLeft - impl.scrollX
-                              + textWidth(mono, anchorLine.substr(0, impl.menuAnchor.col));
+        const int anchorFrom = std::min<int>(anchor.from, static_cast<int>(anchorLine.size()));
+        const int anchorTo = std::max(anchorFrom,
+                                      std::min<int>(impl.menuAnchor.col,
+                                                    static_cast<int>(anchorLine.size())));
+        const float anchorX =
+            impl.textLeft + textWidth(mono, anchorLine.substr(anchorFrom,
+                                                              anchorTo - anchorFrom));
         const float x = std::max(pad, std::min(anchorX, w - pad - boxW));
-        const float lineBottom = impl.textTop + impl.menuAnchor.line * lineHeight
+        const float lineBottom = impl.textTop + std::max(0, anchorRow) * lineHeight
                                  - impl.scrollY + kLineGap;
         // Below the line it belongs to, unless there is no room — then above it, which is
         // what every other menu in the world does at the bottom of a screen.

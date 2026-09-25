@@ -17,15 +17,20 @@ endif()
 
 set(PLAYER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
-foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeometry
+# Each entry is `test_name:Unit[,Unit…]` — the units the suite compiles against.
+foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeometry,Utf8
               options:Options completion:Completion utf8:Utf8 scrolling:Scrolling
               plan:Plan
               slide_recorder:SlideRecorder deck_library:DeckLibrary)
     string(REPLACE ":" ";" parts ${suite})
     list(GET parts 0 name)
-    list(GET parts 1 unit)
-    add_executable(${name}_test ${CMAKE_CURRENT_SOURCE_DIR}/${name}_test.cpp
-                                ${PLAYER_SRC}/${unit}.cpp)
+    list(GET parts 1 units)
+    string(REPLACE "," ";" units "${units}")
+    set(sources "")
+    foreach(unit ${units})
+        list(APPEND sources ${PLAYER_SRC}/${unit}.cpp)
+    endforeach()
+    add_executable(${name}_test ${CMAKE_CURRENT_SOURCE_DIR}/${name}_test.cpp ${sources})
     target_include_directories(${name}_test PRIVATE ${PLAYER_SRC})
     add_test(NAME ${name} COMMAND ${name}_test)
 endforeach()

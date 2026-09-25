@@ -106,6 +106,11 @@ public:
     bool dirty() const { return mDirty; }
     void markClean() { mDirty = false; }
 
+    // Bumped by every change to the text. A view that lays the text out — wrapping it to a
+    // width, say — can hold that layout until this moves, rather than measuring every line
+    // on every frame.
+    unsigned revision() const { return mRevision; }
+
 private:
     struct Snapshot {
         std::vector<std::string> lines;
@@ -132,6 +137,7 @@ private:
     bool  mBlock = false;             // this selection is a rectangle
     bool  mBlockMode = false;         // ...and the next extend will be one too
     bool  mDirty = false;
+    unsigned mRevision = 0;
     // Remembered *display* column for up/down across short lines. Display, not bytes: moving
     // down a line with an accent in it would otherwise drift sideways.
     int   mGoalCol = -1;

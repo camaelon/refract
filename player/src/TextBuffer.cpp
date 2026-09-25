@@ -49,6 +49,7 @@ void TextBuffer::setText(const std::string& text) {
     mSelecting = false;
     mBlock = false;
     mDirty = false;
+    mRevision++;          // a different document: any layout of the old one is void
     mGoalCol = -1;
     mUndo.clear();
     mRedo.clear();
@@ -186,6 +187,7 @@ void TextBuffer::begin(Edit kind) {
     mRedo.clear();
     mLastEdit = kind;
     mDirty = true;
+    mRevision++;
 }
 
 void TextBuffer::deleteSelection() {
@@ -514,6 +516,7 @@ bool TextBuffer::undo() {
     mUndo.pop_back();
     mSelecting = false;
     mDirty = true;
+    mRevision++;
     mLastEdit = Edit::None;
     clampCaret();
     return true;
@@ -527,6 +530,7 @@ bool TextBuffer::redo() {
     mRedo.pop_back();
     mSelecting = false;
     mDirty = true;
+    mRevision++;
     mLastEdit = Edit::None;
     clampCaret();
     return true;

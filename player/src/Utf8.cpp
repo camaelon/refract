@@ -50,6 +50,15 @@ std::string displayable(const std::string& text) {
     return out;
 }
 
+size_t utf8Advance(const std::string& text, size_t at) {
+    if (at >= text.size()) return text.size();
+    size_t next = at + 1;
+    while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) {
+        next++;
+    }
+    return next;
+}
+
 std::string dropLastChar(const std::string& text) {
     if (text.empty()) return text;
     return text.substr(0, utf8Boundary(text, text.size() - 1));

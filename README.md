@@ -58,6 +58,10 @@ starter `slides.md`.
 - **[Authoring in the player](docs/refractplayer.md)** — the same talk written, reordered and
   presented in refractplayer's own windows, with screenshots of each.
 
+Changing refract itself? [Architecture](#architecture) below, and
+[docs/architecture-editor.md](docs/architecture-editor.md) for the slide editor, which is the
+largest piece.
+
 ### What it needs
 
 Two things, and only two, since the checkout holds the rest:
@@ -796,6 +800,9 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `highlight`   | syntax highlighting — a language registry                 |
 | `graph`       | graphviz layout → drawing (clusters/styles); magic-move geometry |
 | `chart`       | bar / line / pie charts on a canvas                       |
+| `markers`     | the four progress-bar marker shapes                       |
+| `measure`     | how tall a block will be — shrinking a font to fit, and deciding when a slide needs scroll steps |
+| `samematch`   | which content two consecutive slides share, for magic move |
 | `render`      | blocks + theme → RemoteCompose component JSON             |
 | `chunks`      | the `---`-separated blocks of a slides.md: split, read, replace, insert, delete |
 | `reorder`     | moving those blocks — a slide, a section, an included sub-deck |
@@ -803,6 +810,9 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
 | `history`     | undo and redo for every edit that rewrites a deck's markdown |
 | `keys`        | the block a slide was written in, and keeping it pointing there when blocks move |
+| `assets`      | what is in `includes/`, and which slides use it — answered by loading the deck, so it cannot disagree with the build |
+| `meta`        | the `::` line's vocabulary and the include options, in one place: what may be written, and what each word does |
+| `preflight`   | what this machine has and what it lacks, behind `--check`  |
 
 `refract.py` itself is the CLI plus the build: `slide_style` (the theme a slide renders with),
 `render_slide` (which of the seven ways it is drawn) and `manifest_record` (what a player is
@@ -813,10 +823,16 @@ told about it) are separate from the loop that walks the deck, so each can be as
 `LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the
 `.sksl`.
 
-The last four are the ones the player edits a deck through. The player never parses markdown
-itself: block numbering has to agree exactly with `markdown.py`'s (which splits on `---` with
-no awareness of code fences, deliberately reproduced), and a second implementation would drift
-and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over them.
+`chunks`, `reorder`, `history` and `keys` are the ones the player edits a deck through. The
+player never parses markdown itself: block numbering has to agree exactly with `markdown.py`'s
+(which splits on `---` with no awareness of code fences, deliberately reproduced), and a second
+implementation would drift and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over
+them.
+
+`assets` and `meta` are there for the same reason one layer up: the editor offers a file or a
+word only if refract would accept it, so both answers come from refract's own code rather than
+from a list the player keeps. A slide type added to `render.SLIDE_TYPES` turns up in the
+editor's menu with nobody editing the player.
 
 ## Tests
 

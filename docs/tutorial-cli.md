@@ -78,8 +78,8 @@ A `:: section` slide is a divider, and it numbers itself:
 ```
 
 `duration=` says how long that part should take: `3m`, `90s`, `1h30m`, or a plain number for
-minutes. The player adds them up, counts the talk down against the total, and tells you whether
-you are ahead or behind. Leave it out and you get no plan.
+minutes. The player adds them up, counts the talk down against the total, and tells you
+whether you are ahead or behind. Leave it out and you get no plan.
 
 ### An image
 
