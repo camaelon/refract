@@ -54,10 +54,13 @@ from refractkit.settings import load_settings
 from refractkit.theme import build_theme
 
 
-def slug(slide: dict, index: int) -> str:
+def slug(slide: dict, index: int, total: int = 0) -> str:
     label = slide.get("title") or (slide.get("meta") or {}).get("type") or "slide"
-    base = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-    return f"{index + 1:02d}_{base or 'slide'}"
+    clean = re.sub(r"\[([^\]]+)\](\{[^}]+\}|\([^)]+\))", r"\1", label)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    base = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")[:40].rstrip("_")
+    width = max(2, len(str(total))) if total > 0 else 2
+    return f"{index + 1:0{width}d}_{base or 'slide'}"
 
 
 def find_json2rc(repo_root: str) -> str | None:
@@ -295,7 +298,9 @@ def manifest_record(slide: dict, index: int, rc_path: str, deck_dir: str) -> dic
     smeta = slide.get("meta") or {}
     if smeta.get("author"):
         record["author"] = smeta["author"]
-    if smeta.get("params"):
+    if smeta.get("as_theme"):
+        record["theme"] = smeta["as_theme"]
+    elif smeta.get("params"):
         record["speaker"] = smeta["params"]
     return record
 
@@ -384,7 +389,7 @@ def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
     changes = {}
 
     speaker = meta.get("params", "")
-    if speaker in speakers:
+    if not meta.get("as_theme") and speaker in speakers:
         changes["accent"] = speakers[speaker]
     # ``@author`` attribution: use that author's colour as this slide's accent
     # and surface the name in the chrome.
@@ -411,7 +416,7 @@ def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
             else bool(type_trans.get("fx", False))
     if not fx_on:
         changes["transition_shader"] = ""
-    changes.update(theme_overrides(overrides, theme))
+    changes.update(theme_overrides(overrides, theme, slide.get("base_dir", ".")))
 
     style = (overrides.get("transition") or type_trans.get("style")
              or trans_cfg.get("style", "fade"))
@@ -558,15 +563,41 @@ def _same_scroll_frac(meta: dict) -> float:
         return 0.0
 
 
-def theme_overrides(overrides: dict, theme) -> dict:
+def theme_overrides(overrides: dict, theme, base_dir: str = ".") -> dict:
     """Map per-slide ``key=value`` metadata to Theme field changes."""
+    from refractkit.theme import _resolve_asset_path
     changes = {}
     if "bg" in overrides or "background" in overrides:
-        changes["background"] = overrides.get("bg", overrides.get("background"))
+        val = str(overrides.get("bg", overrides.get("background"))).strip()
+        if val.startswith("#"):
+            changes["background"] = val
+        elif val.lower() in ("none", "off", "false"):
+            changes["bg_doc_override"] = ""
+        else:
+            p = _resolve_asset_path(val, base_dir)
+            if p is not None:
+                changes["bg_doc_override"] = p
+    if "bg_doc" in overrides:
+        val = str(overrides["bg_doc"]).strip()
+        if val.lower() in ("none", "off", "false"):
+            changes["bg_doc_override"] = ""
+        else:
+            p = _resolve_asset_path(val, base_dir)
+            if p is not None:
+                changes["bg_doc_override"] = p
     if "accent" in overrides:
         changes["accent"] = overrides["accent"]
     if "title_color" in overrides:
         changes["title_color"] = overrides["title_color"]
+        changes["title_color_override"] = overrides["title_color"]
+    if "h_align" in overrides:
+        changes["h_align"] = overrides["h_align"]
+    elif "align" in overrides:
+        changes["h_align"] = overrides["align"]
+    if "v_align" in overrides:
+        changes["v_align"] = overrides["v_align"]
+    elif "valign" in overrides:
+        changes["v_align"] = overrides["valign"]
     if "body_color" in overrides:
         changes["body_color"] = overrides["body_color"]
     if "shader" in overrides:
@@ -575,10 +606,47 @@ def theme_overrides(overrides: dict, theme) -> dict:
         changes["shaders"] = {} if val in ("none", "off", "false") else theme.shaders
     if "autosize" in overrides:
         changes["autosize"] = str(overrides["autosize"]).lower() not in ("off", "false", "no", "0")
+    if "numbered" in overrides or "number" in overrides:
+        val = str(overrides.get("numbered", overrides.get("number"))).lower()
+        changes["section_numbered"] = val not in ("false", "0", "off", "no")
     # `chrome=off` drops this slide's bottom chrome (footer / page number / progress bar) and
     # lets the content expand into the freed space.
     if "chrome" in overrides:
         changes["chrome_hidden"] = str(overrides["chrome"]).lower() in ("off", "false", "no", "0", "hidden", "none")
+    if "title_gap" in overrides:
+        try:
+            changes["title_gap"] = float(overrides["title_gap"])
+        except (TypeError, ValueError):
+            pass
+    if "title_weight" in overrides:
+        try:
+            changes["title_weight"] = float(overrides["title_weight"])
+        except (TypeError, ValueError):
+            pass
+    if "body_weight" in overrides:
+        try:
+            changes["body_weight"] = float(overrides["body_weight"])
+        except (TypeError, ValueError):
+            pass
+    if "title_size" in overrides or "body_size" in overrides:
+        f = dict(theme.fonts)
+        if "title_size" in overrides:
+            try:
+                sz = float(overrides["title_size"])
+                f["content_title"] = sz
+                for st in ("title", "section", "content", "split", "max"):
+                    f[f"{st}_title"] = sz
+            except (TypeError, ValueError):
+                pass
+        if "body_size" in overrides:
+            try:
+                sz = float(overrides["body_size"])
+                f["content_body"] = sz
+                for st in ("title", "section", "content", "split", "max"):
+                    f[f"{st}_body"] = sz
+            except (TypeError, ValueError):
+                pass
+        changes["fonts"] = f
     # Per-slide padding nudges (px), added to the slide type's base margin: `pad_left=` etc.,
     # or `pad=` for all four sides. Handy to indent one slide's content (e.g. an outline).
     def _num(v):
@@ -589,6 +657,23 @@ def theme_overrides(overrides: dict, theme) -> dict:
                   ("pad_left", "pad_top", "pad_right", "pad_bottom"))
     if any(delta):
         changes["pad_extra"] = delta
+    headings = None
+    for k, v in overrides.items():
+        if len(k) > 3 and k[0] == "h" and k[1].isdigit() and k[2] == "_":
+            lvl = int(k[1])
+            prop = k[3:]
+            if headings is None:
+                headings = {l: dict(theme.headings.get(l, {})) for l in range(1, 7)}
+            cur = headings.setdefault(lvl, {})
+            if prop in ("band_height", "pad_left", "pad_top", "pad_right", "pad_bottom", "gap", "corner_radius", "weight", "size", "font_size", "line_height"):
+                try:
+                    cur["font_size" if prop == "size" else prop] = float(v)
+                except (TypeError, ValueError):
+                    pass
+            elif prop in ("color", "family", "bg_color"):
+                cur[prop] = str(v)
+    if headings is not None:
+        changes["headings"] = headings
     return changes
 
 
@@ -797,9 +882,10 @@ def run_once(args) -> int:
     prev_theme = None  # its per-slide theme, so a transition renders it with its own overrides
     pending = {}     # rc path -> fingerprint, committed to the cache once it has been built
     reused = 0
+    total = len(slides)
     for i, slide in enumerate(slides):
         blocks = resolve_blocks(slide)
-        name = slug(slide, i)
+        name = slug(slide, i, total)
         rc_path = os.path.join(out_dir, name + ".rc")
         if slide.get("notes"):
             notes.append((i + 1, slide.get("title") or f"Slide {i + 1}", slide["notes"]))

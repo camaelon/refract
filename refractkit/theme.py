@@ -70,6 +70,9 @@ PRESETS = {
 class Theme:
     background: str = "#FF0D1B2A"
     title_color: str = "#FFFFFFFF"
+    title_colors: dict = field(default_factory=dict)
+    title_color_override: str | None = None
+    slide_types: dict = field(default_factory=dict)
     body_color: str = "#FFE6EEF6"
     accent: str = "#FF4FC3F7"           # subtitles, table headers, emphasis (can be
                                         # overridden per-slide by a speaker/author colour)
@@ -102,6 +105,9 @@ class Theme:
     body_weight: float = 400.0
     code_font_family: str = "monospace"   # code blocks & spans
     title_gap: float = 44.0             # vertical gap between the title and content
+    # Per-slide alignment overrides (applied via `align=` / `h_align=` / `valign=` / `v_align=`)
+    h_align: str | None = None
+    v_align: str | None = None
     # Per-slide padding deltas (left, top, right, bottom), added to the slide type's base
     # margin — set via `pad_left=` / `pad=` overrides to nudge one slide's content inward.
     pad_extra: tuple = (0.0, 0.0, 0.0, 0.0)
@@ -172,12 +178,21 @@ class Theme:
     # Animated background shaders (SkSL source) by slide type, plus a "default"
     # applied to any type without its own. Empty = solid `background` colour.
     shaders: dict = field(default_factory=dict)
+    # Custom background inclusions (.json / .rc / image) by slide type + "default".
+    bg_docs: dict = field(default_factory=dict)
+    bg_doc_override: str | None = None
     # Overlay shader drawn on top of the slide *only during a transition*, driven by an
     # ``iProgress`` uniform (0→1 across the transition). Empty = none.
     transition_shader: str = ""
     # Shader drawn behind the *title element* of a content slide (on top of the slide
     # background), so the heading gets its own animated backdrop. Empty = none.
     title_shader: str = ""
+    # RemoteCompose doc (.json / .rc / image) drawn behind the title element.
+    title_background_doc: str = ""
+    # Per-heading-level (1..6) styling and background inclusions ([heading.1], [heading.2], etc.).
+    headings: dict = field(default_factory=dict)
+    # Section slides auto-numbering (1. Section Title). False drops the leading number.
+    section_numbered: bool = True
     # Image corner radius in px (0 = square). Rounds embedded images.
     image_corner_radius: float = 0.0
     # Embedded prebuilt `.rc` documents: how the nested doc is scaled into its box.
@@ -196,6 +211,96 @@ class Theme:
 
     def shader_for(self, slide_type: str) -> str | None:
         return self.shaders.get(slide_type) or self.shaders.get("default")
+
+    def bg_doc_for(self, slide_type: str) -> str | None:
+        if self.bg_doc_override is not None:
+            return self.bg_doc_override or None
+        return self.bg_docs.get(slide_type) or self.bg_docs.get("default")
+
+    def title_color_for(self, slide_type: str = "content") -> str:
+        if self.title_color_override is not None:
+            return self.title_color_override
+        return self.title_colors.get(slide_type, self.title_color)
+
+    def slide_type_spec(self, stype: str, default_spec: dict) -> dict:
+        spec = dict(default_spec)
+        override = self.slide_types.get(stype)
+        if override:
+            if "h_align" in override:
+                spec["h_align"] = str(override["h_align"])
+            if "v_align" in override:
+                spec["v_align"] = str(override["v_align"])
+            if "align" in override:
+                spec["h_align"] = str(override["align"])
+            if "padding" in override:
+                spec["padding"] = override["padding"]
+            elif "pad" in override:
+                spec["padding"] = override["pad"]
+        return spec
+
+    def heading_config(self, level: int, slide_type: str = "content",
+                       default_size: float | None = None) -> dict:
+        """Resolved configuration for heading/section level (1..6)."""
+        if default_size is not None:
+            base_size = float(default_size)
+        elif level == 1:
+            base_size = self.title_size(slide_type)
+        elif level == 2:
+            base_size = float(self.fonts.get("heading", 44.0))
+        elif level == 3:
+            base_size = round(float(self.fonts.get("content_body", 40.0)) * 0.88, 1)
+        else:
+            base_size = round(float(self.fonts.get("content_body", 40.0)) * 0.65, 1)
+
+        cfg = dict(self.headings.get(level, {}))
+        shader = cfg.get("shader") or (self.title_shader if level == 1 else "")
+        bg_doc = cfg.get("background_doc") or (self.title_background_doc if level == 1 else "")
+        has_bg = bool(shader or bg_doc or cfg.get("bg_color") or cfg.get("band_height"))
+        fallback_color = self.title_color_for(slide_type) if level == 1 else self.title_color
+        return {
+            "font_size": float(cfg.get("font_size", base_size)),
+            "color": str(cfg.get("color", fallback_color)),
+            "weight": float(cfg.get("weight", self.title_weight if level == 1 else max(self.title_weight, 600.0))),
+            "family": str(cfg.get("family", self.title_font)),
+            "shader": shader,
+            "background_doc": bg_doc,
+            "bg_color": cfg.get("bg_color"),
+            "corner_radius": float(cfg.get("corner_radius", 0.0)),
+            "pad_left": float(cfg.get("pad_left", 0.0)),
+            "pad_top": float(cfg.get("pad_top", 0.0)),
+            "pad_right": float(cfg.get("pad_right", 0.0)),
+            "pad_bottom": float(cfg.get("pad_bottom", 14.0 if (bg_doc and level >= 2) else 0.0)),
+            "gap": float(cfg.get("gap", self.title_gap if level == 1 else round(base_size * 0.35, 1))),
+            # Line pitch as a fraction of the font size for a multi-line heading. 0 = let the
+            # text component size itself, which is what every deck that does not say otherwise
+            # wants; a converted deck sets it to match the source's line spacing.
+            "line_height": float(cfg.get("line_height", 0.0)),
+            "band_height": float(cfg["band_height"]) if cfg.get("band_height") is not None else None,
+            "fill_width": bool(cfg.get("fill_width", True)),
+            "has_bg": has_bg,
+        }
+
+
+def _resolve_asset_path(val, deck_dir: str) -> str | None:
+    """Resolve a relative asset path (in deck_dir, deck_dir/includes, or deck_dir/theme/include) to an absolute path."""
+    if not val or not isinstance(val, str):
+        return None
+    s = val.strip()
+    if not s or s.lower() in ("none", "off", "false"):
+        return ""
+    candidates = [
+        os.path.join(deck_dir, s),
+        os.path.join(deck_dir, "includes", s),
+        os.path.join(deck_dir, "theme", "include", s),
+        os.path.join(deck_dir, "theme", "includes", s),
+        os.path.join(deck_dir, "themes", "include", s),
+        os.path.join(deck_dir, "themes", "includes", s),
+        s,
+    ]
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return os.path.abspath(os.path.join(deck_dir, s))
 
 
 def _shader_source(cfg: dict, deck_dir: str) -> str | None:
@@ -231,6 +336,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
             setattr(t, k, v)
     t.background = th.get("background", t.background)
     t.title_color = th.get("title_color", t.title_color)
+    for stype in ("title", "section", "content", "split", "max"):
+        sub = th.get(stype, {})
+        if isinstance(sub, dict) and ("title_color" in sub or "color" in sub):
+            t.title_colors[stype] = str(sub.get("title_color") or sub.get("color"))
     t.body_color = th.get("body_color", t.body_color)
     t.accent = th.get("accent", t.accent)
     # Deck brand colour: explicit [theme] primary wins, else fall back to the accent so
@@ -290,6 +399,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.autosize = bool(layout["autosize"])
     if "autosize_min" in layout:
         t.autosize_min = float(layout["autosize_min"])
+    for stype in ("title", "section", "content", "split", "max"):
+        st_cfg = settings.get("layout", {}).get(stype) or settings.get("slide", {}).get(stype)
+        if isinstance(st_cfg, dict):
+            t.slide_types[stype] = dict(st_cfg)
 
     chrome = settings.get("chrome", {})
     t.chrome_page = bool(chrome.get("page", t.chrome_page))
@@ -358,10 +471,79 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     if trans_src:
         t.transition_shader = trans_src
 
-    # Title-element backdrop: [title] shader = "file.sksl" (or a [title.shader] table).
+    # Custom slide background inclusions: [background] default/title/section/content/split/max
+    bg_cfg = settings.get("background", {})
+    if isinstance(bg_cfg, dict):
+        for k, val in bg_cfg.items():
+            p = _resolve_asset_path(val, deck_dir)
+            if p:
+                t.bg_docs[k] = p
+    elif isinstance(bg_cfg, str):
+        p = _resolve_asset_path(bg_cfg, deck_dir)
+        if p:
+            t.bg_docs["default"] = p
+    if isinstance(th.get("background_doc"), str):
+        p = _resolve_asset_path(th["background_doc"], deck_dir)
+        if p:
+            t.bg_docs["default"] = p
+
+    def _load_heading_level(lvl: int, cfg: dict):
+        if not isinstance(cfg, dict):
+            return
+        cur = dict(t.headings.get(lvl, {}))
+        for k in ("font_size", "weight", "pad_left", "pad_top", "pad_right",
+                  "pad_bottom", "gap", "band_height", "corner_radius", "line_height"):
+            if k in cfg and cfg[k] is not None:
+                cur[k] = float(cfg[k])
+        if "size" in cfg and cfg["size"] is not None:
+            cur["font_size"] = float(cfg["size"])
+        for k in ("color", "family", "bg_color"):
+            if k in cfg and cfg[k] is not None:
+                cur[k] = str(cfg[k])
+        if "fill_width" in cfg:
+            cur["fill_width"] = bool(cfg["fill_width"])
+        ts = cfg.get("shader")
+        sh_src = _shader_source({"file": ts} if isinstance(ts, str) else (ts or {}), deck_dir)
+        if sh_src:
+            cur["shader"] = sh_src
+        bg_val = cfg.get("background") or cfg.get("doc") or cfg.get("include")
+        if bg_val:
+            p = _resolve_asset_path(bg_val, deck_dir)
+            if p:
+                cur["background_doc"] = p
+        t.headings[lvl] = cur
+
+    # Title-element backdrop: [title] shader = "file.sksl" or background = "file.json"
     title_cfg = settings.get("title", {})
-    ts = title_cfg.get("shader")
-    title_src = _shader_source({"file": ts} if isinstance(ts, str) else (ts or {}), deck_dir)
-    if title_src:
-        t.title_shader = title_src
+    if isinstance(title_cfg, dict):
+        if "color" in title_cfg:
+            t.title_colors["title"] = str(title_cfg["color"])
+        _load_heading_level(1, {k: v for k, v in title_cfg.items() if k != "color"})
+        if t.headings.get(1, {}).get("shader"):
+            t.title_shader = t.headings[1]["shader"]
+        if t.headings.get(1, {}).get("background_doc"):
+            t.title_background_doc = t.headings[1]["background_doc"]
+
+    # Section / Heading levels: [heading.1], [heading.2], [section.2], etc.
+    for tbl_name in ("heading", "section"):
+        sec_tbl = settings.get(tbl_name, {})
+        if isinstance(sec_tbl, dict):
+            if tbl_name == "section":
+                if "color" in sec_tbl and not any(k.isdigit() for k in sec_tbl):
+                    t.title_colors["section"] = str(sec_tbl["color"])
+                if "numbered" in sec_tbl:
+                    t.section_numbered = bool(sec_tbl["numbered"])
+                elif "number" in sec_tbl:
+                    t.section_numbered = bool(sec_tbl["number"])
+            for k, sub in sec_tbl.items():
+                try:
+                    lvl = int(k)
+                    _load_heading_level(lvl, sub)
+                except ValueError:
+                    pass
+    for lvl in range(1, 7):
+        h_tbl = settings.get(f"h{lvl}")
+        if isinstance(h_tbl, dict):
+            _load_heading_level(lvl, h_tbl)
+
     return t

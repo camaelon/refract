@@ -57,6 +57,24 @@ class ThemeOverrides(unittest.TestCase):
         from refractkit.theme import build_theme
         self.assertNotIn("pad_extra", refract.theme_overrides({}, build_theme({})))
 
+    def test_title_gap_and_font_overrides(self):
+        from refractkit.theme import build_theme
+        t = build_theme({})
+        ch = refract.theme_overrides({
+            "title_gap": "160",
+            "title_size": "64",
+            "body_size": "26",
+            "title_weight": "700",
+            "body_weight": "500",
+        }, t)
+        self.assertEqual(ch["title_gap"], 160.0)
+        self.assertEqual(ch["title_weight"], 700.0)
+        self.assertEqual(ch["body_weight"], 500.0)
+        self.assertEqual(ch["fonts"]["content_title"], 64.0)
+        self.assertEqual(ch["fonts"]["split_title"], 64.0)
+        self.assertEqual(ch["fonts"]["content_body"], 26.0)
+        self.assertEqual(ch["fonts"]["split_body"], 26.0)
+
 
 class Skip(unittest.TestCase):
     def _slide(self, flags=None, overrides=None):

@@ -231,5 +231,36 @@ class ManifestRecord(unittest.TestCase):
         self.assertNotIn("section", self.record("# Hello"))
 
 
+class SlugNumbering(unittest.TestCase):
+    """Slide numbering and filenames ordered properly in the shell."""
+
+    def test_small_deck_uses_two_digits(self):
+        slide = {"title": "Hello"}
+        self.assertEqual(refract.slug(slide, 0, total=10), "01_hello")
+        self.assertEqual(refract.slug(slide, 9, total=10), "10_hello")
+        self.assertEqual(refract.slug(slide, 0, total=99), "01_hello")
+        self.assertEqual(refract.slug(slide, 98, total=99), "99_hello")
+
+    def test_hundred_slides_uses_three_digits(self):
+        slide = {"title": "Hello"}
+        self.assertEqual(refract.slug(slide, 0, total=100), "001_hello")
+        self.assertEqual(refract.slug(slide, 9, total=100), "010_hello")
+        self.assertEqual(refract.slug(slide, 99, total=100), "100_hello")
+
+    def test_deck_over_hundred_slides(self):
+        slide = {"title": "Here is a slide"}
+        self.assertEqual(refract.slug(slide, 0, total=123), "001_here_is_a_slide")
+        self.assertEqual(refract.slug(slide, 11, total=123), "012_here_is_a_slide")
+        self.assertEqual(refract.slug(slide, 122, total=123), "123_here_is_a_slide")
+
+    def test_thousand_slides_uses_four_digits(self):
+        slide = {"title": "Hello"}
+        self.assertEqual(refract.slug(slide, 0, total=1000), "0001_hello")
+
+    def test_default_without_total_is_two_digits(self):
+        slide = {"title": "Hello"}
+        self.assertEqual(refract.slug(slide, 0), "01_hello")
+
+
 if __name__ == "__main__":
     unittest.main()

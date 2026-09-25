@@ -113,5 +113,56 @@ class GraphSlideGuard(unittest.TestCase):
         self.assertFalse(render.is_graph_slide([{"kind": "text"}]))
 
 
+class HeadingAndBackgroundInclusions(unittest.TestCase):
+    def test_heading_background_doc_spliced(self):
+        import json
+        d = tempfile.mkdtemp()
+        bg_path = os.path.join(d, "line.json")
+        with open(bg_path, "w") as f:
+            json.dump({"root": [{"type": "box", "modifiers": [{"height": 2.0}]}]}, f)
+        th = build_theme({"heading": {"2": {"background": "line.json", "pad_bottom": 12}}}, d)
+        doc = render.build_doc(
+            {"title": "Main Title"},
+            [{"kind": "heading", "level": 2, "text": "Subheading"}],
+            th, 1600, 900, 0, False)
+        root_str = json.dumps(doc["root"])
+        self.assertIn('"height": 2.0', root_str)
+        self.assertIn('"Subheading"', root_str)
+
+    def test_slide_background_doc_in_frame(self):
+        import json
+        d = tempfile.mkdtemp()
+        bg_path = os.path.join(d, "bg.json")
+        with open(bg_path, "w") as f:
+            json.dump({"root": [{"type": "box", "modifiers": [{"background": "#FF123456"}]}]}, f)
+        th = build_theme({"background": {"content": "bg.json"}}, d)
+        doc = render.build_doc(
+            {"title": "T"},
+            [{"kind": "text", "text": "hello"}],
+            th, 1600, 900, 0, False)
+        root_str = json.dumps(doc["root"])
+        self.assertIn("#FF123456", root_str)
+
+
+class GifAndWebpConversion(unittest.TestCase):
+    def test_gif_conversion_to_png(self):
+        from refractkit.images import ensure_static_image, image_size
+        # Create a tiny valid 1x1 GIF89a
+        gif_bytes = (
+            b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!"
+            b"\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+            b"\x00\x02\x02D\x01\x00;"
+        )
+        d = tempfile.mkdtemp()
+        gif_path = os.path.join(d, "test.gif")
+        with open(gif_path, "wb") as f:
+            f.write(gif_bytes)
+        self.assertEqual(image_size(gif_path), (1, 1))
+        conv = ensure_static_image(gif_path)
+        self.assertTrue(conv.endswith(".png"))
+        self.assertTrue(os.path.isfile(conv))
+        self.assertEqual(image_size(conv), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

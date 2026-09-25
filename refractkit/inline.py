@@ -12,16 +12,38 @@ import re
 from .components import dbg
 
 # Ordered so ** is matched before *; code spans win over emphasis inside them.
-_TOKEN = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)")
+_STYLE_TOKEN = re.compile(r"(\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_|`.+?`)")
+_COLOR_SPAN = re.compile(r"\[(?P<text>[^\]]+)\]\{#?(?P<color>[0-9a-fA-F]{6,8})\b\}")
 _BOLD_W = 700.0
 
 
 def has_markup(text: str) -> bool:
-    return bool(_TOKEN.search(text))
+    return bool(_STYLE_TOKEN.search(text) or _COLOR_SPAN.search(text))
 
 
 def has_author(text: str, authors: dict | None) -> bool:
     return bool(authors) and any(name in text for name in authors)
+
+
+def _color_segments(line: str) -> list[tuple[str, str | None]]:
+    """Split a line into (text, color) segments from `[text]{#hex}` syntax."""
+    segments: list[tuple[str, str | None]] = []
+    pos = 0
+    for m in _COLOR_SPAN.finditer(line):
+        if m.start() > pos:
+            segments.append((line[pos:m.start()], None))
+        c_hex = m.group("color")
+        if not c_hex.startswith("#"):
+            c_hex = "#" + c_hex
+        if len(c_hex) == 7:  # #RRGGBB -> #AARRGGBB
+            c_hex = "#FF" + c_hex[1:].upper()
+        else:
+            c_hex = "#" + c_hex[1:].upper()
+        segments.append((m.group("text"), c_hex))
+        pos = m.end()
+    if pos < len(line):
+        segments.append((line[pos:], None))
+    return segments or [(line, None)]
 
 
 def _author_segments(line: str, authors: dict | None) -> list[tuple[str, str | None]]:
@@ -56,7 +78,7 @@ def parse_spans(line: str) -> list[tuple[str, set]]:
     """Split a line into (text, styles) spans; styles ⊆ {'bold','italic','code'}."""
     spans: list[tuple[str, set]] = []
     pos = 0
-    for m in _TOKEN.finditer(line):
+    for m in _STYLE_TOKEN.finditer(line):
         if m.start() > pos:
             spans.append((line[pos:m.start()], set()))
         tok = m.group(0)
@@ -85,7 +107,14 @@ def styled_line(line: str, size: float, color: str, theme, debug: bool,
     """
     authors = getattr(theme, "authors", None)
     children = []
-    for seg_text, seg_color in _author_segments(line, authors):
+    color_segs: list[tuple[str, str | None]] = []
+    for c_text, c_col in _color_segments(line):
+        if c_col is not None:
+            color_segs.append((c_text, c_col))
+        else:
+            color_segs.extend(_author_segments(c_text, authors))
+
+    for seg_text, seg_color in color_segs:
         base_color = seg_color or color
         for txt, styles in parse_spans(seg_text):
             for piece in re.split(r"(\s+)", txt):

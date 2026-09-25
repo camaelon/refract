@@ -63,34 +63,38 @@ def load_deck(deck_dir: str, visited: set[str]) -> list[dict]:
         else:
             slide["base_dir"] = deck_dir
             slide["src_file"] = md_path
+            from .as_theme import resolve_as_slide
+            resolve_as_slide(slide, deck_dir)
             result.append(slide)
     return result
 
 
-def resolve_include(name: str, includes_dir: str) -> dict:
+def resolve_include(name: str, includes_dir: str, extra_dirs: list[str] | None = None) -> dict:
     """Resolve an ``<name>`` include to a concrete block with an absolute path."""
     _, ext = os.path.splitext(name)
     candidates = [name] if ext else [name + e for e in INCLUDE_PROBE]
-    for cand in candidates:
-        path = os.path.join(includes_dir, cand)
-        if os.path.isfile(path):
-            ext = os.path.splitext(path)[1].lower()
-            if ext in IMAGE_EXTS:
-                return {"kind": "image", "path": os.path.abspath(path)}
-            if ext in VIDEO_EXTS:
-                return {"kind": "video", "path": os.path.abspath(path), "name": name}
-            if ext == ".rc":
-                # Prefer the sibling .json when present (spliced into the JSON tree as a flat
-                # document); otherwise the binary .rc is embedded *live* as a nested document
-                # via the rc-document custom-component host — see render_rc_embed.
-                sib = os.path.splitext(path)[0] + ".json"
-                return {"kind": "rc_include", "path": os.path.abspath(path), "name": name,
-                        "json": os.path.abspath(sib) if os.path.isfile(sib) else None}
-            if ext == ".json":
-                return {"kind": "json_include", "path": os.path.abspath(path)}
-            if ext in CODE_EXTS:
-                with open(path, errors="replace") as f:
-                    return {"kind": "code", "lang": CODE_EXTS[ext], "text": f.read().rstrip("\n")}
+    search_dirs = [includes_dir] + [d for d in (extra_dirs or []) if d and os.path.isdir(d)]
+    for sdir in search_dirs:
+        for cand in candidates:
+            path = os.path.join(sdir, cand)
+            if os.path.isfile(path):
+                ext = os.path.splitext(path)[1].lower()
+                if ext in IMAGE_EXTS:
+                    return {"kind": "image", "path": os.path.abspath(path)}
+                if ext in VIDEO_EXTS:
+                    return {"kind": "video", "path": os.path.abspath(path), "name": name}
+                if ext == ".rc":
+                    # Prefer the sibling .json when present (spliced into the JSON tree as a flat
+                    # document); otherwise the binary .rc is embedded *live* as a nested document
+                    # via the rc-document custom-component host — see render_rc_embed.
+                    sib = os.path.splitext(path)[0] + ".json"
+                    return {"kind": "rc_include", "path": os.path.abspath(path), "name": name,
+                            "json": os.path.abspath(sib) if os.path.isfile(sib) else None}
+                if ext == ".json":
+                    return {"kind": "json_include", "path": os.path.abspath(path)}
+                if ext in CODE_EXTS:
+                    with open(path, errors="replace") as f:
+                        return {"kind": "code", "lang": CODE_EXTS[ext], "text": f.read().rstrip("\n")}
     return {"kind": "missing", "name": name}
 
 
@@ -152,16 +156,18 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # "shown" | "fade" | "hidden" — the renderer alpha-gates the embed accordingly.
     if opts.get("_reveal") and block["kind"] in _CAPTIONABLE:
         block["_reveal"] = opts["_reveal"]
+    block["opts"] = opts
     return block
 
 
-def _resolve_block_list(blocks: list[dict], includes_dir: str) -> list[dict]:
+def _resolve_block_list(blocks: list[dict], includes_dir: str,
+                       extra_dirs: list[str] | None = None) -> list[dict]:
     """Replace ``include`` blocks with resolved image/json/rc/missing blocks (others pass
     through). Idempotent — re-resolving already-resolved blocks is a no-op."""
     resolved = []
     for block in blocks:
         if block["kind"] == "include":
-            r = resolve_include(block["name"], includes_dir)
+            r = resolve_include(block["name"], includes_dir, extra_dirs)
             if block.get("opts"):
                 r = _apply_include_opts(r, block["opts"])
             resolved.append(r)
@@ -173,7 +179,14 @@ def _resolve_block_list(blocks: list[dict], includes_dir: str) -> list[dict]:
 def resolve_blocks(slide: dict) -> list[dict]:
     """Resolve the slide's includes. Also resolves each ``===`` layout section's blocks in
     place, so a sectioned slide's sections render with real media blocks."""
-    includes_dir = os.path.join(slide["base_dir"], "includes")
+    deck_dir = slide.get("base_dir", ".")
+    includes_dir = os.path.join(deck_dir, "includes")
+    extra_dirs = [
+        os.path.join(deck_dir, "theme", "include"),
+        os.path.join(deck_dir, "theme", "includes"),
+        os.path.join(deck_dir, "themes", "include"),
+        os.path.join(deck_dir, "themes", "includes"),
+    ]
     for sec in slide.get("sections", []):
-        sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir)
-    return _resolve_block_list(slide["blocks"], includes_dir)
+        sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir, extra_dirs)
+    return _resolve_block_list(slide["blocks"], includes_dir, extra_dirs)

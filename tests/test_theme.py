@@ -106,6 +106,32 @@ class ThemeFonts(unittest.TestCase):
     def test_font_code_alias(self):
         self.assertEqual(build_theme({"font": {"code": 30}}).code_font_size, 30.0)
 
+    def test_slide_type_title_color(self):
+        t = build_theme({
+            "theme": {"title_color": "#FF202124"},
+            "title": {"color": "#FFFFFFFF"},
+            "section": {"color": "#FFFFFFFF"},
+        })
+        self.assertEqual(t.title_color_for("content"), "#FF202124")
+        self.assertEqual(t.title_color_for("title"), "#FFFFFFFF")
+        self.assertEqual(t.title_color_for("section"), "#FFFFFFFF")
+
+    def test_slide_type_layout_spec(self):
+        t = build_theme({
+            "layout": {
+                "title": {"h_align": "start", "v_align": "top", "padding": [36, 16, 44, 44]}
+            }
+        })
+        from refractkit.render import SLIDE_TYPES
+        spec = t.slide_type_spec("title", SLIDE_TYPES["title"])
+        self.assertEqual(spec["h_align"], "start")
+        self.assertEqual(spec["v_align"], "top")
+        self.assertEqual(spec["padding"], [36, 16, 44, 44])
+        # Unaffected types retain their default specs
+        c_spec = t.slide_type_spec("content", SLIDE_TYPES["content"])
+        self.assertEqual(c_spec["h_align"], "start")
+        self.assertEqual(c_spec["v_align"], "top")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,10 +60,35 @@ def used_by(deck_dir: str) -> dict:
     except (FileNotFoundError, OSError):
         slides = []
 
+    from .theme import _resolve_asset_path
+    from .buildcache import referenced_files
+    import json
+
+    def note_with_deps(path: str, slide: int) -> None:
+        if not path:
+            return
+        full = os.path.abspath(path)
+        note(full, slide)
+        if full.endswith(".json") and os.path.isfile(full):
+            try:
+                with open(full) as jf:
+                    for ref in referenced_files(json.load(jf)):
+                        note(ref, slide)
+            except (OSError, ValueError):
+                pass
+
     for i, slide in enumerate(slides, start=1):
         # A slide spliced in from a sub-deck is itself evidence that the sub-deck is used, and
         # so is the markdown it was written in.
         note(slide.get("src_file", ""), i)
+        sbase = slide.get("base_dir", deck_dir)
+        ovr = (slide.get("meta") or {}).get("overrides") or {}
+        for k in ("bg", "background", "bg_doc"):
+            v = ovr.get(k)
+            if isinstance(v, str) and not v.startswith("#"):
+                p = _resolve_asset_path(v, sbase)
+                if p:
+                    note_with_deps(p, i)
         try:
             blocks = resolve_blocks(slide)
         except (OSError, KeyError):
@@ -73,7 +98,7 @@ def used_by(deck_dir: str) -> dict:
             # A framed `.rc` embed prefers its sibling `.json`; both are the asset.
             note(block.get("json", "") or "", i)
 
-    # Shaders, which the theme reads rather than a slide.
+    # Shaders and background inclusions, which the theme reads rather than a slide.
     settings = load_settings(deck_dir)
     shader_files = []
     shader = settings.get("shader", {})
@@ -88,6 +113,33 @@ def used_by(deck_dir: str) -> dict:
             shader_files.append(ts)
         elif isinstance(ts, dict) and isinstance(ts.get("file"), str):
             shader_files.append(ts["file"])
+        for k in ("background", "doc", "include"):
+            if isinstance(title.get(k), str):
+                p = _resolve_asset_path(title[k], deck_dir)
+                if p:
+                    note_with_deps(p, 0)
+    bg_cfg = settings.get("background", {})
+    if isinstance(bg_cfg, dict):
+        for v in bg_cfg.values():
+            if isinstance(v, str):
+                p = _resolve_asset_path(v, deck_dir)
+                if p:
+                    note_with_deps(p, 0)
+    elif isinstance(bg_cfg, str):
+        p = _resolve_asset_path(bg_cfg, deck_dir)
+        if p:
+            note_with_deps(p, 0)
+    for tbl_name in ("heading", "section"):
+        sec_tbl = settings.get(tbl_name, {})
+        if isinstance(sec_tbl, dict):
+            for sub in sec_tbl.values():
+                if isinstance(sub, dict):
+                    for k in ("background", "doc", "include", "shader"):
+                        v = sub.get(k)
+                        if isinstance(v, str):
+                            p = _resolve_asset_path(v, deck_dir)
+                            if p:
+                                note_with_deps(p, 0)
     for name in shader_files:
         note(os.path.join(deck_dir, name), 0)   # slide 0: the deck itself, not one slide
 

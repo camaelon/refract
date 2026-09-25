@@ -206,17 +206,38 @@ def _paint_setter(p, key: str, src: dict, ints: list[int]) -> None:
         ints.append(W.PB_STROKE_JOIN | (join << 16))
     elif key == "textSize":
         ints += [W.PB_TEXT_SIZE, p._fbits(src["textSize"])]
-    elif key == "fontType":
+    elif key in ("fontType", "typeface"):
         # Canvas text font family: "default"|"sans-serif"|"serif"|"monospace".
         # Encodes as TYPEFACE(tag=16, upper=weight|italic — 0 → default weight 400)
         # followed by the fontType int (PaintBundle reads it as arr[i++]).
         ft = {"default": W.FONT_TYPE_DEFAULT, "sans-serif": W.FONT_TYPE_SANS_SERIF,
               "sans": W.FONT_TYPE_SANS_SERIF, "serif": W.FONT_TYPE_SERIF,
               "monospace": W.FONT_TYPE_MONOSPACE, "mono": W.FONT_TYPE_MONOSPACE}
-        v = ft.get(str(src["fontType"]).lower())
-        if v is None:
-            raise NotImplementedComponent(f"fontType {src['fontType']!r}")
-        ints += [W.PB_TYPEFACE, v]
+        val = src[key]
+        if isinstance(val, dict):
+            v = ft.get(str(val.get("font", "sans-serif")).lower(), W.FONT_TYPE_SANS_SERIF)
+            w_raw = val.get("weight", val.get("fontWeight", 0))
+            italic = bool(val.get("italic", False))
+        else:
+            v = ft.get(str(val).lower())
+            if v is None:
+                raise NotImplementedComponent(f"fontType {val!r}")
+            w_raw = src.get("weight", src.get("fontWeight", 0))
+            italic = bool(src.get("italic", False))
+        w = 700 if str(w_raw).lower() == "bold" else int(w_raw)
+        upper = (w & 0x3FF) | ((1 << 10) if italic else 0)
+        ints += [W.PB_TYPEFACE | (upper << 16), v]
+    elif key in ("weight", "fontWeight"):
+        if not any(k.lower() in ("fonttype", "typeface") for k in src):
+            w_raw = src[key]
+            w = 700 if str(w_raw).lower() == "bold" else int(w_raw)
+            italic = bool(src.get("italic", False))
+            upper = (w & 0x3FF) | ((1 << 10) if italic else 0)
+            ints += [W.PB_TYPEFACE | (upper << 16), W.FONT_TYPE_SANS_SERIF]
+    elif key == "italic":
+        if not any(k.lower() in ("fonttype", "typeface", "weight", "fontweight") for k in src):
+            upper = (1 << 10) if bool(src[key]) else 0
+            ints += [W.PB_TYPEFACE | (upper << 16), W.FONT_TYPE_SANS_SERIF]
     else:
         raise NotImplementedComponent(f"paint key {key!r}")
 

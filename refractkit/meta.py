@@ -63,6 +63,7 @@ SPECIAL_TYPES = [
     ("outline", "a generated contents slide, one line per section"),
     ("agenda",  "the same list, as bullets"),
     ("skip",    "drop this slide from the deck entirely"),
+    ("as",      "use a named theme preset from theme/: `:: as : name`"),
 ]
 
 # Bare words after the type.
@@ -78,10 +79,12 @@ FLAGS = [
 # `key=value`. `values` lists what the key accepts where that is a closed set, and is empty
 # where it is a colour, a number or a name.
 KEYS = [
-    ("bg",                  "slide background colour", []),
+    ("bg",                  "slide background colour or file", []),
     ("background",          "the same, spelled out", []),
+    ("bg_doc",              "custom background inclusion (.json/.rc/.png), or none", ["none"]),
     ("accent",              "the slide's accent colour", []),
     ("title_color",         "title colour for this slide", []),
+    ("title_pad_top",       "extra margin above title", []),
     ("body_color",          "body colour for this slide", []),
     ("shader",              "named background shader, or none", ["none"]),
     ("chrome",              "hide the footer chrome on this slide",
@@ -108,6 +111,11 @@ KEYS = [
     # On a `:: section`: how long that part of the talk is meant to take. The player adds
     # them up for the deck's planned length, and paces the talk against them.
     ("duration",            "on a section: how long it should take — 12m, 90s, 1h5m", []),
+    ("pane_gap",            "gap between columns in a split slide", []),
+    ("gap",                 "gap between columns or sections", []),
+    # On a `===` section: make it a band of exactly this height rather than one that
+    # takes its natural height or shares what is left over.
+    ("height",              "on a `===` section: its exact height in px", []),
 ]
 
 

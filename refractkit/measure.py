@@ -57,6 +57,18 @@ def block_height(block: dict, body_size: float, theme, width: float) -> float:
     (media, embeds) return 0 — they size themselves to the available area and don't scale
     with the body font, so they don't drive autosize."""
     kind = block.get("kind")
+    if kind == "heading":
+        level = int(block.get("level", 2))
+        if hasattr(theme, "heading_config"):
+            hcfg = theme.heading_config(level, "content")
+            base_body = float(getattr(theme, "fonts", {}).get("content_body", 40.0))
+            scale = (body_size / base_body) if base_body > 0 else 1.0
+            size = hcfg["font_size"] * scale
+            gap = hcfg["gap"] * scale
+            pad = (hcfg["pad_top"] + hcfg["pad_bottom"]) * scale
+        else:
+            size, gap, pad = body_size * 1.1, body_size * 0.35, 0.0
+        return _text_height(block.get("text", ""), size, width) + pad + gap
     if kind == "text":
         return _text_height(block.get("text", ""), body_size, width)
     if kind == "subtitle":
@@ -103,7 +115,11 @@ def _outline_size(theme, body_size: float) -> float:
 def content_height(blocks: list, body_size: float, theme, width: float) -> float:
     """Estimated total height of a column of content blocks at ``body_size`` (calibrated to
     the player's real layout — no safety margin; autosize adds its own)."""
-    return sum(block_height(b, body_size, theme, width) for b in blocks)
+    total = sum(block_height(b, body_size, theme, width) for b in blocks)
+    for i in range(1, len(blocks)):
+        if blocks[i - 1].get("kind") == "text" and blocks[i].get("kind") == "text":
+            total += round(body_size * 0.7, 1)
+    return total
 
 
 def fit_body_size(blocks: list, base_size: float, theme, width: float, avail_h: float,

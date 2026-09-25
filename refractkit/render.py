@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from .chart import render_chart
 from .components import dbg, text, torn_fill_commands
@@ -103,7 +104,10 @@ def is_graph_slide(blocks: list[dict]) -> bool:
 
 
 def slide_type(slide: dict) -> str:
-    kind = ((slide.get("meta") or {}).get("type") or DEFAULT_TYPE).lower()
+    meta = slide.get("meta") or {}
+    kind = (meta.get("type") or DEFAULT_TYPE).lower()
+    if kind == "as":
+        kind = (meta.get("as_type") or meta.get("layout") or DEFAULT_TYPE).lower()
     return kind if kind in SLIDE_TYPES else DEFAULT_TYPE
 
 
@@ -153,37 +157,109 @@ def with_transition_shader(content: dict, theme: Theme, width: int, height: int,
                 theme.transition_shader, width, height, progress_var)]}
 
 
-def _title_shader_box(title: str, title_size: float, band_h: float, content_w: float,
-                      theme: Theme, debug: bool, h_align: str = "start") -> dict:
-    """The title text over its own animated shader backdrop (drawn on top of the slide
-    background). The band is deliberately taller/wider than the heading so the (edge-fading,
-    transparent) shader attenuates around the title rather than looking clipped; the text is
-    ``h_align``-aligned (centred on centred slides) and vertically centred within it."""
-    txt = {"type": "text", "value": title, "fontSize": round(title_size, 2),
-           "color": theme.title_color}
-    if theme.title_font:
-        txt["fontFamily"] = theme.title_font
-    if theme.title_weight and theme.title_weight != 400.0:
-        txt["fontWeight"] = float(theme.title_weight)
-    if h_align == "center":
-        txt["textAlign"] = "center"
-    if debug:
-        txt["modifiers"] = dbg([], debug)
-    return {
+def _render_bg_asset(path: str, theme: Theme, width: float, height: float,
+                     debug: bool) -> list[dict]:
+    """Render a background inclusion (.json / .rc / image) at full (width, height)."""
+    import os
+    if not path or not os.path.isfile(path):
+        return []
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".json":
+        nodes = _splice_json(path)
+        return [{"type": "box", "modifiers": dbg(["fillMaxSize"], debug), "children": nodes}]
+    if ext == ".rc":
+        return render_rc_embed({"path": path, "fit": "fill"}, theme, debug, width, height)
+    if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        return render_image({"path": path}, theme, debug, width, height, [0])
+    return []
+
+
+def _heading_bg_box(title: str, level: int, hcfg: dict, content_w: float,
+                    theme: Theme, debug: bool, h_align: str = "start") -> tuple[dict, float]:
+    """Render a heading (title or subheading level) over its shader or RemoteCompose doc/color
+    backdrop. Returns (box_node, reserved_height)."""
+    from dataclasses import replace as _replace
+    size = hcfg["font_size"]
+    pad_l, pad_t, pad_r, pad_b = (hcfg["pad_left"], hcfg["pad_top"],
+                                  hcfg["pad_right"], hcfg["pad_bottom"])
+    txt_theme = _replace(
+        theme,
+        body_font=hcfg["family"] or theme.title_font or theme.body_font,
+        body_weight=hcfg["weight"] or theme.title_weight or theme.body_weight,
+        body_color=hcfg["color"],
+    )
+    lines = title.split("\n")
+    if len(lines) > 1:
+        txt = {"type": "column", "modifiers": dbg([], debug),
+               "children": [_styled(l, size, hcfg["color"], txt_theme, debug, h_align) for l in lines]}
+    else:
+        txt = _styled(title, size, hcfg["color"], txt_theme, debug, h_align)
+    pad_mod = None
+    if any((pad_l, pad_t, pad_r, pad_b)):
+        pad_mod = {"padding": [round(pad_l, 2), round(pad_t, 2),
+                               round(pad_r, 2), round(pad_b, 2)]}
+
+    from .measure import _text_height
+    text_h = _text_height(title, size, max(1.0, content_w - pad_l - pad_r))
+    if not hcfg.get("fill_width", True):
+        if pad_mod:
+            txt["modifiers"] = list(txt.get("modifiers", [])) + [pad_mod]
+        mods = []
+        if hcfg.get("bg_color"):
+            mods.append({"background": hcfg["bg_color"]})
+        if hcfg.get("corner_radius", 0.0) > 0:
+            mods.append({"clip": float(hcfg["corner_radius"])})
+        children = []
+        if hcfg.get("background_doc"):
+            est_w = min(content_w, len(title) * size * 0.55 + pad_l + pad_r + 24)
+            est_h = text_h + pad_t + pad_b
+            children.extend(_render_bg_asset(hcfg["background_doc"], theme, est_w, est_h, debug))
+        children.append(txt)
+        box = {
+            "type": "box",
+            "horizontalAlignment": "center", "verticalAlignment": "center",
+            "modifiers": dbg(mods, debug),
+            "children": children,
+        }
+        return box, round(text_h + pad_t + pad_b, 2)
+
+    if pad_mod:
+        txt = {"type": "box", "modifiers": ["fillMaxWidth", pad_mod], "children": [txt]}
+
+    band_h = hcfg.get("band_height")
+    if band_h is None:
+        if hcfg.get("shader") and level == 1:
+            band_h = round(size * 2.1, 2)
+        else:
+            band_h = round(text_h + pad_t + pad_b, 2)
+    bg_children = []
+    if hcfg.get("shader"):
+        bg_children.append(shader_canvas(hcfg["shader"], content_w, band_h))
+    if hcfg.get("background_doc"):
+        bg_children.extend(_render_bg_asset(hcfg["background_doc"], theme, content_w, band_h, debug))
+    box_mods: list = ["fillMaxWidth", {"height": round(band_h, 2)}]
+    if hcfg.get("bg_color"):
+        box_mods.append({"background": hcfg["bg_color"]})
+    if hcfg.get("corner_radius", 0.0) > 0:
+        box_mods.append({"clip": float(hcfg["corner_radius"])})
+    v_align = "center" if (hcfg.get("shader") and level == 1) else ("bottom" if pad_b > 0 else "center")
+    box = {
         "type": "box",
-        "horizontalAlignment": h_align, "verticalAlignment": "center",
-        "modifiers": dbg(["fillMaxWidth", {"height": round(band_h, 2)}], debug),
-        "children": [shader_canvas(theme.title_shader, content_w, band_h), txt],
+        "horizontalAlignment": h_align, "verticalAlignment": v_align,
+        "modifiers": dbg(box_mods, debug),
+        "children": [*bg_children, txt],
     }
+    return box, band_h
 
 
 def _numbered_title_row(number: int, title: str, size: float, theme: Theme,
-                        debug: bool) -> dict:
+                        debug: bool, color: str | None = None) -> dict:
     """A section heading whose leading ``N.`` is tinted with the deck's primary colour.
     A Row that wraps to its content, so the parent column centres it like a plain title."""
+    ttl_color = color or theme.title_color
     num = text(f"{number}.", size, theme.primary, debug,
                family=theme.title_font, weight=theme.title_weight)
-    ttl = text(f" {title}", size, theme.title_color, debug,
+    ttl = text(f" {title}", size, ttl_color, debug,
                family=theme.title_font, weight=theme.title_weight)
     return {"type": "row", "verticalAlignment": "center",
             "modifiers": dbg([], debug), "children": [num, ttl]}
@@ -192,26 +268,94 @@ def _numbered_title_row(number: int, title: str, size: float, theme: Theme,
 def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
                  theme: Theme, centered: bool, debug: bool) -> tuple:
     """Build the [title, gap-spacer] nodes and reserved title height for a slide. Applies
-    the title-element shader (an animated backdrop behind the heading) unless the slide
-    *type* already has a full-slide shader of its own (e.g. section). Shared by the normal
-    layout and the graph magic-move builder."""
+    the title-element shader or background doc unless the slide *type* already has a
+    full-slide shader/bg_doc of its own. Shared by the normal layout and magic-move builder."""
     if not slide.get("title"):
         return [], 0
     gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
+    meta = slide.get("meta") or {}
+    overrides = meta.get("overrides") or {}
+    flags = meta.get("flags") or []
     num = slide.get("section_number")
-    if theme.title_shader and stype not in theme.shaders:
-        band_h = round(title_size * 2.1, 2)
+    if not getattr(theme, "section_numbered", True) or \
+       str(overrides.get("numbered", overrides.get("number", "true"))).lower() in ("false", "0", "off", "no") or \
+       "unnumbered" in flags or "plain" in flags:
+        num = None
+    hcfg = theme.heading_config(1, stype, title_size)
+    t_size = hcfg["font_size"]
+    t_color = hcfg["color"]
+    t_family = hcfg["family"] or theme.title_font
+    t_weight = hcfg["weight"] or theme.title_weight
+    is_centered = centered or getattr(theme, "h_align", None) == "center"
+    if hcfg["has_bg"] and stype not in theme.shaders and stype not in theme.bg_docs:
         disp = f"{num}. {slide['title']}" if num else slide["title"]
-        node = _title_shader_box(disp, title_size, band_h, content_w, theme,
-                                 debug, "center" if centered else "start")
+        node, band_h = _heading_bg_box(disp, 1, hcfg, content_w, theme,
+                                       debug, "center" if is_centered else "start")
         title_h = int(band_h + gap)
     elif num:
-        node = _numbered_title_row(num, slide["title"], title_size, theme, debug)
-        title_h = int(title_size * 1.8 + gap)
+        node = _numbered_title_row(num, slide["title"], t_size, theme, debug, t_color)
+        title_h = int(t_size * 1.8 + gap)
     else:
-        node = text(slide["title"], title_size, theme.title_color, debug,
-                    family=theme.title_font, weight=theme.title_weight)
-        title_h = int(title_size * 1.8 + gap)
+        title_str = str(slide["title"]).replace("<br>", "\n").replace("<br/>", "\n")
+        lines = title_str.split("\n")
+        from dataclasses import replace as _replace
+        txt_theme = _replace(
+            theme,
+            title_font=t_family,
+            title_weight=t_weight,
+            body_font=t_family,
+            body_weight=t_weight,
+            body_color=t_color,
+        )
+        if len(lines) == 1:
+            if has_markup(lines[0]) or has_author(lines[0], theme.authors):
+                node = _styled(lines[0], t_size, t_color, txt_theme, debug, "center" if is_centered else "start")
+            else:
+                node = text(lines[0], t_size, t_color, debug,
+                            family=t_family, weight=t_weight)
+                if is_centered:
+                    node["textAlign"] = "center"
+            title_h = int(t_size * 1.8 + gap)
+        else:
+            # `line_height` (a fraction of the font size) pins the pitch of a multi-line
+            # title. Without it each line is as tall as the font asks to be, which is right
+            # for a deck written by hand and wrong for one traced off a source that set its
+            # own line spacing.
+            lh = float(hcfg.get("line_height") or 0.0)
+            line_h = t_size * lh if lh else 0.0
+            line_nodes = []
+            for l in lines:
+                if has_markup(l) or has_author(l, theme.authors):
+                    tnode = _styled(l, t_size, t_color, txt_theme, debug, "center" if is_centered else "start")
+                else:
+                    tnode = text(l, t_size, t_color, debug, family=t_family, weight=t_weight)
+                    if is_centered:
+                        tnode["textAlign"] = "center"
+                if line_h:
+                    tnode = {"type": "box", "modifiers": dbg([{"height": line_h}], debug),
+                             "horizontalAlignment": "center" if is_centered else "start",
+                             "verticalAlignment": "center",
+                             "children": [tnode]}
+                line_nodes.append(tnode)
+            node = {"type": "column", "modifiers": dbg([], debug), "children": line_nodes}
+            if is_centered:
+                node["horizontalAlignment"] = "center"
+            title_h = int((line_h or t_size * 1.35) * len(lines) + gap)
+    t_pad_top = float(overrides.get("title_pad_top", hcfg.get("pad_top", 0.0)))
+    if t_pad_top:
+        node = {"type": "column", "modifiers": dbg([], debug), "children": [vspacer(t_pad_top), node]}
+        title_h += int(t_pad_top)
+    # Horizontal insets. These indent the title alone; the slide's own `[layout]`
+    # padding is the wrong lever for that because it shifts every other block too.
+    t_pad_l = float(hcfg.get("pad_left", 0.0))
+    t_pad_r = float(hcfg.get("pad_right", 0.0))
+    if t_pad_l or t_pad_r:
+        wrap = {"type": "column",
+                "modifiers": dbg(["fillMaxWidth", {"padding": [t_pad_l, 0.0, t_pad_r, 0.0]}], debug),
+                "children": [node]}
+        if is_centered:
+            wrap["horizontalAlignment"] = "center"
+        node = wrap
     return [node, vspacer(gap)], title_h
 
 
@@ -233,8 +377,37 @@ def split_panes(blocks: list[dict]) -> list[list[dict]]:
 
 def _splice_json(path: str) -> list[dict]:
     """Splice a RemoteCompose JSON document's root in as live components."""
+    base_dir = os.path.dirname(os.path.abspath(path))
     with open(path) as f:
         root = json.load(f).get("root")
+    if not root:
+        return []
+
+    def _resolve_images(obj):
+        if isinstance(obj, dict):
+            if obj.get("type") == "addbitmap" and "image" in obj:
+                img = obj["image"]
+                if isinstance(img, str) and not os.path.isabs(img) and not img.startswith("$"):
+                    search_dirs = [
+                        base_dir,
+                        os.path.normpath(os.path.join(base_dir, "..", "include")),
+                        os.path.normpath(os.path.join(base_dir, "..", "includes")),
+                        os.path.normpath(os.path.join(base_dir, "..", "..", "includes")),
+                        os.path.normpath(os.path.join(base_dir, "..", "..", "theme", "include")),
+                        os.path.normpath(os.path.join(base_dir, "..", "..", "theme", "includes")),
+                    ]
+                    for d in search_dirs:
+                        cand = os.path.join(d, img)
+                        if os.path.isfile(cand):
+                            obj["image"] = os.path.abspath(cand)
+                            break
+            for v in obj.values():
+                _resolve_images(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _resolve_images(item)
+
+    _resolve_images(root)
     if isinstance(root, list):
         return root
     if isinstance(root, dict):
@@ -551,6 +724,40 @@ def _apply_reveal(nodes: list, block: dict) -> list:
     return [head, *nodes[1:]]
 
 
+def render_heading(block: dict, body_size: float, theme: Theme, debug: bool,
+                   avail_w: float, counter: list, align: str = "start") -> list[dict]:
+    """Render a subheading/section heading block (level 1..6), applying its theme config
+    and optional shader/background document."""
+    from dataclasses import replace as _replace
+    level = int(block.get("level", 2))
+    hcfg = dict(theme.heading_config(level, "content"))
+    base_body = float(theme.fonts.get("content_body", 40.0))
+    scale = (body_size / base_body) if base_body > 0 else 1.0
+    if scale < 0.99:
+        hcfg["font_size"] = round(hcfg["font_size"] * scale, 2)
+        hcfg["gap"] = round(hcfg["gap"] * scale, 2)
+        hcfg["pad_bottom"] = round(hcfg["pad_bottom"] * scale, 2)
+        hcfg["pad_top"] = round(hcfg["pad_top"] * scale, 2)
+    raw_text = block.get("text", "").replace("<br>", "\n").replace("<br/>", "\n")
+    if hcfg["has_bg"]:
+        node, _ = _heading_bg_box(raw_text, level, hcfg, avail_w, theme, debug, align)
+    else:
+        txt_theme = _replace(
+            theme,
+            body_font=hcfg["family"] or theme.title_font or theme.body_font,
+            body_weight=hcfg["weight"] or theme.title_weight or theme.body_weight,
+            body_color=hcfg["color"],
+        )
+        node = _styled(raw_text, hcfg["font_size"], hcfg["color"],
+                       txt_theme, debug, align)
+    out = [node]
+    if hcfg.get("pad_top", 0.0) > 0:
+        out.insert(0, vspacer(hcfg["pad_top"]))
+    if hcfg["gap"] > 0:
+        out.append(vspacer(hcfg["gap"]))
+    return out
+
+
 def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float, counter: list,
                  same_ctx: dict | None = None, align: str = "start") -> list[dict]:
@@ -561,9 +768,13 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         return render_graph_morph(same_ctx["graph_prev"], block, theme, debug,
                                   avail_w, avail_h, SAME_VAR)
 
-    if kind == "text":
-        out = [_styled(line, body_size, theme.body_color, theme, debug, align)
-               for line in block["text"].split("\n")]
+    if kind == "heading":
+        out = render_heading(block, body_size, theme, debug, avail_w, counter, align)
+    elif kind == "text":
+        lines = block["text"].replace("<br>", "\n").replace("<br/>", "\n").split("\n")
+        out = [(vspacer(round(body_size * 0.7, 1)) if not line.strip()
+                else _styled(line, body_size, theme.body_color, theme, debug, align))
+               for line in lines]
     elif kind == "subtitle":
         out = [_styled(block["text"], theme.fonts["subtitle"], theme.accent, theme, debug, align)]
     elif kind == "table":
@@ -586,7 +797,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         out = render_code(block, theme, debug, avail_w=avail_w, avail_h=avail_h)
     elif kind == "image":
         _, _, cap_h = _caption_metrics(block, theme)
-        out = _with_caption(render_image(block, theme, debug, avail_w, avail_h - cap_h, counter),
+        out = _with_caption(render_image(block, theme, debug, avail_w, avail_h - cap_h, counter, align=align),
                             block, theme, debug, avail_h)
     elif kind == "graph":
         out = render_graph(block, theme, debug, avail_w, avail_h, counter)
@@ -625,17 +836,29 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
     return []
 
 
+def _split_gap(slide: dict) -> float:
+    meta = slide.get("meta") or {}
+    overrides = meta.get("overrides") or {}
+    for k in ("pane_gap", "gap"):
+        if k in overrides:
+            try:
+                return float(overrides[k])
+            except (TypeError, ValueError):
+                pass
+    return float(PANE_GAP)
+
+
 def _split_geometry(slide: dict, theme: Theme, width: int, height: int) -> tuple:
     """The split layout's key measurements — (left_w, right_w, content_h) — shared by the
     renderer and ``split_left_metrics`` so overflow is measured against the real column."""
-    spec = SLIDE_TYPES["split"]
+    spec = theme.slide_type_spec("split", SLIDE_TYPES["split"])
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
     content_h = height - pad_t - pad_b - _chrome_reserve(theme, "split", pad_b)
     ratio = (slide.get("meta") or {}).get("ratio")
     if not ratio or len(ratio) != 2:
         ratio = [1, 1]
-    avail = content_w - PANE_GAP
+    avail = content_w - _split_gap(slide)
     left_w = round(avail * ratio[0] / sum(ratio), 2)
     right_w = round(avail * ratio[1] / sum(ratio), 2)
     return left_w, right_w, content_h
@@ -659,7 +882,7 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     Widths come from the slide's `[ratio]` (default 1:1). ``scroll`` (a ``scroll_spec``) clips
     and scrolls the **left** column's content — for a split slide with `scroll = N`/`auto`, so
     the overflowing text column pages while the right column stays put."""
-    spec = SLIDE_TYPES["split"]
+    spec = theme.slide_type_spec("split", SLIDE_TYPES["split"])
     body_size = theme.body_size("split")
     title_size = theme.title_size("split")
 
@@ -677,7 +900,9 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     left_size = (body_size if scroll else
                  _autosize_body(left_blocks, theme, left_w, left_avail, body_size, same_ctx))
     left_body: list = []
-    for block in left_blocks:
+    for i, block in enumerate(left_blocks):
+        if i > 0 and left_blocks[i - 1].get("kind") == "text" and block.get("kind") == "text":
+            left_body.append(vspacer(round(left_size * 0.7, 1)))
         left_body.extend(render_block(block, left_size, theme, debug, left_w,
                                       left_avail, counter, same_ctx))
     if scroll:
@@ -687,6 +912,12 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     left_children = list(title_group) + left_content
     left_col = {"type": "column", "modifiers": dbg([{"width": left_w}], debug),
                 "children": left_children}
+    # The left column is a fixed-width pane, so an `align=` on the slide has to be applied
+    # here: the title's own wrapper column sizes to its content and cannot centre within
+    # the pane by itself. Only set it when the slide asks, so plain splits stay start-aligned.
+    h_align = getattr(theme, "h_align", None)
+    if h_align in ("center", "end"):
+        left_col["horizontalAlignment"] = h_align
 
     # Right column: full-height content, starting at the top (level with the title).
     right_size = _autosize_body(right_blocks, theme, right_w, content_h, body_size, same_ctx)
@@ -694,14 +925,16 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     for block in right_blocks:
         right_body.extend(render_block(block, right_size, theme, debug, right_w,
                                        content_h, counter, same_ctx))
+    v_arr = "top" if spec.get("v_align") == "top" else "center"
     right_col = {"type": "column",
                  "modifiers": dbg([{"width": right_w}, "fillMaxHeight"], debug),
-                 "verticalArrangement": "center",   # centre the right content in the column
+                 "verticalArrangement": v_arr,
                  "children": _stagger(right_body, theme) if do_stagger else right_body}
 
+    gap = _split_gap(slide)
     row = {"type": "row", "verticalAlignment": "top",
            "modifiers": dbg(["fillMaxSize"], debug),
-           "children": [left_col, {"type": "box", "modifiers": [{"width": float(PANE_GAP)}],
+           "children": [left_col, {"type": "box", "modifiers": [{"width": float(gap)}],
                                    "children": []}, right_col]}
     return frame_slide([row], spec, theme, "split", width, height, debug, bg)
 
@@ -726,10 +959,14 @@ def content_metrics(slide: dict, theme: Theme, width: int, height: int) -> tuple
     slide — the same geometry ``build_slide_root`` uses. Shared with the scroll-expansion
     pass so it measures overflow against the exact area the renderer will lay out into."""
     stype = slide_type(slide)
-    spec = SLIDE_TYPES[stype]
+    spec = theme.slide_type_spec(stype, SLIDE_TYPES[stype])
+    if getattr(theme, "h_align", None):
+        spec["h_align"] = theme.h_align
+    if getattr(theme, "v_align", None):
+        spec["v_align"] = theme.v_align
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
-    centered = stype in ("title", "section")
+    centered = spec.get("h_align") == "center" and spec.get("v_align") == "center"
     _, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
                               theme, centered, False)
     avail_h = height - pad_t - pad_b - title_h - _chrome_reserve(theme, stype, pad_b)
@@ -814,33 +1051,76 @@ def _section_type(section: dict) -> str:
     return t if t in SLIDE_TYPES else "content"
 
 
+def _section_overrides(section: dict) -> dict:
+    """The ``key=value`` words on a section's own ``::`` line."""
+    meta = section.get("meta") or {}
+    return (meta.get("overrides") or {}) if meta else {}
+
+
+def _section_num(section: dict, key: str, default: float | None = None) -> float | None:
+    """One numeric section override, or ``default`` when it is absent or unreadable."""
+    raw = _section_overrides(section).get(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _section_natural_h(section: dict, theme: Theme, stype: str, width: float) -> float:
     """Estimated stacked height of a text section: its title plus content height (the tallest
-    pane for a ``+++`` section)."""
+    pane for a ``+++`` section). ``height=`` on the section's ``::`` line overrides the
+    estimate outright — a band of a known height, which is how a traced slide is written."""
+    fixed = _section_num(section, "height")
+    if fixed is not None:
+        return fixed
     from .measure import content_height
     _, title_h = _title_group(section, stype, theme.title_size(stype), width, theme, False, False)
     bsize = theme.body_size(stype)
     panes = split_panes(section["blocks"])
     ch = (content_height(panes[0] if panes else [], bsize, theme, width) if len(panes) <= 1
           else max((content_height(p, bsize, theme, width) for p in panes), default=0.0))
-    return title_h + ch
+    return title_h + ch + (_section_num(section, "pad_top", 0.0) or 0.0)
 
 
 def _section_nodes(section: dict, theme: Theme, stype: str, width: float, avail_h: float,
-                   debug: bool, counter: list, same_ctx: dict | None, do_stagger: bool) -> list:
+                   debug: bool, counter: list, same_ctx: dict | None, do_stagger: bool,
+                   align: str = "start") -> list:
     """Nodes for one stacked layout section — its title (if any) then content, as a single
-    column or ``+++`` side-by-side panes, laid out within (width, avail_h)."""
+    column or ``+++`` side-by-side panes, laid out within (width, avail_h).
+
+    A section may carry its own geometry on its ``::`` line: ``pad_left``/``pad_right`` inset
+    it, ``pad_top`` drops its content, ``pane_gap`` sets the space between its ``+++``
+    columns and ``align`` overrides the slide's. Given those, the pane widths are exact —
+    ``[a:b:c]`` divides what is left after the gaps — which is what makes it possible to land
+    columns on the same x as a source deck. A section that names none of them keeps the
+    original behaviour."""
     body_size = theme.body_size(stype)
-    tgroup, title_h = _title_group(section, stype, theme.title_size(stype), width, theme, False, debug)
-    inner_h = max(1.0, avail_h - title_h)
+    ov = _section_overrides(section)
+    align = str(ov.get("align", ov.get("h_align", align)))
+    if align == "left":
+        align = "start"
+    elif align == "right":
+        align = "end"
+    pad_l = _section_num(section, "pad_left", 0.0)
+    pad_r = _section_num(section, "pad_right", 0.0)
+    pad_t = _section_num(section, "pad_top", 0.0)
+    width = max(1.0, width - pad_l - pad_r)
+    tgroup, title_h = _title_group(section, stype, theme.title_size(stype), width, theme,
+                                   align == "center", debug)
+    inner_h = max(1.0, avail_h - title_h - pad_t)
     panes = split_panes(section["blocks"])
     nodes = list(tgroup)
+    if pad_t:
+        nodes.insert(0, vspacer(pad_t))
     if len(panes) <= 1:
         pane_blocks = panes[0] if panes else []
         bsize = _autosize_body(pane_blocks, theme, width, inner_h, body_size, same_ctx)
         content: list = []
         for block in pane_blocks:
-            content.extend(render_block(block, bsize, theme, debug, width, inner_h, counter, same_ctx))
+            content.extend(render_block(block, bsize, theme, debug, width, inner_h, counter,
+                                        same_ctx, align=align))
         nodes.extend(_stagger(content, theme) if do_stagger else content)
     else:
         n = len(panes)
@@ -848,21 +1128,38 @@ def _section_nodes(section: dict, theme: Theme, stype: str, width: float, avail_
         if not ratio or len(ratio) != n:
             ratio = [1] * n
         total = sum(ratio)
+        exact = "pane_gap" in ov
+        gap = _section_num(section, "pane_gap", PANE_GAP)
+        avail_w = width - gap * (n - 1) if exact else width
         pane_nodes = []
         for i, pane_blocks in enumerate(panes):
-            pane_w = width * ratio[i] / total
-            inner_w = pane_w - PANE_GAP
-            bsize = _autosize_body(pane_blocks, theme, inner_w, inner_h - PANE_GAP, body_size, same_ctx)
+            pane_w = avail_w * ratio[i] / total
+            inner_w = pane_w if exact else pane_w - PANE_GAP
+            pane_h = inner_h if exact else inner_h - PANE_GAP
+            bsize = _autosize_body(pane_blocks, theme, inner_w, pane_h, body_size, same_ctx)
             pane_children = []
             for block in pane_blocks:
                 pane_children.extend(render_block(block, bsize, theme, debug, inner_w,
-                                                  inner_h - PANE_GAP, counter, same_ctx))
-            pane_nodes.append({"type": "column",
-                               "modifiers": dbg([{"width": round(pane_w, 2)},
-                                                 {"padding": float(PANE_GAP / 2)}], debug),
-                               "children": pane_children})
+                                                  pane_h, counter, same_ctx, align=align))
+            mods: list = [{"width": round(pane_w, 2)}]
+            if not exact:
+                mods.append({"padding": float(PANE_GAP / 2)})
+            if exact and i:
+                pane_nodes.append({"type": "box", "modifiers": dbg([{"width": round(gap, 2)}], debug),
+                                   "children": []})
+            col = {"type": "column", "modifiers": dbg(mods, debug), "children": pane_children}
+            if align in ("center", "end"):
+                col["horizontalAlignment"] = align
+            pane_nodes.append(col)
         nodes.append({"type": "row", "modifiers": dbg(["fillMaxWidth"], debug),
                       "children": pane_nodes})
+    if pad_l or pad_r:
+        wrap = {"type": "column",
+                "modifiers": dbg(["fillMaxWidth", {"padding": [pad_l, 0.0, pad_r, 0.0]}], debug),
+                "children": nodes}
+        if align in ("center", "end"):
+            wrap["horizontalAlignment"] = align
+        nodes = [wrap]
     return nodes
 
 
@@ -871,16 +1168,24 @@ def _build_sectioned_root(slide: dict, theme: Theme, width: int, height: int, in
                           do_stagger: bool) -> dict:
     """A slide split by ``===`` into stacked layout sections. Text sections take their natural
     height; media sections (``+++`` panes / images / embeds) share the leftover height via a
-    layout weight, so e.g. a couple of links sit above two full-height image columns."""
+    layout weight, so e.g. a couple of links sit above two full-height image columns.
+
+    A section that names its own ``height=`` is neither: it is a band of exactly that height,
+    which is how a slide traced off a source deck pins its rows to known y coordinates."""
     sections = slide["sections"]
     stype = slide_type(slide)
-    spec = SLIDE_TYPES[stype]
+    spec = theme.slide_type_spec(stype, SLIDE_TYPES[stype])
+    if getattr(theme, "h_align", None):
+        spec["h_align"] = theme.h_align
+    if getattr(theme, "v_align", None):
+        spec["v_align"] = theme.v_align
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
     gap = round(theme.title_gap, 2)
     avail = height - pad_t - pad_b - _chrome_reserve(theme, stype, pad_b) - gap * max(0, len(sections) - 1)
 
-    media = [_section_is_media(s) for s in sections]
+    fixed = [_section_num(s, "height") for s in sections]
+    media = [_section_is_media(s) and f is None for s, f in zip(sections, fixed)]
     stypes = [_section_type(s) for s in sections]
     text_h = sum(_section_natural_h(s, theme, st, content_w)
                  for s, st, m in zip(sections, stypes, media) if not m)
@@ -891,9 +1196,15 @@ def _build_sectioned_root(slide: dict, theme: Theme, width: int, height: int, in
     for k, sec in enumerate(sections):
         sec_h = media_share if media[k] else _section_natural_h(sec, theme, stypes[k], content_w)
         nodes = _section_nodes(sec, theme, stypes[k], content_w, sec_h, debug, counter,
-                               same_ctx, do_stagger)
-        mods = ([{"weight": 1.0}, "fillMaxWidth"] if media[k] else ["fillMaxWidth"])
-        children.append({"type": "column", "modifiers": dbg(mods, debug), "children": nodes})
+                               same_ctx, do_stagger, align=spec.get("h_align", "start"))
+        if fixed[k] is not None:
+            mods = [{"height": round(fixed[k], 2)}, "fillMaxWidth"]
+        else:
+            mods = ([{"weight": 1.0}, "fillMaxWidth"] if media[k] else ["fillMaxWidth"])
+        band = {"type": "column", "modifiers": dbg(mods, debug), "children": nodes}
+        if spec.get("h_align") in ("center", "end"):
+            band["horizontalAlignment"] = spec["h_align"]
+        children.append(band)
         if k < len(sections) - 1:
             children.append(vspacer(gap))
     return frame_slide(children, spec, theme, stype, width, height, debug, bg)
@@ -918,12 +1229,16 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
         return _build_sectioned_root(slide, theme, width, height, index, debug, counter,
                                      same_ctx, bg, do_stagger)
     stype = slide_type(slide)
-    spec = SLIDE_TYPES[stype]
+    spec = theme.slide_type_spec(stype, SLIDE_TYPES[stype])
+    if getattr(theme, "h_align", None):
+        spec["h_align"] = theme.h_align
+    if getattr(theme, "v_align", None):
+        spec["v_align"] = theme.v_align
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     title_size = theme.title_size(stype)
     body_size = theme.body_size(stype)
     content_w = width - pad_l - pad_r
-    centered = stype in ("title", "section")
+    centered = spec.get("h_align") == "center" and spec.get("v_align") == "center"
 
     # ``split``: row-first two-column layout (see _build_split_root). With two `+++` panes
     # the last is the full-height right column and the rest stack in the left column; with a
@@ -984,7 +1299,8 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
                 content = render_code(pane_blocks[0], theme, debug, panel_bg=False)
             else:
                 for block in pane_blocks:
-                    content.extend(render_block(block, bsize, theme, debug, content_w, avail_h, counter, same_ctx))
+                    content.extend(render_block(block, bsize, theme, debug, content_w, avail_h, counter, same_ctx,
+                                                align=spec.get("h_align", "start")))
             if scroll:
                 children.append(_scroll_viewport(content, scroll["viewport"], scroll["y"], debug, jag))
             else:
@@ -1026,12 +1342,13 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
 
 def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
                 width: int, height: int, debug: bool, bg: str = "default") -> dict:
-    """Wrap slide children in the root column, layering a shader background behind
-    (in a Box) when the slide type has one, else a solid background. ``bg="none"`` omits
+    """Wrap slide children in the root column, layering a shader or custom background inclusion
+    behind (in a Box) when the slide type has one, else a solid background. ``bg="none"`` omits
     the background entirely (transparent) — used by push transitions that draw a single
     shared background behind both sliding slides instead of one per slide."""
     shader = None if bg == "none" else theme.shader_for(stype)
-    bg_mods = [] if (shader or bg == "none") else [{"background": theme.background}]
+    bg_doc = None if bg == "none" else theme.bg_doc_for(stype)
+    bg_mods = [] if (shader or bg_doc or bg == "none") else [{"background": theme.background}]
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     pad_mod = ({"padding": float(pad_l)} if pad_l == pad_t == pad_r == pad_b
                else {"padding": [pad_l, pad_t, pad_r, pad_b]})
@@ -1042,11 +1359,19 @@ def frame_slide(children: list, spec: dict, theme: Theme, stype: str,
         "modifiers": dbg(["fillMaxSize", *bg_mods, pad_mod], debug),
         "children": children,
     }
-    if shader:
+    if shader or bg_doc:
+        bg_layers = []
+        if shader:
+            bg_layers.append(shader_canvas(shader, width, height))
+        if bg_doc:
+            bg_layers.extend(_render_bg_asset(bg_doc, theme, width, height, debug))
+        root_mods: list = ["fillMaxSize"]
+        if not shader and bg != "none":
+            root_mods.append({"background": theme.background})
         return {
             "type": "box",
-            "modifiers": dbg(["fillMaxSize"], debug),
-            "children": [shader_canvas(shader, width, height), col],
+            "modifiers": dbg(root_mods, debug),
+            "children": [*bg_layers, col],
         }
     return col
 
@@ -1418,13 +1743,25 @@ def build_push_doc(prev: tuple | None, cur: tuple, theme: Theme, width: int, hei
     # transition's fragment work.
     shared_bg = None
     if prev is not None:
-        prev_bg = theme.shader_for(slide_type(prev[0]))
-        cur_bg = theme.shader_for(slide_type(cur[0]))
-        if prev_bg and prev_bg == cur_bg:
-            shared_bg = shader_canvas(cur_bg, width, height)
-        elif not prev_bg and not cur_bg:
-            shared_bg = {"type": "box", "modifiers": dbg(
-                ["fillMaxSize", {"background": theme.background}], debug), "children": []}
+        p_theme = prev_theme or theme
+        prev_st = slide_type(prev[0])
+        cur_st = slide_type(cur[0])
+        prev_sh = p_theme.shader_for(prev_st)
+        cur_sh = theme.shader_for(cur_st)
+        prev_doc = p_theme.bg_doc_for(prev_st)
+        cur_doc = theme.bg_doc_for(cur_st)
+        same_color = (p_theme.background == theme.background)
+        if prev_sh and prev_sh == cur_sh and prev_doc == cur_doc and same_color:
+            shared_bg = shader_canvas(cur_sh, width, height)
+        elif not prev_sh and not cur_sh and prev_doc == cur_doc and same_color:
+            if cur_doc:
+                bg_layers = _render_bg_asset(cur_doc, theme, width, height, debug)
+                shared_bg = {"type": "box", "modifiers": dbg(
+                    ["fillMaxSize", {"background": theme.background}], debug),
+                    "children": bg_layers}
+            else:
+                shared_bg = {"type": "box", "modifiers": dbg(
+                    ["fillMaxSize", {"background": theme.background}], debug), "children": []}
     root_bg = "none" if shared_bg is not None else "default"
 
     children = []
@@ -1459,13 +1796,18 @@ def build_graph_transition_doc(prev: tuple, cur: tuple, theme: Theme, width: int
     Unmatched nodes fade; edges crossfade."""
     slide, blocks = cur
     stype = slide_type(slide)
-    spec = SLIDE_TYPES[stype]
+    spec = theme.slide_type_spec(stype, SLIDE_TYPES[stype])
+    if getattr(theme, "h_align", None):
+        spec["h_align"] = theme.h_align
+    if getattr(theme, "v_align", None):
+        spec["v_align"] = theme.v_align
     pad_l, pad_t, pad_r, pad_b = _pad_for(spec, theme)
     content_w = width - pad_l - pad_r
+    centered = spec.get("h_align") == "center" and spec.get("v_align") == "center"
 
     children = []
     title_group, title_h = _title_group(slide, stype, theme.title_size(stype), content_w,
-                                        theme, stype in ("title", "section"), debug)
+                                        theme, centered, debug)
     children.extend(title_group)
     avail_h = height - pad_t - pad_b - title_h - _chrome_reserve(theme, stype, pad_b)
 

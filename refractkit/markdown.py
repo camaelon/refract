@@ -38,6 +38,7 @@ def _parse_include_opts(opts: str) -> dict:
 
 SLIDE_SEP = re.compile(r"(?m)^\s*---\s*$")
 TITLE_RE = re.compile(r"^#\s+(.*)$")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)-\s+(.+)$")
 INCLUDE_LINE = re.compile(r"^<([^>]+)>$")
 RATIO_RE = re.compile(r"\[(\d+(?::\d+)+)\]")
@@ -87,6 +88,8 @@ def parse_meta(spec: str) -> dict:
     kind = left_toks[0] if left_toks else ""
     flags = left_toks[1:]
     params = right.strip()
+    if kind == "as" and not params and flags:
+        params = flags.pop(0)
     return {"type": kind, "params": params, "ratio": ratio,
             "overrides": overrides, "flags": flags, "author": author}
 
@@ -204,9 +207,16 @@ def _parse_section(lines: list[str]) -> dict | None:
             i += 1
             continue
 
-        m = TITLE_RE.match(stripped)
-        if m and title is None and not blocks and not para and not bullets:
-            title = m.group(1).strip()
+        mh = HEADING_RE.match(stripped)
+        if mh:
+            level = len(mh.group(1))
+            text_val = mh.group(2).strip()
+            if level == 1 and title is None and not blocks and not para and not bullets:
+                title = text_val
+            else:
+                flush_para()
+                flush_bullets()
+                blocks.append({"kind": "heading", "level": level, "text": text_val})
             i += 1
             continue
 

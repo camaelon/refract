@@ -7,22 +7,63 @@ bitmap into a computed, aspect-preserving rect. json2rc embeds the file inline.)
 
 from __future__ import annotations
 
+import os
+import shutil
 import struct
+import subprocess
 
 from .components import dbg
 
 
+def ensure_static_image(path: str) -> str:
+    """Convert .gif and .webp images to a static .png image (in a hidden .converted/ folder
+    beside the file) since the player and json2rc do not support animated GIFs or WebP natively.
+    Returns the converted .png path, or the original path for PNG/JPEG."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".gif", ".webp"):
+        return path
+    if not os.path.isfile(path):
+        return path
+    conv_dir = os.path.join(os.path.dirname(os.path.abspath(path)), ".converted")
+    out_path = os.path.join(conv_dir, os.path.basename(path) + ".png")
+    try:
+        src_mtime = os.path.getmtime(path)
+        if os.path.isfile(out_path) and os.path.getmtime(out_path) >= src_mtime:
+            return out_path
+        os.makedirs(conv_dir, exist_ok=True)
+        if shutil.which("sips"):
+            subprocess.run(["sips", "-s", "format", "png", path, "--out", out_path],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.isfile(out_path):
+                return out_path
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return path
+
+
 def image_size(path: str) -> tuple[int, int]:
-    """Return (width, height) for a PNG/JPEG/GIF, or (1, 1) if unknown."""
+    """Return (width, height) for a PNG/JPEG/GIF/WebP, or (1, 1) if unknown."""
     try:
         with open(path, "rb") as f:
-            head = f.read(26)
+            head = f.read(30)
             if head[:8] == b"\x89PNG\r\n\x1a\n":
                 w, h = struct.unpack(">II", head[16:24])
                 return w, h
             if head[:6] in (b"GIF87a", b"GIF89a"):
                 w, h = struct.unpack("<HH", head[6:10])
                 return w, h
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                chunk = head[12:16]
+                if chunk == b"VP8 " and len(head) >= 30:
+                    w, h = struct.unpack("<HH", head[26:30])
+                    return w & 0x3FFF, h & 0x3FFF
+                if chunk == b"VP8L" and len(head) >= 25:
+                    bits = struct.unpack("<I", head[21:25])[0]
+                    return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+                if chunk == b"VP8X" and len(head) >= 30:
+                    w = int.from_bytes(head[24:27], "little") + 1
+                    h = int.from_bytes(head[27:30], "little") + 1
+                    return w, h
             if head[:2] == b"\xff\xd8":  # JPEG: scan for a start-of-frame marker
                 f.seek(2)
                 while True:
@@ -66,14 +107,40 @@ def _rounded_rect_path(path: str, l: float, t: float, r: float, b: float,
 
 
 def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float,
-                 counter: list) -> list[dict]:
+                 counter: list, align: str = "center") -> list[dict]:
     """A fixed-size canvas that draws the image contained within (avail_w, avail_h),
     optionally clipped to a rounded rect (theme.image_corner_radius)."""
-    iw, ih = image_size(block["path"])
-    cw, ch = float(avail_w), float(avail_h)
-    scale = min(cw / iw, ch / ih)
-    dw, dh = iw * scale, ih * scale
-    left = round((cw - dw) / 2.0, 2)
+    opts = block.get("opts") or {}
+    img_path = ensure_static_image(block["path"])
+    iw, ih = image_size(img_path)
+
+    if "width" in opts and "height" in opts:
+        dw, dh = float(opts["width"]), float(opts["height"])
+        cw = float(avail_w) if opts.get("fill_width") else dw
+        ch = dh
+    elif "width" in opts:
+        dw = float(opts["width"])
+        dh = round(dw * ih / iw, 2) if iw else dw
+        cw = float(avail_w) if opts.get("fill_width") else dw
+        ch = dh
+    elif "height" in opts:
+        dh = float(opts["height"])
+        dw = round(dh * iw / ih, 2) if ih else dh
+        cw = float(avail_w) if opts.get("fill_width") else dw
+        ch = dh
+    else:
+        cw, ch = float(avail_w), float(avail_h)
+        scale = min(cw / iw, ch / ih)
+        dw, dh = iw * scale, ih * scale
+
+    opt_align = opts.get("align", opts.get("h_align", align))
+    if opt_align in ("start", "left"):
+        left = 0.0
+    elif opt_align in ("end", "right"):
+        left = round(cw - dw, 2)
+    else:
+        left = round((cw - dw) / 2.0, 2)
+
     top = round((ch - dh) / 2.0, 2)
     right, bottom = round(left + dw, 2), round(top + dh, 2)
     counter[0] += 1
@@ -81,7 +148,7 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
 
     draw = {"type": "drawbitmap", "image": "$" + var,
             "left": left, "top": top, "right": right, "bottom": bottom}
-    commands = [{"type": "addbitmap", "image": block["path"], "varName": var}]
+    commands = [{"type": "addbitmap", "image": img_path, "varName": var}]
     rad = min(float(theme.image_corner_radius), dw / 2.0, dh / 2.0)
     if rad > 0.5:
         clip = f"__imgclip{counter[0]}"
