@@ -50,5 +50,32 @@ class TestSubdeckThemeFallback(unittest.TestCase):
                          os.path.abspath(os.path.join(sub_dir, "bg_plate.json")))
 
 
+    def test_content_include_falls_back_to_root_includes(self):
+        # a picture only the root deck has, a document both have (the sub-deck's must win)
+        with open(os.path.join(self.root, "includes", "shared.png"), "wb") as f:
+            f.write(b"\x89PNG root")
+        with open(os.path.join(self.root, "includes", "card.json"), "w") as f:
+            f.write("{}")
+        os.makedirs(os.path.join(self.root, "includes", "sub", "includes"))
+        with open(os.path.join(self.root, "includes", "sub", "includes", "card.json"), "w") as f:
+            f.write("{}")
+        with open(os.path.join(self.root, "includes", "sub", "slides.md"), "w") as f:
+            f.write("# Pictures\n\n<shared>\n\n<card.json>\n")
+        slides = deck.load_deck(self.root, set())
+        blocks = deck.resolve_blocks(slides[1])
+        kinds = [(b["kind"], b.get("path")) for b in blocks if b["kind"] != "text"]
+        self.assertEqual(kinds[0][0], "image")
+        self.assertEqual(kinds[0][1], os.path.abspath(os.path.join(self.root, "includes", "shared.png")))
+        self.assertEqual(kinds[1][0], "json_include")
+        self.assertEqual(kinds[1][1],
+                         os.path.abspath(os.path.join(self.root, "includes", "sub", "includes", "card.json")))
+        # the root deck's own slide never looks inside a sub-deck
+        with open(os.path.join(self.root, "slides.md"), "w") as f:
+            f.write("# Root\n\n<card.json>\n")
+        root_blocks = deck.resolve_blocks(deck.load_deck(self.root, set())[0])
+        self.assertEqual([b["path"] for b in root_blocks if b["kind"] == "json_include"],
+                         [os.path.abspath(os.path.join(self.root, "includes", "card.json"))])
+
+
 if __name__ == "__main__":
     unittest.main()

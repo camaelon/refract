@@ -188,21 +188,19 @@ def resolve_blocks(slide: dict) -> list[dict]:
     place, so a sectioned slide's sections render with real media blocks."""
     deck_dir = slide.get("base_dir", ".")
     includes_dir = os.path.join(deck_dir, "includes")
-    extra_dirs = [
-        os.path.join(deck_dir, "theme", "include"),
-        os.path.join(deck_dir, "theme", "includes"),
-        os.path.join(deck_dir, "themes", "include"),
-        os.path.join(deck_dir, "themes", "includes"),
-    ]
     root_dir = slide.get("root_dir")
-    if root_dir and os.path.abspath(root_dir) != os.path.abspath(deck_dir):
-        # a sub-deck falls back to the main deck's theme assets (and its includes/)
+    is_sub = bool(root_dir) and os.path.abspath(root_dir) != os.path.abspath(deck_dir)
+    # Search order for ``<name>``: the deck's own includes/, then — for a slide that came in
+    # through ``:: include`` — the root deck's includes/, then theme assets, own before root.
+    # So a sub-deck can lean on the main deck's pictures and documents, and still shadow any
+    # of them with a file of the same name in its own includes/.
+    extra_dirs = [os.path.join(root_dir, "includes")] if is_sub else []
+    for base in ([deck_dir, root_dir] if is_sub else [deck_dir]):
         extra_dirs += [
-            os.path.join(root_dir, "theme", "include"),
-            os.path.join(root_dir, "theme", "includes"),
-            os.path.join(root_dir, "themes", "include"),
-            os.path.join(root_dir, "themes", "includes"),
-            os.path.join(root_dir, "includes"),
+            os.path.join(base, "theme", "include"),
+            os.path.join(base, "theme", "includes"),
+            os.path.join(base, "themes", "include"),
+            os.path.join(base, "themes", "includes"),
         ]
     for sec in slide.get("sections", []):
         sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir, extra_dirs)
