@@ -361,12 +361,14 @@ def render_slide(slide: dict, blocks: list, stheme, prev, prev_theme,
     elif transitions and prev is not None and style in ("slide-up", "push-up"):
         doc = build_push_doc(prev, (slide, blocks), stheme, width, height, i, debug, total, axis="y", duration=push_dur, scroll=scroll_static, prev_theme=prev_theme)
         tag = "push-up"
-    elif transitions and prev is not None:
+    elif transitions and prev is not None and style not in ("none", "off", "false"):
         doc = build_transition_doc(prev, (slide, blocks), stheme, width, height, i, debug, total, scroll=scroll_static, prev_theme=prev_theme)
         tag = "transition"
     else:
-        # No previous slide (e.g. the title): render statically — the first slide
-        # has nothing to transition in from; its "out" is animated by the next slide.
+        # No previous slide (e.g. the title), or `transition=none` on this slide: render it
+        # statically. A slide that carries its own animation (an embedded document) must not
+        # be wrapped in a crossfade from the previous one — that would draw the old slide over
+        # its opening frames.
         doc = build_doc(slide, blocks, stheme, width, height, i, debug, total,
                         scroll=scroll_static)
         tag = slide_type(slide)
