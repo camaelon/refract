@@ -17,6 +17,10 @@ tutorial that writes a talk in the player's windows, then a screenshot of each o
 is for. This page is the reference underneath it: every flag, every key, and why the awkward
 parts are the way they are.
 
+Changing the editor? [docs/architecture-editor.md](../docs/architecture-editor.md) is how its
+five units fit together, what each one is forbidden to know, and the three rules that took a
+bug each to learn.
+
 Playback is not reimplemented here. It comes from **`rcplayer`**, the library in the
 RemoteCompose `players/cpp` tree that also powers `rcviewer` — same engine, same
 Metal/Skia path, same video, web-page and sub-document embeds, same touch handling. This
@@ -468,6 +472,7 @@ highlighting so much as making a slide's *shape* visible at a glance.
 | click | put the caret there |
 | double / triple / quadruple click | the word, the line, the paragraph |
 | `Tab` | indent two spaces |
+| `↑` `↓` | up and down a **row**, not a line — see wrapping below |
 | `Esc` | close (refuses while there are unsaved changes) |
 
 While the [completion menu](#completing-a--line) is up, `↑`/`↓` walk it, `↩` or `Tab`
@@ -477,6 +482,35 @@ vocabulary on a `::` line.
 A fifth click in the same place goes back to a plain caret. A repeat click has to be in the
 same place as well as soon after, so moving to another word and clicking is two first clicks
 rather than a double.
+
+### Long lines wrap
+
+A line too long for the window used to run off the right-hand edge and stop there. It was
+reachable by scrolling sideways and invisible otherwise, which in a narrow window meant most
+of a paragraph. Lines wrap now, and the editor has no horizontal scroll at all, because there
+is nothing off to the right to scroll to.
+
+Wrapping is presentation, not content: the buffer still holds whole lines and a save writes
+exactly what it always did. What changes is that the view no longer has one row per line, so
+everything that turns a y into a position goes through the wrap layout —
+[`wrapLines`](src/ViewGeometry.h), which is where the judgement calls are and where they are
+tested:
+
+- **A word stays whole** where it can. The break goes after the last space that fits.
+- **A word longer than the window** — a path, a URL — is cut mid-word instead. Leaving it to
+  run off the edge would mean characters nobody can see or reach, which is the bug this fixes.
+- **A cut never lands inside a character.** Half of a two-byte `é` is invalid UTF-8, and
+  Skia's answer to invalid UTF-8 is to abort the process — see `utf8` in the tests.
+- **Every line keeps at least one row**, so a blank line is still somewhere the caret can go.
+- **The line number sits on the first row only.** A blank gutter is how you see that a row is
+  a continuation rather than a line of its own.
+- **`↑` and `↓` move by row.** Moving by line would skip all five rows of a wrapped
+  paragraph, which is not what an arrow key means to somebody looking at the screen. The x it
+  aims for is remembered across a run of them, so walking down a ragged paragraph does not
+  drift left.
+
+Laying the text out means measuring every line, so the layout is held until the width, the
+font size or the text actually changes — `TextBuffer::revision()` exists for that.
 
 ### Completing a `::` line
 
@@ -1219,7 +1253,7 @@ ctest --test-dir player/build --output-on-failure
 | `timing` | the rehearsal trace, and the slide identity a build is keyed by |
 | `slide_recorder` | when a re-recorded take replaces the old one, and when it must not |
 | `deck_library` | starting a deck, and the list of ones opened before |
-| `view_geometry` | the grid and the editor's lines: clicking, scrolling, hit-testing |
+| `view_geometry` | the grid, and the editor's rows: wrapping, clicking, scrolling, hit-testing |
 | `options` | the command line, and that every flag it takes is in the help text |
 | `completion` | the include being typed, where its names resolve, and what matches |
 | `utf8` | that no string the chrome trims or cuts can come out invalid |
@@ -1294,6 +1328,8 @@ python3 -m unittest discover -s tests
 | `src/SlideEditor.{h,cpp}` | the editor window: a slide, the deck, or its settings |
 | `src/Completion.{h,cpp}` | what is being typed — an include, or which part of a `::` line |
 | `src/Utf8.{h,cpp}` | keeping arbitrary file bytes safe to measure and draw |
+| `src/Scrolling.{h,cpp}` | how far a wheel notch and a trackpad swipe each move a view |
+| `src/Asset.h`, `src/Build.h`, `src/Meta.h` | the plain shapes two units each need to agree on |
 | `src/SlideRecorder.{h,cpp}` | recording over one slide's narration |
 | `src/DeckSource.{h,cpp}` | reading and rewriting the deck's own source through the tools |
 | `src/EditRunner.{h,cpp}` | the worker a rewrite runs on |
@@ -1316,7 +1352,7 @@ python3 -m unittest discover -s tests
 | `src/App.h` | presenter state: talk clock, blanking, overlay state |
 | `src/Captions.{h,cpp}`, `CaptionWindow.{h,cpp}` | caption timings and the window that lights them |
 | `src/AssetWindow.{h,cpp}` | the deck's `includes/`, what uses each file, and the trash |
-| `src/Audio*.{h,mm}` | narration capture and gapless playback |
+| `src/Audio*.{h,mm}` | narration capture and gapless playback (`*Stub.cpp` off Apple) |
 | `tools/reorder.py` | moving a slide, a section or a sub-deck in the markdown |
 | `tools/slide.py` | reading, rewriting, adding and deleting one slide's markdown |
 | `tools/build.py` | rebuilding, and reporting how much of the deck it had to touch |

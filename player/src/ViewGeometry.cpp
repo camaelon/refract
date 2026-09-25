@@ -1,5 +1,7 @@
 #include "ViewGeometry.h"
 
+#include "Utf8.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -99,6 +101,75 @@ int lineAt(const Lines& lines, float y, float scroll, int lineCount) {
     const float top = lines.baselineTop - lines.height + lines.gap;
     const float row = (y - top + scroll) / std::max(1.0f, lines.height);
     return std::max(0, std::min(lineCount - 1, static_cast<int>(std::floor(row))));
+}
+
+// ── Wrapping ─────────────────────────────────────────────────────────
+
+std::vector<WrapRow> wrapLines(const std::vector<std::string>& lines, float width,
+                               const MeasureRange& measure) {
+    std::vector<WrapRow> rows;
+    for (size_t index = 0; index < lines.size(); index++) {
+        const int line = static_cast<int>(index);
+        const std::string& text = lines[index];
+        const int length = static_cast<int>(text.size());
+        int at = 0;
+        bool first = true;
+        do {
+            if (width <= 0 || measure(line, at, length) <= width) {
+                rows.push_back({line, at, length, first});
+                break;                          // the rest of the line fits
+            }
+            // The last byte that still fits. Walked forward rather than divided out: with a
+            // fallback face the width is not linear in the byte count, and the measurement
+            // is the only honest answer.
+            int fits = at;
+            for (int end = static_cast<int>(utf8Advance(text, at)); end <= length;
+                 end = static_cast<int>(utf8Advance(text, end))) {
+                if (measure(line, at, end) > width) break;
+                fits = end;
+                if (end == length) break;
+            }
+            // Break after the last space inside what fits, so a word stays whole. A word
+            // longer than the whole width — a path, a URL — has nothing to break at, and is
+            // cut where it has to be rather than left running off the edge.
+            int cut = -1;
+            for (int i = fits; i > at; i--) {
+                if (text[i - 1] == ' ' || text[i - 1] == '\t') { cut = i; break; }
+            }
+            if (cut <= at) cut = fits;
+            // Never a row of nothing: a single character wider than the view still gets its
+            // own row, or the loop would not end.
+            if (cut <= at) cut = static_cast<int>(utf8Advance(text, at));
+            if (cut <= at) cut = length;
+            rows.push_back({line, at, cut, first});
+            at = cut;
+            first = false;
+        } while (at < length);
+    }
+    return rows;
+}
+
+int rowOfCaret(const std::vector<WrapRow>& rows, int line, int col) {
+    int fallback = -1;
+    for (size_t i = 0; i < rows.size(); i++) {
+        if (rows[i].line != line) continue;
+        if (fallback < 0) fallback = static_cast<int>(i);
+        // A caret at a row's end sits on the *next* row when the line continues: that is
+        // where the character it types will appear.
+        if (col >= rows[i].from && col < rows[i].to) return static_cast<int>(i);
+        if (col == rows[i].to && (i + 1 >= rows.size() || rows[i + 1].line != line)) {
+            return static_cast<int>(i);
+        }
+        fallback = static_cast<int>(i);
+    }
+    return fallback;
+}
+
+int firstRowOfLine(const std::vector<WrapRow>& rows, int line) {
+    for (size_t i = 0; i < rows.size(); i++) {
+        if (rows[i].line == line) return static_cast<int>(i);
+    }
+    return rows.empty() ? 0 : static_cast<int>(rows.size()) - 1;
 }
 
 float scrollToShowLine(const Lines& lines, int line, float scroll, float viewH) {

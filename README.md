@@ -18,8 +18,8 @@ the RemoteCompose engine via components, not pixel math.
 
 ## Getting started
 
-**There is nothing to build and nothing to install into your system.** The tools ship in
-`prebuilt/` and run from the checkout.
+**Nothing to build, and nothing to install into your system.** The tools ship in `prebuilt/`
+and run from the checkout.
 
 ```sh
 git clone https://github.com/camaelon/refract          # clone, don't download a zip — see below
@@ -37,8 +37,8 @@ python3 refract.py --check                             # what this machine has, 
   ok      graphviz       /opt/homebrew/bin/dot
 ```
 
-Anything it reports as `MISSING` comes with the command that fixes it. `absent` is something
-optional — you can build decks without it. Then:
+Whatever it calls `MISSING`, it also tells you how to fix. `absent` marks something you can
+do without. Then:
 
 ```sh
 python3 refract.py examples/deck               # writes examples/deck/out/*.rc
@@ -46,9 +46,9 @@ prebuilt/refractplayer examples/deck           # present it (→ steps, Tab jump
 prebuilt/refractplayer                         # or start from the deck picker
 ```
 
-The player takes a deck folder and builds it if it needs to be; with nothing named it opens a
-start window offering the decks you have opened before, and a **New deck…** that writes a
-starter `slides.md` for you.
+Hand the player a deck folder and it builds the deck if it must. Name nothing and it opens a
+start window listing the decks you opened before, beside a **New deck…** that writes you a
+starter `slides.md`.
 
 **Two tutorials**, both building the same small talk — the one in
 [`examples/tutorial/`](examples/tutorial), so you can open what you are reading about:
@@ -58,14 +58,18 @@ starter `slides.md` for you.
 - **[Authoring in the player](docs/refractplayer.md)** — the same talk written, reordered and
   presented in refractplayer's own windows, with screenshots of each.
 
+Changing refract itself? [Architecture](#architecture) below, and
+[docs/architecture-editor.md](docs/architecture-editor.md) for the slide editor, which is the
+largest piece.
+
 ### What it needs
 
-Two things, and only two, because everything else is in the checkout:
+Two things, and only two, since the checkout holds the rest:
 
 | | |
 |---|---|
-| **Python 3.11+** | `refract.py` is Python, and reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9 — `brew install python`. Put it **ahead of `/usr/bin` on `PATH`**: the player looks up `python3` itself for its editing tools, so a checkout where `python3` is Apple's works from the terminal and quietly fails inside the editor. `--check` reports both. |
-| **A JVM 21+** | `json2rc` compiles each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that step needs it — `--json-only` stops before it, and playing an already-built deck never touches it. |
+| **Python 3.11+** | `refract.py` is Python, and it reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9, so: `brew install python`. Put it **ahead of `/usr/bin` on `PATH`** — the player looks `python3` up itself for its editing tools, and where that finds Apple's, refract works from the terminal and fails quietly inside the editor. `--check` reports both. |
+| **A JVM 21+** | `json2rc` turns each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that one step wants it. `--json-only` stops before it, and playing a deck someone has already built never reaches it. |
 
 Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing else.
 
@@ -78,11 +82,11 @@ Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing
 | `prebuilt/rcviewer` | the standalone viewer, and refract's fallback exporter |
 | `prebuilt/rc2image` | headless `.rc` → PNG, used for freeze snapshots |
 
-The three native ones are **arm64, macOS 11 or newer**, and link nothing outside macOS's own
-frameworks — no Homebrew, no `DYLD_*`, nothing to install. Check any of them yourself with
-`otool -L prebuilt/refractplayer`: everything listed is `/usr/lib` or `/System/Library`. An
-**Intel Mac** needs them rebuilt from source ([player/README.md](player/README.md)); Rosetta
-translates the other direction and cannot help.
+The three native ones want **arm64 and macOS 11 or newer**, and they link nothing outside
+macOS's own frameworks: no Homebrew, no `DYLD_*`, nothing to install. Check for yourself with
+`otool -L prebuilt/refractplayer` — every line it prints starts `/usr/lib` or
+`/System/Library`. An **Intel Mac** needs them built again from source
+([player/README.md](player/README.md)); Rosetta translates the other way and cannot help.
 
 They can go **on your `PATH`** — a symlink is enough:
 
@@ -90,10 +94,10 @@ They can go **on your `PATH`** — a symlink is enough:
 ln -s "$PWD/prebuilt/refractplayer" /usr/local/bin/refractplayer
 ```
 
-The player resolves the symlink to find its own Python tools next to the checkout, so
-editing, reordering and rebuilding all keep working from anywhere. *Copying* the binary out
-of `prebuilt/` instead of linking it loses them: it would still play a deck, but the deck
-view, the editor and the build panel would have nothing to call.
+The player follows the symlink back to the checkout to find its own Python tools, so editing,
+reordering and rebuilding go on working from anywhere. *Copy* the binary out of `prebuilt/`
+rather than linking it and you lose them: it still plays a deck, but the deck view, the editor
+and the build panel have nothing left to call.
 
 **Clone it, don't download a zip.** A file that arrives through a browser carries macOS's
 quarantine flag, and Gatekeeper refuses to run these (they are ad-hoc signed, not
@@ -103,7 +107,7 @@ notarized). `git clone` sets no such flag. If you did download an archive:
 xattr -dr com.apple.quarantine prebuilt
 ```
 
-Updating is `git pull` — the binaries are in the repository, so they come with it.
+To update, `git pull`. The repository holds the binaries, so they come with it.
 
 ### Rebuilding them
 
@@ -798,6 +802,9 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `highlight`   | syntax highlighting — a language registry                 |
 | `graph`       | graphviz layout → drawing (clusters/styles); magic-move geometry |
 | `chart`       | bar / line / pie charts on a canvas                       |
+| `markers`     | the four progress-bar marker shapes                       |
+| `measure`     | how tall a block will be — shrinking a font to fit, and deciding when a slide needs scroll steps |
+| `samematch`   | which content two consecutive slides share, for magic move |
 | `render`      | blocks + theme → RemoteCompose component JSON             |
 | `chunks`      | the `---`-separated blocks of a slides.md: split, read, replace, insert, delete |
 | `reorder`     | moving those blocks — a slide, a section, an included sub-deck |
@@ -805,6 +812,9 @@ Implementation lives in the `refractkit` package; `refract.py` is just the CLI.
 | `manifest`    | reading `out/deck.json`, and replaying the options a deck was built with |
 | `history`     | undo and redo for every edit that rewrites a deck's markdown |
 | `keys`        | the block a slide was written in, and keeping it pointing there when blocks move |
+| `assets`      | what is in `includes/`, and which slides use it — answered by loading the deck, so it cannot disagree with the build |
+| `meta`        | the `::` line's vocabulary and the include options, in one place: what may be written, and what each word does |
+| `preflight`   | what this machine has and what it lacks, behind `--check`  |
 
 `refract.py` itself is the CLI plus the build: `slide_style` (the theme a slide renders with),
 `render_slide` (which of the seven ways it is drawn) and `manifest_record` (what a player is
@@ -815,10 +825,16 @@ told about it) are separate from the loop that walks the deck, so each can be as
 `LANGUAGES`. **Restyle:** edit `settings.toml`. **Change the background:** edit the
 `.sksl`.
 
-The last four are the ones the player edits a deck through. The player never parses markdown
-itself: block numbering has to agree exactly with `markdown.py`'s (which splits on `---` with
-no awareness of code fences, deliberately reproduced), and a second implementation would drift
-and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over them.
+`chunks`, `reorder`, `history` and `keys` are the ones the player edits a deck through. The
+player never parses markdown itself: block numbering has to agree exactly with `markdown.py`'s
+(which splits on `---` with no awareness of code fences, deliberately reproduced), and a second
+implementation would drift and rewrite the wrong slide. `player/tools/*.py` are thin CLIs over
+them.
+
+`assets` and `meta` are there for the same reason one layer up: the editor offers a file or a
+word only if refract would accept it, so both answers come from refract's own code rather than
+from a list the player keeps. A slide type added to `render.SLIDE_TYPES` turns up in the
+editor's menu with nobody editing the player.
 
 ## Tests
 

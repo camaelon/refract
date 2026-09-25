@@ -13,7 +13,9 @@
 // So it lives here, with no Skia and no window behind it, and is tested directly.
 #pragma once
 
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace refract {
 
@@ -96,6 +98,42 @@ Box lineBox(const Lines& lines, int line, float scroll, float left, float right)
 // The line under a point. Clamped into the document, so a click in the margin below the last
 // line lands on the last line rather than nowhere.
 int lineAt(const Lines& lines, float y, float scroll, int lineCount);
+
+// ── Wrapping ─────────────────────────────────────────────────────────
+//
+// A long line used to run off the right of the editor and stop there: reachable by scrolling
+// sideways, invisible otherwise, and in a narrow window that meant most of a paragraph. So a
+// buffer line is laid out as one or more *rows*, each a slice of it that fits the width.
+//
+// Wrapping is presentation, not content — the buffer keeps whole lines, and nothing here
+// changes what a save writes. What it changes is that the view no longer has one row per
+// line, so everything that used to divide a y by the line height has to go through this.
+
+struct WrapRow {
+    int line = 0;            // the buffer line this row is part of
+    int from = 0, to = 0;    // the byte range of it, [from, to)
+    bool first = false;      // the first row of its line: the one that gets the line number
+};
+
+// How wide a byte range of a line is. The editor measures text with the font it draws in; a
+// test can pass one unit per character and reason in characters.
+using MeasureRange = std::function<float(int line, int from, int to)>;
+
+// Lay every line out into rows that fit `width`.
+//
+// Greedy, breaking after the last space that fits. A word longer than the whole width — a
+// path, a URL — is broken mid-word instead, because the alternative is a row that does not
+// fit and a character nobody can reach. Every line produces at least one row, so an empty
+// line is still a row you can put the caret on.
+std::vector<WrapRow> wrapLines(const std::vector<std::string>& lines, float width,
+                               const MeasureRange& measure);
+
+// The row holding a caret. For a caret at a wrap point — the end of one row and the start of
+// the next — this answers the *later* row, which is where typing will appear.
+int rowOfCaret(const std::vector<WrapRow>& rows, int line, int col);
+
+// The first row of a line, for scrolling to it.
+int firstRowOfLine(const std::vector<WrapRow>& rows, int line);
 
 // The scroll that keeps `line` on screen, given how tall the text area is.
 float scrollToShowLine(const Lines& lines, int line, float scroll, float viewH);

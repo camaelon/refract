@@ -8,9 +8,11 @@
 // Returns 0 on success, 1 on any failed assertion.
 
 #include "ViewGeometry.h"
+#include "Utf8.h"
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 #include <initializer_list>
 
 using refract::Box;
@@ -211,6 +213,163 @@ static void testFilter() {
     CHECK(refract::matchesFilter("", ""), "but still matches nothing at all");
 }
 
+// ── Wrapping ─────────────────────────────────────────────────────────
+//
+// A long line used to run off the right edge and stop there. These check the rows a line
+// becomes: that a word stays whole where it can, that a word too long to fit is cut rather
+// than lost, that a cut never lands inside a character, and that every line keeps at least
+// one row to put a caret on.
+
+// One unit per byte, so a width of 10 means ten characters. Wrapping is measured, not
+// counted, so the tests state a measure and reason in it.
+static refract::MeasureRange byBytes(const std::vector<std::string>& lines) {
+    return [&lines](int line, int from, int to) {
+        return static_cast<float>(to - from);
+    };
+}
+
+// The text each row holds, which is what the reader of a test wants to see.
+static std::vector<std::string> rowTexts(const std::vector<std::string>& lines,
+                                         const std::vector<refract::WrapRow>& rows) {
+    std::vector<std::string> out;
+    for (const refract::WrapRow& row : rows) {
+        out.push_back(lines[row.line].substr(row.from, row.to - row.from));
+    }
+    return out;
+}
+
+static void testAShortLineIsOneRow() {
+    const std::vector<std::string> lines = {"short"};
+    const auto rows = refract::wrapLines(lines, 40, byBytes(lines));
+    CHECK(rows.size() == 1, "a line that fits is one row");
+    CHECK(rows[0].first, "and it is the first row of its line");
+    CHECK(rows[0].from == 0 && rows[0].to == 5, "covering the whole line");
+}
+
+static void testAnEmptyLineStillHasARow() {
+    // Otherwise there is nowhere to put the caret on a blank line, and blank lines are how
+    // markdown separates everything.
+    const std::vector<std::string> lines = {"", "", "x"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));
+    CHECK(rows.size() == 3, "one row per line, even the empty ones");
+    CHECK(rows[0].from == 0 && rows[0].to == 0, "and the empty row is empty");
+}
+
+static void testAWordStaysWhole() {
+    const std::vector<std::string> lines = {"the quick brown fox"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));
+    const auto text = rowTexts(lines, rows);
+    CHECK(rows.size() >= 2, "nineteen characters do not fit in ten");
+    for (const std::string& row : text) {
+        CHECK(row.size() <= 10, "no row is wider than the width");
+    }
+    // Greedy and breaking after a space: "the quick " then "brown fox".
+    CHECK(text[0] == "the quick ", "it breaks after the last space that fits");
+    CHECK(text[1] == "brown fox", "and the rest follows");
+}
+
+static void testOnlyTheFirstRowCarriesTheNumber() {
+    const std::vector<std::string> lines = {"the quick brown fox"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));
+    CHECK(rows[0].first, "the first row of a line is marked");
+    for (size_t i = 1; i < rows.size(); i++) {
+        CHECK(!rows[i].first, "a continuation row is not");
+    }
+}
+
+static void testAWordLongerThanTheWidth() {
+    // A path or a URL. Breaking mid-word is ugly; leaving it off the edge is worse, because
+    // then there are characters nobody can see or reach.
+    const std::vector<std::string> lines = {"/a/very/long/path/with/no/spaces/at/all"};
+    const auto rows = refract::wrapLines(lines, 8, byBytes(lines));
+    CHECK(rows.size() >= 4, "it is broken into rows");
+    int covered = 0;
+    for (const refract::WrapRow& row : rows) {
+        CHECK(row.to - row.from <= 8, "and none of them is too wide");
+        CHECK(row.from == covered, "the rows join up with no gap");
+        covered = row.to;
+    }
+    CHECK(covered == static_cast<int>(lines[0].size()), "and they cover the whole line");
+}
+
+static void testEveryByteOfEveryLineIsInExactlyOneRow() {
+    // The property that matters: nothing is dropped and nothing is drawn twice.
+    const std::vector<std::string> lines = {
+        "a short one", "", "the quick brown fox jumps over the lazy dog",
+        "oneverylongwordindeedthatcannotbebroken", " leading space", "trailing space ",
+    };
+    for (float width : {3.0f, 7.0f, 12.0f, 40.0f, 500.0f}) {
+        const auto rows = refract::wrapLines(lines, width, byBytes(lines));
+        size_t at = 0;
+        for (size_t line = 0; line < lines.size(); line++) {
+            int covered = 0;
+            bool sawFirst = false;
+            CHECK(at < rows.size(), "every line has a row");
+            while (at < rows.size() && rows[at].line == static_cast<int>(line)) {
+                CHECK(rows[at].from == covered, "rows join up");
+                CHECK(rows[at].to >= rows[at].from, "and none runs backwards");
+                sawFirst = sawFirst || rows[at].first;
+                covered = rows[at].to;
+                at++;
+            }
+            CHECK(sawFirst, "one row of the line is marked first");
+            CHECK(covered == static_cast<int>(lines[line].size()),
+                  "the rows cover the line exactly");
+        }
+        CHECK(at == rows.size(), "and there are no rows left over");
+    }
+}
+
+static void testACutNeverLandsInsideACharacter() {
+    // é is two bytes, 👋 is four. A row ending half way through one would be invalid UTF-8,
+    // which Skia answers by aborting the process — see utf8_test.
+    const std::vector<std::string> lines = {"h\xC3\xA9llo w\xF0\x9F\x91\x8Brld caf\xC3\xA9"};
+    for (float width : {1.0f, 2.0f, 3.0f, 5.0f, 8.0f, 13.0f}) {
+        const auto rows = refract::wrapLines(lines, width, byBytes(lines));
+        for (const refract::WrapRow& row : rows) {
+            const std::string text = lines[0].substr(row.from, row.to - row.from);
+            CHECK(refract::validUtf8(text), "each row is whole, valid UTF-8");
+        }
+    }
+}
+
+static void testNoWidthAtAll() {
+    // A window being resized to nothing, or measured before it has been laid out.
+    const std::vector<std::string> lines = {"something"};
+    const auto rows = refract::wrapLines(lines, 0, byBytes(lines));
+    CHECK(rows.size() == 1, "zero width does not wrap, and does not hang");
+    const auto none = refract::wrapLines({}, 10, byBytes(lines));
+    CHECK(none.empty(), "no lines, no rows");
+}
+
+static void testWhichRowTheCaretIsOn() {
+    const std::vector<std::string> lines = {"the quick brown fox"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));   // "the quick " | "brown fox"
+    CHECK(refract::rowOfCaret(rows, 0, 0) == 0, "the start of the line is the first row");
+    CHECK(refract::rowOfCaret(rows, 0, 4) == 0, "and so is the middle of that row");
+    // At the wrap point the caret belongs to the row where typing will appear — the second.
+    CHECK(refract::rowOfCaret(rows, 0, 10) == 1, "a caret at the wrap is on the later row");
+    CHECK(refract::rowOfCaret(rows, 0, 19) == 1, "the end of the line is the last row");
+}
+
+static void testTheCaretOnALineOfItsOwn() {
+    const std::vector<std::string> lines = {"a", "b", "c"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));
+    for (int line = 0; line < 3; line++) {
+        CHECK(refract::rowOfCaret(rows, line, 0) == line, "one row per line, in order");
+        CHECK(refract::firstRowOfLine(rows, line) == line, "and it is that line's first");
+    }
+}
+
+static void testTheFirstRowOfAWrappedLine() {
+    const std::vector<std::string> lines = {"short", "the quick brown fox", "after"};
+    const auto rows = refract::wrapLines(lines, 10, byBytes(lines));
+    CHECK(refract::firstRowOfLine(rows, 0) == 0, "line 0 starts at row 0");
+    CHECK(refract::firstRowOfLine(rows, 1) == 1, "line 1 starts right after it");
+    CHECK(rows[refract::firstRowOfLine(rows, 2)].line == 2, "and line 2 after its rows");
+    CHECK(refract::firstRowOfLine(rows, 2) > 2, "which is further down than the line number");
+}
+
 int main() {
     testGridShape();
     testCardPositions();
@@ -221,6 +380,17 @@ int main() {
     testScrollFollowsTheCaret();
     testFilter();
 
+    testAShortLineIsOneRow();
+    testAnEmptyLineStillHasARow();
+    testAWordStaysWhole();
+    testOnlyTheFirstRowCarriesTheNumber();
+    testAWordLongerThanTheWidth();
+    testEveryByteOfEveryLineIsInExactlyOneRow();
+    testACutNeverLandsInsideACharacter();
+    testNoWidthAtAll();
+    testWhichRowTheCaretIsOn();
+    testTheCaretOnALineOfItsOwn();
+    testTheFirstRowOfAWrappedLine();
     if (failures == 0) std::fprintf(stderr, "view_geometry_test: all checks passed\n");
     else std::fprintf(stderr, "view_geometry_test: %d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;

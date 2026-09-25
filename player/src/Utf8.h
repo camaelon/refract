@@ -28,6 +28,10 @@ std::string displayable(const std::string& text);
 // a string so both halves stay valid.
 size_t utf8Boundary(const std::string& text, size_t at);
 
+// The offset one whole code point *after* `at` — where the next character starts. Always
+// greater than `at` until the end of the string, so a loop walking a string with it ends.
+size_t utf8Advance(const std::string& text, size_t at);
+
 // The text with its last whole code point removed. Not the last *byte*: taking one byte off
 // the end of a multi-byte character leaves its lead byte dangling, which is invalid UTF-8 and
 // is what Skia aborts on.
