@@ -50,6 +50,7 @@
 #endif
 #include "rcplayer/ImageExport.h"
 #include "rcplayer/PdfExport.h"
+#include "rcplayer/VideoExport.h"
 #include "rcplayer/Player.h"
 #include "rcplayer/ZipArchive.h"
 
@@ -85,6 +86,7 @@ std::unique_ptr<refract::PresenterWindow> presenter;
 std::unique_ptr<refract::AudioRecorder> recorder;
 std::unique_ptr<refract::AudioPlayer> voice;   // null when --no-sound, or off this platform
 bool voicePlaying = false;                     // a slide's narration is running
+bool voiceHeld = false;                        // it has a wav, but the talk is paused: starts with the clock
 // Set for the one slide change that follows a narration running out, so the outgoing audio
 // is left to finish under the incoming one instead of being cut.
 bool overlapNextVoice = false;
@@ -363,8 +365,12 @@ void playSlideAudio(double startAt) {
     const bool overlap = overlapNextVoice;
     overlapNextVoice = false;
 
+    // Narration follows the play/pause button: while the talk is paused a slide's wav
+    // waits, and starts from its beginning when the clock does.
     const fs::path wav = voiceFileFor(g.currentIndex);
-    if (!wav.empty()) voicePlaying = voice->play(wav.string(), overlap, startAt);
+    voiceHeld = false;
+    if (!wav.empty() && app.clock.running) voicePlaying = voice->play(wav.string(), overlap, startAt);
+    else if (!wav.empty()) { voice->stop(); voiceHeld = true; }
     else if (!overlap) voice->stop();
 
     if (g.currentIndex + 1 < app.deck.size()) {
@@ -387,7 +393,10 @@ void toggleTalkClock() {
     // The microphone follows the talk: a pause is a break, and a break belongs in neither
     // the slide's wav nor its recorded duration.
     if (recorder) recorder->setPaused(!app.clock.running);
-    if (voice) voice->setPaused(!app.clock.running);
+    if (voice) {
+        if (app.clock.running && voiceHeld) playSlideAudio();   // held back at the slide change
+        else voice->setPaused(!app.clock.running);
+    }
 }
 
 void startRunIfArmed() {
@@ -415,6 +424,10 @@ void openPresenter() {
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
     session.restore("presenter", presenter->window());
+    presenter->setOnToggleAutoplay([] {
+        app.autoplayVoice = !app.autoplayVoice;
+        saveSessionIfChanged();
+    });
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
     // Both windows take the same keys: you should be able to drive the talk from whichever
@@ -639,6 +652,7 @@ void captureSession() {
     session.build = buildPanel != nullptr;
     session.captions = captionWindow != nullptr;
     session.assets = assetWindow != nullptr;
+    session.autoplayVoice = app.autoplayVoice;
 
     if (assetWindow) session.capture("assets", assetWindow->window());
     if (presenter) session.capture("presenter", presenter->window());
@@ -1088,6 +1102,83 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // ── Video ────────────────────────────────────────────────────────
+    // Headless too, but it needs the deck as the presenter sees it — the slide order and
+    // which narration belongs to which slide — so it builds those first, then hands the
+    // player a list of slides with how long each stays up and one soundtrack laid out to
+    // the same timeline.
+    if (!options.video.empty()) {
+        std::vector<std::string> entries = collectDeckEntries(input);
+        if (entries.empty()) {
+            std::cerr << "refractplayer: no playable slides in " << input << "\n";
+            return 1;
+        }
+        fs::path deckDir = fs::is_directory(input) ? fs::path(input).parent_path()
+                                                   : fs::path(input).parent_path().parent_path();
+        if (fs::is_directory(deckDir / "voice")) g.voiceDirOverride = deckDir / "voice";
+        app.deck.build(entries, input);
+        if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
+
+        const int n = app.deck.size();
+        int from = std::max(1, options.videoFrom);
+        int to = options.videoTo > 0 ? std::min(options.videoTo, n) : n;
+        if (from > to) {
+            std::cerr << "refractplayer: --from " << from << " is past --to " << to << "\n";
+            return 1;
+        }
+        const double fps = options.videoFps > 0 ? options.videoFps : 30.0;
+
+        // Each slide's stay: its narration's length, else the dwell. Snapped to whole
+        // frames, and the audio cut to the same length, so the two never drift apart.
+        std::vector<rcplayer::VideoSlide> slides;
+        std::vector<std::string> wavs;
+        for (int i = from - 1; i < to; i++) {
+            const fs::path wav = voiceFileFor(i);
+            double duration = options.videoDwell;
+            std::string wavPath;
+            if (!wav.empty() && fs::exists(wav)) {
+                const std::string probe = "ffprobe -v error -show_entries format=duration -of csv=p=0 '"
+                                          + wav.string() + "'";
+                if (FILE* p = ::popen(probe.c_str(), "r")) {
+                    char buf[64] = {0};
+                    if (std::fgets(buf, sizeof(buf), p)) duration = std::atof(buf);
+                    ::pclose(p);
+                }
+                if (duration > 0.0) wavPath = wav.string();
+                else duration = options.videoDwell;
+            }
+            duration = std::max(1.0, std::lround(duration * fps) / fps);
+            slides.push_back({app.deck.at(i).entry, duration});
+            wavs.push_back(wavPath);
+        }
+
+        // The soundtrack: every slide's wav (or silence), each cut or padded to the slide's
+        // stay, resampled alike, and joined in order.
+        const std::string audio = options.video + ".audio.wav";
+        std::string cmd = "ffmpeg -y -loglevel error";
+        std::string filter;
+        for (size_t k = 0; k < slides.size(); k++) {
+            char d[32];
+            std::snprintf(d, sizeof(d), "%.3f", slides[k].duration);
+            if (!wavs[k].empty()) cmd += " -i '" + wavs[k] + "'";
+            else cmd += std::string(" -f lavfi -t ") + d + " -i anullsrc=r=48000:cl=stereo";
+            filter += "[" + std::to_string(k) + ":a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=0:"
+                      + d + ",apad=whole_dur=" + d + "[a" + std::to_string(k) + "];";
+        }
+        for (size_t k = 0; k < slides.size(); k++) filter += "[a" + std::to_string(k) + "]";
+        filter += "concat=n=" + std::to_string(slides.size()) + ":v=0:a=1[out]";
+        cmd += " -filter_complex '" + filter + "' -map '[out]' -ar 48000 -ac 2 '" + audio + "'";
+        std::cerr << "refractplayer: slides " << from << "-" << to << ", assembling the soundtrack\n";
+        if (std::system(cmd.c_str()) != 0) {
+            std::cerr << "refractplayer: ffmpeg could not build the soundtrack\n";
+            return 1;
+        }
+        auto result = rcplayer::exportDeckToVideo(slides, audio, options.video, initW, initH, fps);
+        std::error_code ec;
+        fs::remove(audio, ec);
+        return result.ok ? 0 : 1;
+    }
+
     // ── Export ───────────────────────────────────────────────────────
     // Headless: no window, no GLFW, no playlist — the exporters walk the deck themselves.
     // Size follows the window size, which defaults to the deck's design size; a PDF page
@@ -1252,7 +1343,10 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    if (session.load(input)) sessionOnDisk = session.serialise();
+    if (session.load(input)) {
+        sessionOnDisk = session.serialise();
+        app.autoplayVoice = session.autoplayVoice;
+    }
 
     if (!glfwInit()) {
         std::cerr << "refractplayer: GLFW init failed\n";
@@ -1465,7 +1559,7 @@ int main(int argc, char* argv[]) {
             }
             if (holdForEdit) {
                 // Nothing to do: the deck stays where it is until the edit is finished.
-            } else if (g.autoAdvanceOnVoice && voicePlaying && voice) {
+            } else if ((g.autoAdvanceOnVoice || app.autoplayVoice) && voicePlaying && voice) {
                 // Hand over a moment *before* the narration ends rather than after it has.
                 // Waiting for the file to stop means noticing a frame late, and a frame of
                 // silence at every slide boundary is the seam this is trying to remove. The

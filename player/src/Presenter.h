@@ -36,6 +36,10 @@ public:
     // owns the microphone and the file.
     void setOnRecordSlide(std::function<void()> record, std::function<void()> discard);
 
+    // The "autoplay narration" checkbox, when the deck has any narration to play. The
+    // window only draws the state (app.autoplayVoice) and reports the click.
+    void setOnToggleAutoplay(std::function<void()> toggle);
+
     // Feed the current microphone level (0..1) for the recording meter, or -1 when not
     // recording. Sampled by the caller because the recorder is the app's, not the window's.
     void pushAudioLevel(float average, float peak);

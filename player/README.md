@@ -106,6 +106,14 @@ would have made a slide that *is* animating cache as settled; the opcode tables 
 `std::call_once`; the Java-compatible RNG is per thread; and `StillHosts`' label font no longer
 hands out a reference to a static it reassigns on the next call.
 
+**Autoplay narration**, a checkbox at the foot of the presenter beside the record button:
+with it ticked, a slide that has a narration wav advances on its own when the wav ends, so
+a recorded talk plays itself, and a slide without one waits for you as usual. It is
+remembered with the session. (`--auto-voice` on the command line is the stricter form,
+which also times narration-less slides from a rehearsal.) Narration follows the play/pause
+button either way: while the talk is paused a slide's wav waits, and starts from the top
+when the clock does.
+
 Embedded content previews too: `rc:` sub-documents render for real and `video:` embeds show
 a poster frame. An embedded **web page** cannot be drawn off-screen at all — it is a native
 `WKWebView` over the window — so it previews as a dashed frame labelled with where the page
@@ -1121,6 +1129,22 @@ From inside the player, **File ▸ Export PDF…** (`cmd`+`E`) does the same: it
 put the file (beside the deck, named after it, by default), runs the export in the
 background — the player itself, headless, over the deck on screen, so the pages are exactly
 what `--pdf` would write — and opens the PDF when it lands. The talk keeps playing meanwhile.
+
+**`--video`** plays the slides into a movie, narration and all:
+
+```sh
+prebuilt/refractplayer mytalk/out --video mytalk.mp4 --from 3 --to 12
+python3 refract.py mytalk --video --from 3 --to 12        # the same, from the build tool
+```
+
+Each slide stays up for as long as its narration wav lasts, or `--dwell` seconds (default 4)
+when it has none, and the wavs are laid end to end as the soundtrack, cut or padded to the
+same lengths so picture and sound never drift. Frames render at `--fps` (default 30) through
+the player itself and go straight down a pipe into `ffmpeg`, which encodes H.264 and AAC;
+nothing but the finished file touches the disk. `--from` and `--to` are 1-based slide numbers
+as the presenter shows them, inclusive, and default to the whole deck. Needs `ffmpeg` and
+`ffprobe` on the path. A film that persists across slides carries on through the movie
+exactly as it does on screen.
 
 **`--pdf`** writes one page per slide. `.rc` slides go through Skia's PDF backend, so text
 and shapes stay vector and selectable rather than being rasterised. Videos contribute a

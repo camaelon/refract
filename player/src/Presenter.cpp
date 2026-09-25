@@ -35,6 +35,8 @@ struct PresenterWindow::Impl {
     std::function<void()> onToggleClock;
     std::function<void()> onRecordSlide;
     std::function<void()> onDiscardTake;
+    std::function<void()> onToggleAutoplay;
+    SkRect autoplayBox = SkRect::MakeEmpty();
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
     SkRect recordButton = SkRect::MakeEmpty();
     SkRect discardButton = SkRect::MakeEmpty();
@@ -90,6 +92,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         if (impl.over(impl.clockButton) && impl.onToggleClock) impl.onToggleClock();
         else if (impl.over(impl.recordButton) && impl.onRecordSlide) impl.onRecordSlide();
         else if (impl.over(impl.discardButton) && impl.onDiscardTake) impl.onDiscardTake();
+        else if (impl.over(impl.autoplayBox) && impl.onToggleAutoplay) impl.onToggleAutoplay();
     });
 
     glfwMakeContextCurrent(window);
@@ -113,6 +116,10 @@ void PresenterWindow::setOnRecordSlide(std::function<void()> record,
                                        std::function<void()> discard) {
     mImpl->onRecordSlide = std::move(record);
     mImpl->onDiscardTake = std::move(discard);
+}
+
+void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
+    mImpl->onToggleAutoplay = std::move(toggle);
 }
 
 void PresenterWindow::pushAudioLevel(float average, float peak) {
@@ -509,6 +516,38 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     // it is doing should be unmistakable while it happens.
     mImpl->recordButton = SkRect::MakeEmpty();
     mImpl->discardButton = SkRect::MakeEmpty();
+    mImpl->autoplayBox = SkRect::MakeEmpty();
+    // ── Autoplay narration ───────────────────────────────────────────
+    // On the same row, at the right: a slide that has a wav advances when it ends, so a
+    // recorded talk plays itself; a slide without one waits for you as usual.
+    if (mImpl->onToggleAutoplay && showRecord && !app.deck.empty()) {
+        SkFont label = uiFont(12, true);
+        const std::string text = "autoplay narration";
+        const float tw = textWidth(label, text);
+        const float box = 16.0f;
+        const float by = notesBottom + 6;
+        const float right = w - pad;
+        mImpl->autoplayBox = SkRect::MakeXYWH(right - tw - 10 - box, by + 5, box + 10 + tw, box);
+        const bool hot = mImpl->over(mImpl->autoplayBox);
+        const SkColor tone = app.autoplayVoice ? ui::kText : (hot ? ui::kText : ui::kDim);
+        SkRect square = SkRect::MakeXYWH(mImpl->autoplayBox.left(), by + 5, box, box);
+        fillRoundRect(canvas, square, 3, ui::kPanel);
+        strokeRoundRect(canvas, square, 3, app.autoplayVoice ? ui::kText : (hot ? ui::kDim : ui::kLine), 1.0f);
+        if (app.autoplayVoice) {
+            // A tick, drawn: the chrome has one typeface and a check glyph is not in it.
+            SkPaint tick;
+            tick.setAntiAlias(true);
+            tick.setStyle(SkPaint::kStroke_Style);
+            tick.setStrokeWidth(2.0f);
+            tick.setColor(ui::kText);
+            SkPathBuilder path;
+            path.moveTo(square.left() + 3.5f, square.centerY() + 0.5f);
+            path.lineTo(square.left() + 6.5f, square.bottom() - 4.0f);
+            path.lineTo(square.right() - 3.5f, square.top() + 4.0f);
+            canvas->drawPath(path.detach(), tick);
+        }
+        drawText(canvas, text, square.right() + 10, square.centerY() + 4, label, tone);
+    }
     if (mImpl->onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
         SkFont label = uiFont(12, true);
         const std::string text = app.reRecording

@@ -766,6 +766,15 @@ def main() -> int:
                     help="export the deck to a PDF (default <deck>/out/deck.pdf)")
     ap.add_argument("--images", nargs="?", const="", default=None,
                     help="export each slide to a PNG (default <deck>/out/images/)")
+    ap.add_argument("--video", nargs="?", const="", default=None,
+                    help="play the slides into a movie with their narration (default <deck>/out/deck.mp4)")
+    ap.add_argument("--from", dest="video_from", type=int, default=1,
+                    help="first slide of the movie, 1-based (default 1)")
+    ap.add_argument("--to", dest="video_to", type=int, default=0,
+                    help="last slide of the movie, inclusive (default: the last slide)")
+    ap.add_argument("--fps", type=float, default=30.0, help="movie frame rate (default 30)")
+    ap.add_argument("--dwell", type=float, default=4.0,
+                    help="seconds a slide with no narration stays up in the movie (default 4)")
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
     ap.add_argument("--force", action="store_true",
@@ -1191,6 +1200,22 @@ def run_once(args) -> int:
         cache.forget(stale)
         print(f"removed {stale}  [no longer in the deck]")
     cache.save()
+
+    # Optional movie via refractplayer: the slides played at a fixed rate, the narration wavs
+    # from the voice dir as the soundtrack, slides without one held for --dwell seconds.
+    if args.video is not None:
+        viewer = find_viewer(repo_root)
+        if not viewer or os.path.basename(viewer) != "refractplayer":
+            print("--video needs prebuilt/refractplayer (build it with player/build.sh).",
+                  file=sys.stderr)
+            return 1
+        video = args.video or os.path.join(out_dir, "deck.mp4")
+        cmd = [viewer, out_dir, "--video", video, "--from", str(args.video_from),
+               "--to", str(args.video_to), "--fps", str(args.fps), "--dwell", str(args.dwell),
+               str(width), str(height)]
+        if subprocess.run(cmd).returncode != 0:
+            return 1
+        print(f"exported {video}")
 
     # Optional export to PDF / images via the viewer.
     if args.pdf is not None or args.images is not None:

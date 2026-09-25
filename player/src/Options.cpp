@@ -62,6 +62,11 @@ Options parseOptions(int argc, char* argv[]) {
         else if (arg == "--no-sound") o.sound = false;
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
+        else if (arg == "--video") o.video = next("--video");
+        else if (arg == "--from") o.videoFrom = std::atoi(next("--from").c_str());
+        else if (arg == "--to") o.videoTo = std::atoi(next("--to").c_str());
+        else if (arg == "--fps") o.videoFps = std::atof(next("--fps").c_str());
+        else if (arg == "--dwell") o.videoDwell = std::atof(next("--dwell").c_str());
         else if (arg == "--transcribe") o.transcribe = true;
         else if (arg == "--web") o.web = next("--web");
         else if (arg == "--caption-model") o.captionModel = next("--caption-model");
@@ -158,6 +163,11 @@ std::string usageText() {
         "  --export-delay <s> how long each slide animates before it is captured\n"
         "                     (default 2) — long enough that a slide which animates\n"
         "                     in is not caught blank\n"
+        "  --video <out.mp4>  play the slides into a movie, with the narration wavs as\n"
+        "                     its soundtrack, and exit (needs ffmpeg and ffprobe)\n"
+        "  --from <n> --to <m>  the slides to include, 1-based, inclusive (default: all)\n"
+        "  --fps <n>          frames per second (default 30)\n"
+        "  --dwell <s>        how long a slide with no narration stays up (default 4)\n"
         "\n"        "  --help, -h         this text\n"
         "\n"
         "Press H in the player for the key card.\n";

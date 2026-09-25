@@ -51,6 +51,9 @@ struct App {
     // begins — so there is nothing to remember to press. Explicitly starting or stopping it
     // (T) takes over from then on.
     bool autoStartClock = true;
+    // The presenter's "autoplay narration" box: a slide with a wav advances when it ends;
+    // a slide without one holds, unlike --auto-voice which times those from a rehearsal.
+    bool autoplayVoice = false;
 
     int    blank = 0;              // 0 = showing, 1 = black, 2 = white
     double slideEnteredAt = 0.0;   // clock.elapsed when the current slide came up
