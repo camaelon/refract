@@ -7,5 +7,6 @@ namespace refract {
 bool canChooseFiles() { return false; }
 std::string chooseDeck() { return {}; }
 std::string chooseNewDeck() { return {}; }
+std::string choosePdf(const std::string&, const std::string&) { return {}; }
 
 }  // namespace refract

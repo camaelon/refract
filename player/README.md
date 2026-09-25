@@ -175,6 +175,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `M` | `cmd`+`4` | build panel |
 | `C` | `cmd`+`5` | captions |
 | `I` | `cmd`+`7` | assets |
+| | `cmd`+`E` | File ▸ Export PDF… |
 
 The panels are the useful half of this program and every one of them used to be a single
 letter — fine once you know, invisible until you do. They are at the top of the Window menu,
@@ -1116,6 +1117,11 @@ Both are headless — no window opens — and both take `--export-delay`, which 
 its animation each slide is taken before capture. The default of 2 seconds is enough that a
 slide which animates in is not caught mid-entrance.
 
+From inside the player, **File ▸ Export PDF…** (`cmd`+`E`) does the same: it asks where to
+put the file (beside the deck, named after it, by default), runs the export in the
+background — the player itself, headless, over the deck on screen, so the pages are exactly
+what `--pdf` would write — and opens the PDF when it lands. The talk keeps playing meanwhile.
+
 **`--pdf`** writes one page per slide. `.rc` slides go through Skia's PDF backend, so text
 and shapes stay vector and selectable rather than being rasterised. Videos contribute a
 first frame, embedded `rc:` documents render in full, and an embedded web page becomes the
@@ -1339,7 +1345,8 @@ python3 -m unittest discover -s tests
 | `src/Windowing.{h,cpp}` | monitors, and going fullscreen on the right one |
 | `src/TextBuffer.{h,cpp}` | its text model: lines, caret, selection, undo |
 | `src/BuildPanel.{h,cpp}` | the build panel |
-| `src/AppMenu.{h,mm}` | the panels in the menu bar (Cocoa; a no-op elsewhere) |
+| `src/AppMenu.{h,mm}` | the panels in the menu bar, and the File menu (Cocoa; a no-op elsewhere) |
+| `src/PdfExporter.{h,cpp}` | File ▸ Export PDF…: runs this binary headless with `--pdf` on a worker, opens the result |
 | `src/Session.{h,cpp}` | what was open and where, remembered per deck |
 | `src/StartWindow.{h,cpp}` | what is shown when no deck was named |
 | `src/DeckLibrary.{h,cpp}` | the decks opened before, and making a new one |

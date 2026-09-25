@@ -91,6 +91,7 @@ set(REFRACTPLAYER_SOURCES
     src/DeckSource.cpp
     src/Windowing.cpp
     src/BuildRunner.cpp
+    src/PdfExporter.cpp
     src/Completion.cpp
     src/Scrolling.cpp
     src/Plan.cpp

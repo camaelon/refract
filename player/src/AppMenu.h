@@ -29,4 +29,9 @@ struct MenuItem {
 // windowing system is up. Does nothing off macOS.
 void installWindowMenu(std::vector<MenuItem> items);
 
+// Add these to a "File" menu, created beside the application menu when GLFW has not made
+// one. For what the program does *to* a deck — export, say — as opposed to the windows it
+// opens. Same rules as installWindowMenu; `open` is ignored (nothing here has a tick).
+void installFileMenu(std::vector<MenuItem> items);
+
 }  // namespace refract

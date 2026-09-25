@@ -21,6 +21,24 @@ std::string chooseDeck() {
     }
 }
 
+std::string choosePdf(const std::string& dir, const std::string& name) {
+    @autoreleasepool {
+        NSSavePanel* panel = [NSSavePanel savePanel];
+        panel.title = @"Export PDF";
+        panel.message = @"One page per slide, captured after each slide has animated in.";
+        panel.prompt = @"Export";
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:name.c_str()];
+        panel.allowedFileTypes = @[@"pdf"];
+        panel.allowsOtherFileTypes = NO;
+        if (!dir.empty()) {
+            panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()]];
+        }
+        if ([panel runModal] != NSModalResponseOK) return {};
+        NSURL* url = panel.URL;
+        return url ? std::string(url.fileSystemRepresentation) : std::string();
+    }
+}
+
 std::string chooseNewDeck() {
     @autoreleasepool {
         // A save panel rather than an open one: a new deck is a folder that does not exist

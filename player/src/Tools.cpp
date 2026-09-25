@@ -14,17 +14,63 @@ namespace fs = std::filesystem;
 
 namespace refract {
 
-fs::path executableDir() {
+fs::path executablePath() {
 #if defined(__APPLE__)
     char buf[4096];
     uint32_t size = sizeof(buf);
     if (_NSGetExecutablePath(buf, &size) == 0) {
         std::error_code ec;
         fs::path resolved = fs::weakly_canonical(fs::path(buf), ec);
-        if (!ec) return resolved.parent_path();
+        if (!ec) return resolved;
     }
 #endif
     return {};
+}
+
+fs::path executableDir() {
+    const fs::path exe = executablePath();
+    return exe.empty() ? fs::path() : exe.parent_path();
+}
+
+int runProgram(const std::string& program, const std::vector<std::string>& args,
+               std::string* errors) {
+    std::vector<std::string> owned = args;
+    std::vector<char*> argv;
+    std::string prog = program;
+    argv.push_back(prog.data());
+    for (auto& arg : owned) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    int errFds[2] = {-1, -1};
+    if (errors && ::pipe(errFds) != 0) return -1;
+
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        if (errors) { ::close(errFds[0]); ::close(errFds[1]); }
+        return -1;
+    }
+    if (pid == 0) {
+        if (errors) {
+            ::dup2(errFds[1], STDERR_FILENO);
+            ::close(errFds[0]);
+            ::close(errFds[1]);
+        }
+        ::execv(prog.c_str(), argv.data());
+        ::_exit(127);
+    }
+    if (errors) {
+        ::close(errFds[1]);
+        char buf[4096];
+        ssize_t n;
+        while ((n = ::read(errFds[0], buf, sizeof(buf))) > 0) {
+            errors->append(buf, (size_t)n);
+            ::write(STDERR_FILENO, buf, (size_t)n);   // passed through as well as kept
+        }
+        ::close(errFds[0]);
+    }
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0) {}
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 // The scripts sit in the repo beside the player's sources. Both places the binary normally

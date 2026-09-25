@@ -19,6 +19,8 @@
 #include "CaptionWindow.h"
 #include "BuildPanel.h"
 #include "BuildRunner.h"
+#include "FileDialog.h"
+#include "PdfExporter.h"
 #include "Captions.h"
 #include "DeckView.h"
 #include "DeckSource.h"
@@ -136,7 +138,8 @@ void stopSlideRecording(bool keep);
 // A panel the menu bar has asked for. Menu items fire from inside Cocoa's event handling,
 // and opening or closing a GLFW window from there means creating and destroying an NSWindow
 // while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
-enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets };
+enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets,
+                       ExportPdf };
 MenuPanel menuRequest = MenuPanel::None;
 
 void toggleDeckView();
@@ -519,6 +522,62 @@ bool reloadDeck() {
 // who to tell when one lands.
 refract::DeckSource source;
 refract::BuildRunner builder;
+
+// ── Exporting to PDF ─────────────────────────────────────────────────
+//
+// File ▸ Export PDF… runs this binary again, headless, over the deck on screen — the same
+// export as `refract.py --pdf` — and opens the result when it lands. The page size is the
+// one the window opened with (the deck's design size unless --width/--height said otherwise),
+// captured before any resize.
+refract::PdfExporter pdfExporter;
+int exportW = 0, exportH = 0;
+double exportDelay = 2.0;
+bool exportReported = true;   // the last export's outcome has been announced
+
+void exportPdf() {
+    if (deckInput.empty()) return;
+    if (pdfExporter.running()) {
+        std::cerr << "refractplayer: a PDF export is already running\n";
+        return;
+    }
+    // Beside the deck, named after it: <deck>/<deck>.pdf, as refract.py defaults to
+    // <deck>/out/deck.pdf — but next to the sources is where somebody will look for it.
+    fs::path deckDir = fs::path(deckInput);
+    if (deckDir.filename() == "out") deckDir = deckDir.parent_path();
+    std::string name = deckDir.filename().string();
+    if (name.empty() || getExt(deckInput) == ".zip") name = fs::path(deckInput).stem().string();
+    if (name.empty()) name = "deck";
+    std::string startDir = deckDir.string();
+    if (getExt(deckInput) == ".zip") startDir = fs::path(deckInput).parent_path().string();
+
+    std::string pdf = refract::canChooseFiles() ? refract::choosePdf(startDir, name + ".pdf")
+                                                : (fs::path(startDir) / (name + ".pdf")).string();
+    if (pdf.empty()) return;
+    if (getExt(pdf) != ".pdf") pdf += ".pdf";
+    if (pdfExporter.start(deckInput, pdf, exportW, exportH, exportDelay)) {
+        exportReported = false;
+        std::cerr << "refractplayer: exporting " << pdf << " ...\n";
+    } else {
+        std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
+    }
+}
+
+// Once the export has landed: say so, and put the PDF on screen — the point of exporting is
+// to look at it, and a file that quietly appeared beside the deck is easy to miss.
+void collectPdfExport() {
+    if (exportReported) return;
+    const refract::PdfExportState state = pdfExporter.state();
+    if (state.running || !state.ran) return;
+    exportReported = true;
+    if (state.ok) {
+        std::cerr << "refractplayer: wrote " << state.path << "\n";
+#if defined(__APPLE__)
+        refract::runProgram("/usr/bin/open", {state.path});
+#endif
+    } else {
+        std::cerr << "refractplayer: PDF export failed: " << state.error << "\n";
+    }
+}
 
 void openDeckView() {
     if (deckView) return;
@@ -1011,6 +1070,7 @@ int main(int argc, char* argv[]) {
 
     int initW = options.width, initH = options.height;
     std::string input = options.input;
+    exportDelay = options.exportDelay;
 
     if (input.empty()) {
         // Nothing named. From a terminal the usage text is the useful answer; double-clicked,
@@ -1047,6 +1107,8 @@ int main(int argc, char* argv[]) {
 
     // ── Playlist ─────────────────────────────────────────────────────
     input = resolveDeck(input);
+    exportW = initW;
+    exportH = initH;
     refract::rememberDeck(fs::path(input).filename() == "out"
                               ? fs::path(input).parent_path().string() : input);
     deckInput = input;
@@ -1278,6 +1340,9 @@ int main(int argc, char* argv[]) {
     // The panels, in the menu bar. Chosen from a menu they arrive on Cocoa's thread of
     // control rather than GLFW's, in the middle of the event pump — so the item only asks,
     // and the loop opens the window a moment later where every other window is opened.
+    refract::installFileMenu({
+        {"Export PDF\u2026", "e", [] { menuRequest = MenuPanel::ExportPdf; }, nullptr},
+    });
     refract::installWindowMenu({
         {"Presenter",    "1", [] { menuRequest = MenuPanel::Presenter; },
                               [] { return presenter != nullptr; }},
@@ -1350,11 +1415,13 @@ int main(int argc, char* argv[]) {
                 case MenuPanel::Captions:  toggleCaptions(); break;
                 case MenuPanel::Navigator: app.navOpen = !app.navOpen; break;
                 case MenuPanel::Assets:    toggleAssetWindow(); break;
+                case MenuPanel::ExportPdf: exportPdf(); break;
                 case MenuPanel::None:      break;
             }
         }
 
         source.collect();
+        collectPdfExport();
 
         if (deckReloadPending) {
             deckReloadPending = false;

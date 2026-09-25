@@ -11,8 +11,17 @@
 
 namespace refract {
 
+// The running binary, resolved. Empty when the platform cannot say.
+std::filesystem::path executablePath();
+
 // The directory the running binary is in — the tools sit at a fixed distance from it.
 std::filesystem::path executableDir();
+
+// Run any program, waiting for it. stdout goes to the terminal; stderr is captured into
+// `errors` (when given) as well as passed through, like runTool. The exit status, or -1
+// when it could not be started. Safe on a worker thread.
+int runProgram(const std::string& program, const std::vector<std::string>& args,
+               std::string* errors = nullptr);
 
 // Where `player/tools/<name>` is, or empty when it cannot be found.
 std::filesystem::path findTool(const std::string& name);
