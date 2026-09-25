@@ -92,7 +92,30 @@ def image_size(path: str) -> tuple[int, int]:
 
 def _rounded_rect_path(path: str, l: float, t: float, r: float, b: float,
                        rad: float) -> list[dict]:
-    """Canvas commands building a rounded-rect path (quad corners)."""
+    """Canvas commands building a rounded-rect path (or 8-segment circle when fully round)."""
+    w, h = r - l, b - t
+    if rad >= min(w, h) / 2.0 - 0.5:
+        cx, cy = (l + r) / 2.0, (t + b) / 2.0
+        rx, ry = w / 2.0, h / 2.0
+        k = 0.41421356  # tan(pi / 8)
+        s = 0.70710678  # sqrt(2) / 2
+        pts = [
+            (cx + rx * k, cy - ry, cx + rx * s, cy - ry * s),
+            (cx + rx, cy - ry * k, cx + rx, cy),
+            (cx + rx, cy + ry * k, cx + rx * s, cy + ry * s),
+            (cx + rx * k, cy + ry, cx, cy + ry),
+            (cx - rx * k, cy + ry, cx - rx * s, cy + ry * s),
+            (cx - rx, cy + ry * k, cx - rx, cy),
+            (cx - rx, cy - ry * k, cx - rx * s, cy - ry * s),
+            (cx - rx * k, cy - ry, cx, cy - ry),
+        ]
+        cmds = [{"type": "pathcreate", "id": path, "x": round(cx, 2), "y": round(cy - ry, 2)}]
+        for x1, y1, x2, y2 in pts:
+            cmds.append({"type": "pathappendquadto", "path": path,
+                         "x1": round(x1, 2), "y1": round(y1, 2),
+                         "x2": round(x2, 2), "y2": round(y2, 2)})
+        cmds.append({"type": "pathappendclose", "path": path})
+        return cmds
     return [
         {"type": "pathcreate", "id": path, "x": l + rad, "y": t},
         {"type": "pathappendlineto", "path": path, "x": r - rad, "y": t},
@@ -150,7 +173,14 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
     draw = {"type": "drawbitmap", "image": "$" + var,
             "left": left, "top": top, "right": right, "bottom": bottom}
     commands = [{"type": "addbitmap", "image": img_path, "varName": var}]
-    rad = min(float(theme.image_corner_radius), dw / 2.0, dh / 2.0)
+    raw_rad = opts.get("radius", opts.get("corner_radius", opts.get("clip", theme.image_corner_radius)))
+    if str(raw_rad).lower() in ("circle", "ellipse", "round"):
+        rad = min(dw / 2.0, dh / 2.0)
+    else:
+        try:
+            rad = min(float(raw_rad), dw / 2.0, dh / 2.0)
+        except (TypeError, ValueError):
+            rad = 0.0
     if rad > 0.5:
         clip = f"__imgclip{counter[0]}"
         commands += _rounded_rect_path(clip, left, top, right, bottom, round(rad, 2))
