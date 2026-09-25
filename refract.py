@@ -888,6 +888,15 @@ def run_once(args) -> int:
     total = len(slides)
     for i, slide in enumerate(slides):
         blocks = resolve_blocks(slide)
+        # Media can sit inside a ``===`` layout band as well as at the top level; the
+        # copy-to-out/media and ``src`` rewrites below must see every block of the slide (the
+        # dicts are shared with the sections, so an update here is what the renderer reads).
+        media_blocks = list(blocks)
+        seen = {id(b) for b in blocks}
+        for sec in slide.get("sections") or []:
+            for b in sec.get("blocks") or []:
+                if id(b) not in seen:
+                    seen.add(id(b)); media_blocks.append(b)
         name = slug(slide, i, total)
         rc_path = os.path.join(out_dir, name + ".rc")
         if slide.get("notes"):
@@ -909,7 +918,7 @@ def run_once(args) -> int:
         # .mp4 would be picked up as its own standalone slide/PDF page). The custom component
         # references it as media/<name>; the video host resolves that relative to the slide
         # directory, same as the embedded-rc host.
-        for v in videos:
+        for v in [b for b in media_blocks if b["kind"] == "video"]:
             base = os.path.basename(v["path"])
             copies.append((v["path"], os.path.join(out_dir, "media", base)))
             v["src"] = f"media/{base}"
@@ -926,7 +935,7 @@ def run_once(args) -> int:
         #   • rc_include with no .json  → copy the binary .rc as-is.
         #   • rc/json with a crop/fit   → *frame* it (crop/scale need a fixed-size document, so
         #     we embed rather than splice flat): copy the .rc, or compile the .json via json2rc.
-        for b in blocks:
+        for b in media_blocks:
             framed = b.get("crop") or b.get("fit")
             if b["kind"] == "rc_include" and not b.get("json"):
                 base = os.path.basename(b["path"])
