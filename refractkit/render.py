@@ -695,8 +695,10 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
-    config = _media_config("rc", src, {"fit": fit if fit and fit != "fit" else "",
-                                       "crop": _crop_opt(block)})
+    opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block)}
+    for k in ("persist", "step", "stepid", "timeid"):      # slide-driven documents, see deck.py
+        if block.get(k): opts[k] = block[k]
+    config = _media_config("rc", src, opts)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), theme.image_corner_radius, debug)
     return _with_caption(box, block, theme, debug, avail_h)

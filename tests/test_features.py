@@ -145,7 +145,7 @@ class HeadingAndBackgroundInclusions(unittest.TestCase):
 
 
 class GifAndWebpConversion(unittest.TestCase):
-    def test_gif_conversion_to_png(self):
+    def test_gif_passes_through_unconverted(self):
         from refractkit.images import ensure_static_image, image_size
         # Create a tiny valid 1x1 GIF89a
         gif_bytes = (
@@ -158,10 +158,8 @@ class GifAndWebpConversion(unittest.TestCase):
         with open(gif_path, "wb") as f:
             f.write(gif_bytes)
         self.assertEqual(image_size(gif_path), (1, 1))
-        conv = ensure_static_image(gif_path)
-        self.assertTrue(conv.endswith(".png"))
-        self.assertTrue(os.path.isfile(conv))
-        self.assertEqual(image_size(conv), (1, 1))
+        # GIFs are embedded as-is (the viewer plays animated ones); only WebP is converted.
+        self.assertEqual(ensure_static_image(gif_path), gif_path)
 
 
 if __name__ == "__main__":

@@ -16,11 +16,12 @@ from .components import dbg
 
 
 def ensure_static_image(path: str) -> str:
-    """Convert .gif and .webp images to a static .png image (in a hidden .converted/ folder
-    beside the file) since the player and json2rc do not support animated GIFs or WebP natively.
-    Returns the converted .png path, or the original path for PNG/JPEG."""
+    """Convert a .webp image to a static .png (in a hidden .converted/ folder beside the file):
+    json2rc cannot read WebP. PNG, JPEG and GIF pass through untouched — json2rc embeds their
+    bytes verbatim, and an animated GIF keeps its frames, which the C++ viewer plays in place.
+    Returns the converted .png path, or the original path."""
     ext = os.path.splitext(path)[1].lower()
-    if ext not in (".gif", ".webp"):
+    if ext != ".webp":
         return path
     if not os.path.isfile(path):
         return path

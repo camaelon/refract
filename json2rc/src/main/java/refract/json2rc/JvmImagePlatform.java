@@ -85,7 +85,7 @@ final class JvmImagePlatform implements RcPlatformServices {
         }
     }
 
-    /** Raw bytes of an already-compressed source (PNG or JPEG), or null if it is neither. */
+    /** Raw bytes of an already-compressed source (PNG, JPEG or GIF), or null if it is none of those. */
     private static byte[] rawBytes(String ref) throws IOException {
         byte[] b;
         if (ref.startsWith("data:")) {
@@ -101,6 +101,10 @@ final class JvmImagePlatform implements RcPlatformServices {
         }
         if (b.length > 8 && (b[0] & 0xFF) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return b;
         if (b.length > 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8) return b;   // JPEG SOI
+        // GIF87a / GIF89a: kept whole so an animated GIF keeps its frames — the player decodes
+        // every frame and picks one by animationTime (a static GIF is just a one-frame case).
+        if (b.length > 6 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8'
+                && (b[4] == '7' || b[4] == '9') && b[5] == 'a') return b;
         return null;
     }
 

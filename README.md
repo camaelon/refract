@@ -254,7 +254,7 @@ Use `skip=false` to keep one while leaving the flag in place.
 | code          | fenced ```` ``` ```` block — **syntax-highlighted** (kotlin, java, json) |
 | graph         | fenced ```` ```dot ```` / `neato` / `fdp` / `circo` … — laid out by graphviz, drawn by refract (clusters, dashed/dotted/coloured edges, per-node colours, neon node glow) |
 | chart         | fenced ```` ```chart-bar ```` / `chart-line` / `chart-pie` with `label: value` lines |
-| image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc` |
+| image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc`; an animated `.gif` plays in place (every frame is embedded, the viewer picks the frame by document time) |
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
 | video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide. `crop` trims the frame (e.g. black bars). |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
@@ -873,3 +873,29 @@ needs a display.
   same background (shader or solid), it's drawn once behind the stage and only the
   foreground content slides — half the full-slide shader work per frame, so the animate-in
   stays smooth. The ambient background simply doesn't slide (visually equivalent).
+
+### Slide-driven embedded documents
+
+An embedded `.rc` normally lives and dies with its slide: it loads when the slide appears, runs
+on the slide's clock, and is dropped when you move on. Three include options turn one document
+into something that runs *across* slides, paced by them:
+
+```markdown
+<film.rc | persist step=3 stepid=42 timeid=43 ratio=16:9>
+```
+
+- **`persist`** keeps the document alive across slide changes (like an embedded web view) on
+  its **own** clock — seconds since it first loaded — so consecutive slides embedding the same
+  file share one live document that neither reloads nor rewinds. `step=` implies it.
+- **`step=N`** is this slide's number for the document, written each frame into the float
+  variable whose id is **`stepid`**; **`timeid`** names the float that receives the host's time
+  (seconds since the slide started). Both are the document's own `DATA_FLOAT` ids — declare the
+  two as plain-number variables first in `resources.variables` and they are 42 and 43 (read them
+  back with `rc2json` if in doubt).
+- In the document, derive the clock from them: `TA = start[STEP] + span[STEP]·clamp(SLIDETIME·rate[STEP], 1, 0)`
+  (float arrays hold the per-chapter numbers), and add `+ animTime*0.0` to it so the whole
+  dependent chain re-evaluates every frame — a host override on a plain variable only wakes
+  its direct listeners, whereas anything hanging off the clock is walked each frame.
+
+Put `transition=none` on those slides: a crossfade or push would draw the previous slide's copy
+over the document's own hand-over.

@@ -159,6 +159,14 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         block["ratio"] = ratio
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
+    # Slide-driven embedded documents: ``persist`` keeps the document alive across slides on
+    # its own clock; ``step=N`` hands it this slide's number and ``stepid``/``timeid`` name
+    # the document's float ids that receive the step and the host's slide time. Passed
+    # through to the embedded-document host untouched.
+    if block["kind"] == "rc_include":
+        for k in ("persist", "step", "stepid", "timeid"):
+            if k in opts:
+                block[k] = "1" if opts[k] is True else str(opts[k])
     # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):
     # "shown" | "fade" | "hidden" — the renderer alpha-gates the embed accordingly.
     if opts.get("_reveal") and block["kind"] in _CAPTIONABLE:
