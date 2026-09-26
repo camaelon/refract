@@ -33,9 +33,16 @@ std::string TranscribeProgress::label() const {
 }
 
 bool parseTranscribeProgress(const std::string& line, TranscribeProgress* progress) {
-    // "progress: 3/23 aligning 07": the common shape, then the recording split off the end.
     Progress base;
     if (!parseProgressLine(line, &base)) return false;
+    *progress = transcribeProgressFrom(base);
+    return true;
+}
+
+TranscribeProgress transcribeProgressFrom(const Progress& base) {
+    // "3/23 aligning 07": the common shape, then the recording split off the end.
+    TranscribeProgress out;
+    TranscribeProgress* progress = &out;
     const int done = static_cast<int>(base.done), total = static_cast<int>(base.total);
     std::string rest = base.text;
     // The stem is the last word only when the phase is a one-word verb ("aligning 07");
@@ -54,12 +61,7 @@ bool parseTranscribeProgress(const std::string& line, TranscribeProgress* progre
     progress->total = total;
     progress->phase = phase;
     progress->stem = stem;
-    return true;
-}
-
-TranscribeProgress Transcriber::progress() const {
-    std::lock_guard<std::mutex> lock(mProgressMutex);
-    return mProgress;
+    return out;
 }
 
 bool Transcriber::start(const std::string& voiceDir, const std::vector<std::string>& stems,
@@ -68,19 +70,11 @@ bool Transcriber::start(const std::string& voiceDir, const std::vector<std::stri
     const std::vector<std::string> args = transcribeArgs(voiceDir, stems, model, language);
     TranscribeState initial;
     initial.what = what;
-    {
-        std::lock_guard<std::mutex> lock(mProgressMutex);
-        mProgress = {};
-        mProgress.phase = "starting";
-    }
+    mProgress.reset("starting");
     return run(initial, [this, args, what]() {
         std::string errors;
-        const int rc = runTool("captions.py", args, nullptr, &errors, [this](const std::string& line) {
-            TranscribeProgress p;
-            if (!parseTranscribeProgress(line, &p)) return;
-            std::lock_guard<std::mutex> lock(mProgressMutex);
-            mProgress = p;
-        });
+        const int rc = runTool("captions.py", args, nullptr, &errors,
+                               [this](const std::string& line) { mProgress.feed(line); });
         TranscribeState state;
         state.ran = true;
         state.what = what;

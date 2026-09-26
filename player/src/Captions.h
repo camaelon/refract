@@ -1,6 +1,6 @@
 // Per-word caption timings for a slide's narration.
 //
-// Written by `refract.py <deck> --captions`, which transcribes each recorded wav and then
+// Written by `refractplayer --transcribe` (tools/captions.py), which transcribes each recorded wav and then
 // force-aligns the transcript against it to get a start and end per word. Here they are read
 // back so the words can be lit as they are spoken.
 //

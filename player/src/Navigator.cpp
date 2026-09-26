@@ -1,5 +1,7 @@
 #include "Navigator.h"
 
+#include "Pointer.h"
+
 #include "ViewGeometry.h"
 
 #include "Thumbs.h"
@@ -242,6 +244,7 @@ const HelpRow kHelp[] = {
     {"R", "reload the slide"},
     {"D", "debug overlay"},
     {"S", "screenshot to /tmp"},
+    {"L", "laser pointer"},
     {"H  ?", "this card"},
     {"Q", "quit"},
 };
@@ -274,6 +277,33 @@ void drawOverlays(SkCanvas* canvas, App& app, int width, int height) {
     drawNavigator(canvas, app, width, height);
     drawHelp(canvas, app, width, height);
     drawJumpChip(canvas, app, width, height);
+}
+
+// ── Laser pointer ────────────────────────────────────────────────────
+
+void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now) {
+    constexpr double kFade = 0.45;     // how long the trail lingers
+    constexpr float kRadius = 9.0f;
+    const SkColor red = 0xFFFF3B30;
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    // The trail, oldest first: smaller and fainter the older it is, so it reads as motion.
+    for (const Pointer::Sample& s : pointer.trail(now, kFade)) {
+        const float age = static_cast<float>((now - s.at) / kFade);   // 0 fresh .. 1 gone
+        const float life = (1.0f - age) * (1.0f - age);
+        paint.setColor(withAlpha(red, static_cast<unsigned>(160 * life)));
+        canvas->drawCircle(static_cast<float>(s.x), static_cast<float>(s.y), kRadius * (0.35f + 0.65f * (1.0f - age)), paint);
+    }
+    Pointer::Sample head;
+    if (!pointer.head(&head)) return;
+    const float x = static_cast<float>(head.x), y = static_cast<float>(head.y);
+    // A glow under the dot so it stands out on a red slide as much as on a white one.
+    paint.setColor(withAlpha(red, 70));
+    canvas->drawCircle(x, y, kRadius * 2.0f, paint);
+    paint.setColor(red);
+    canvas->drawCircle(x, y, kRadius, paint);
+    paint.setColor(0xFFFFE0DC);
+    canvas->drawCircle(x - kRadius * 0.25f, y - kRadius * 0.25f, kRadius * 0.3f, paint);
 }
 
 }  // namespace refract

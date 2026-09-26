@@ -8,6 +8,7 @@
 // The player reads those lines as they arrive and shows them in the processing window.
 #pragma once
 
+#include <mutex>
 #include <string>
 
 namespace refract {
@@ -23,5 +24,33 @@ struct Progress {
 // True, and `progress` filled, for a line of that shape; false for any other line, which
 // leaves `progress` alone.
 bool parseProgressLine(const std::string& line, Progress* progress);
+
+// The latest progress of a job on a worker thread, read from the frame: set from the
+// worker as lines arrive, taken as a copy from the main thread.
+class ProgressSlot {
+public:
+    void reset(const std::string& text) {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mProgress = Progress();
+        mProgress.text = text;
+    }
+    void set(const Progress& progress) {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mProgress = progress;
+    }
+    // Parse `line` and, if it is progress, keep it. For a tool's stderr line callback.
+    void feed(const std::string& line) {
+        Progress p;
+        if (parseProgressLine(line, &p)) set(p);
+    }
+    Progress get() const {
+        std::lock_guard<std::mutex> lock(mMutex);
+        return mProgress;
+    }
+
+private:
+    mutable std::mutex mMutex;
+    Progress mProgress;
+};
 
 }  // namespace refract

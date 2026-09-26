@@ -23,7 +23,9 @@
 #include "ExportPlan.h"
 #include "PdfExporter.h"
 #include "ProcessingWindow.h"
+#include "Tasks.h"
 #include "Transcriber.h"
+#include "VoiceDir.h"
 #include "WaveShape.h"
 #include "Captions.h"
 #include "DeckView.h"
@@ -31,6 +33,7 @@
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Options.h"
+#include "Pointer.h"
 #include "Presenter.h"
 #include "Session.h"
 #include "DeckLibrary.h"
@@ -101,6 +104,9 @@ bool overlapNextVoice = false;
 
 std::unique_ptr<refract::CaptionWindow> captionWindow;
 std::unique_ptr<refract::ProcessingWindow> processingWindow;
+// The mouse over the slide window: hidden after a few seconds still, or the laser.
+refract::Pointer pointer;
+constexpr double kHideCursorAfterSec = 3.0;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
 
@@ -302,41 +308,19 @@ fs::path voiceFileFor(int slide, const char* extension) {
 // Which slides have narration, for the deck view to show. Done once per deck rather than per
 // frame: it is a look at the disk for every slide, and the answer only changes when the deck
 // is rebuilt or something is recorded.
-// Where a deck's narration belongs: <deck>/voice, beside slides.md, for a refract deck
-// opened through its out/ directory. Narration is part of the deck — hours of someone's
-// voice — and out/ is a build product people clear without a thought, so it must not live
-// there. A directory that is not a refract deck keeps the player's own rule (out/voice),
-// and so does a zip, which is read-only anyway.
-fs::path deckVoiceDir(const fs::path& input) {
-    std::error_code ec;
-    if (!fs::is_directory(input, ec)) return {};
-    const fs::path deckDir = fs::absolute(input).lexically_normal().parent_path();
-    if (fs::exists(deckDir / "slides.md", ec) || fs::is_directory(deckDir / "voice", ec)) return deckDir / "voice";
-    return {};
-}
-
-// Recordings made before the player kept narration in <deck>/voice sit in out/voice. Moved
-// up once, whole, the first time such a deck is opened — so they stop being one `rm -rf out`
-// from gone — and said so. Left alone when the deck already has a voice directory: two
-// sets of takes are not something to merge quietly.
-void adoptVoiceDir(const fs::path& input, const fs::path& target) {
-    if (target.empty()) return;
-    std::error_code ec;
-    const fs::path old = fs::path(input) / "voice";
-    if (!fs::is_directory(old, ec) || fs::exists(target, ec)) return;
-    bool anyWav = false;
-    for (const auto& entry : fs::directory_iterator(old, ec)) {
-        if (entry.path().extension() == ".wav") { anyWav = true; break; }
+// A deck opened through its out/ keeps its narration in <deck>/voice (VoiceDir.h); an old
+// out/voice is moved up once, and the terminal says so either way.
+void useDeckVoiceDir(const fs::path& input) {
+    const fs::path voice = refract::deckVoiceDir(input);
+    const refract::Adoption moved = refract::adoptVoiceDir(input, voice);
+    if (moved.outcome == refract::Adoption::Outcome::Moved) {
+        std::cerr << "refractplayer: moved the narration out of out/: " << moved.from.string() << " -> "
+                  << moved.to.string() << "\n";
+    } else if (moved.outcome == refract::Adoption::Outcome::Failed) {
+        std::cerr << "refractplayer: could not move " << moved.from.string() << " to " << moved.to.string()
+                  << " (" << moved.error << "); leaving it where it is\n";
     }
-    if (!anyWav) return;
-    fs::rename(old, target, ec);
-    if (ec) {
-        std::cerr << "refractplayer: could not move " << old.string() << " to " << target.string()
-                  << " (" << ec.message() << "); leaving it where it is\n";
-        return;
-    }
-    std::cerr << "refractplayer: moved the narration out of out/: " << old.string() << " -> "
-              << target.string() << "\n";
+    if (!voice.empty()) g.voiceDirOverride = voice;
 }
 
 // Where this deck's narration lives: <deck>/voice when there is one, else the player's
@@ -484,10 +468,7 @@ void deleteRecording(int slide) {
     if (wav.empty()) return;
     if (voice) { voice->stop(); voicePlaying = false; }
     int moved = 0;
-    for (const char* ext : {".wav", ".txt", ".words.json"}) {
-        fs::path path = wav;
-        path.replace_extension();
-        path += ext;
+    for (const fs::path& path : refract::narrationFiles(wav)) {
         std::error_code ec;
         if (fs::exists(path, ec) && refract::moveToTrash(path.string())) moved++;
     }
@@ -848,48 +829,13 @@ void collectPdfExport() {
 // running or with its outcome — the exports, the transcription, and a rebuild in progress.
 std::vector<refract::TaskView> backgroundTasks() {
     std::vector<refract::TaskView> tasks;
-    {
-        const refract::PdfExportState state = pdfExporter.state();
-        if (state.running || state.ran) {
-            refract::TaskView t;
-            t.name = "Export " + state.kind + "  " + fs::path(state.path).filename().string();
-            t.running = state.running;
-            if (state.running) {
-                const refract::Progress p = pdfExporter.progress();
-                t.status = p.text.empty() ? "starting" : p.text;
-                if (p.known()) t.status = std::to_string(p.done) + " / " + std::to_string(p.total) + "  " + p.text;
-                t.fraction = p.fraction();
-            } else {
-                t.failed = !state.ok;
-                t.status = state.ok ? "done: " + state.path : "failed: " + state.error;
-            }
-            tasks.push_back(t);
-        }
+    const refract::PdfExportState exporting = pdfExporter.state();
+    if (exporting.running || exporting.ran) tasks.push_back(refract::exportTask(exporting, pdfExporter.progress()));
+    const refract::TranscribeState transcribing = transcriber.state();
+    if (transcribing.running || transcribing.ran) {
+        tasks.push_back(refract::transcriptionTask(transcribing, transcriber.progress()));
     }
-    {
-        const refract::TranscribeState state = transcriber.state();
-        if (state.running || state.ran) {
-            refract::TaskView t;
-            t.name = "Transcribe " + state.what;
-            t.running = state.running;
-            if (state.running) {
-                const refract::TranscribeProgress p = transcriber.progress();
-                t.status = p.label().empty() ? "starting" : p.label();
-                t.fraction = p.fraction();
-            } else {
-                t.failed = !state.ok;
-                t.status = state.ok ? "done" : "failed: " + state.error;
-            }
-            tasks.push_back(t);
-        }
-    }
-    if (builder.running()) {
-        refract::TaskView t;
-        t.name = "Rebuild the deck";
-        t.status = "refract is running";
-        t.running = true;
-        tasks.push_back(t);
-    }
+    if (builder.running()) tasks.push_back(refract::buildTask());
     return tasks;
 }
 
@@ -1306,6 +1252,10 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         case GLFW_KEY_D:
             g.debug = (g.debug + 1) % 3;
             break;
+        case GLFW_KEY_L:
+            pointer.setLaser(!pointer.laser());
+            g.needsRedraw = true;
+            break;
         case GLFW_KEY_S:
             if (saveScreenshot("/tmp/refractplayer.png"))
                 std::cerr << "saved /tmp/refractplayer.png\n";
@@ -1415,9 +1365,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "refractplayer: no playable slides in " << input << "\n";
             return 1;
         }
-        const fs::path voice = deckVoiceDir(input);
-        adoptVoiceDir(input, voice);
-        if (!voice.empty()) g.voiceDirOverride = voice;
+        useDeckVoiceDir(input);
         app.deck.build(entries, input);
         if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
@@ -1528,9 +1476,7 @@ int main(int argc, char* argv[]) {
         }
         // Voice-overs live in <deck>/voice, beside the out/ directory holding the slides.
         // Set even before anything is recorded, so the first recording lands there too.
-        const fs::path voice = deckVoiceDir(path);
-        adoptVoiceDir(path, voice);
-        if (!voice.empty()) g.voiceDirOverride = voice;
+        useDeckVoiceDir(path);
         g.files = collectRcFiles(input);
     }
     if (g.files.empty()) {
@@ -1714,6 +1660,17 @@ int main(int argc, char* argv[]) {
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
     glfwSetKeyCallback(window, playerKeyCallback);
+    // The pointer is watched on its way to the viewer's handler: when it last moved (to
+    // hide it), and where it has been (for the laser's trail).
+    glfwSetCursorPosCallback(window, [](GLFWwindow* w, double x, double y) {
+        pointer.moved(x, y, glfwGetTime());
+        if (pointer.laser()) g.needsRedraw = true;
+        rcplayer::cursorCallback(w, x, y);
+    });
+    glfwSetCursorEnterCallback(window, [](GLFWwindow*, int entered) {
+        if (entered) pointer.entered(); else pointer.left();
+        if (pointer.laser()) g.needsRedraw = true;
+    });
     // The only text this window takes: a name typed at the navigator.
     glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {
         if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
@@ -1857,6 +1814,21 @@ int main(int argc, char* argv[]) {
 
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - startTime).count();
+
+        // The arrow: gone while the laser is on, and after a few seconds without moving —
+        // an arrow parked on a projected slide is the one thing the room notices. Back on
+        // the first move. The laser's trail fades on its own clock, so it keeps redrawing
+        // until it is gone.
+        {
+            const double t = glfwGetTime();
+            const bool hide = pointer.laser() || pointer.idle(t, kHideCursorAfterSec);
+            static bool hidden = false;
+            if (hide != hidden) {
+                glfwSetInputMode(window, GLFW_CURSOR, hide ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+                hidden = hide;
+            }
+            if (pointer.laser() && !pointer.trail(t, 0.5).empty()) g.needsRedraw = true;
+        }
         double dt = elapsed - lastFrame;
         lastFrame = elapsed;
 
@@ -1934,6 +1906,9 @@ int main(int argc, char* argv[]) {
             glfwGetWindowSize(window, &winW, &winH);
             ensureSurface(winW, winH);
             renderFrame(dt);
+            if (pointer.laser()) {
+                if (SkCanvas* canvas = g.backend->canvas()) refract::drawLaser(canvas, pointer, glfwGetTime());
+            }
 
             // Grab the frame for the presenter *before* blanking. Blanking is for the room;
             // the presenter should keep seeing the slide it is about to bring back.

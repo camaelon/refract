@@ -227,4 +227,19 @@ std::string wallClock() {
     return buf;
 }
 
+void drawProgressTrack(SkCanvas* canvas, const SkRect& track, float fraction, double now) {
+    const float r = track.height() * 0.5f;
+    fillRoundRect(canvas, track, r, ui::kLine);
+    if (fraction >= 0.0f) {
+        const float w = std::max(track.height(), track.width() * std::min(1.0f, fraction));
+        fillRoundRect(canvas, SkRect::MakeXYWH(track.left(), track.top(), w, track.height()), r, ui::kAccent);
+    } else {
+        const float runner = std::min(60.0f, track.width() * 0.4f);
+        const float span = track.width() - runner;
+        const float p = static_cast<float>(std::fmod(now, 2.0) / 2.0);
+        const float x = track.left() + span * (p < 0.5f ? p * 2 : (1 - p) * 2);
+        fillRoundRect(canvas, SkRect::MakeXYWH(x, track.top(), runner, track.height()), r, ui::kAccent);
+    }
+}
+
 }  // namespace refract

@@ -32,11 +32,6 @@ bool PdfExporter::startVideo(const std::string& deck, const std::string& mp4, in
     return launch(videoExportArgs(deck, mp4, from, to, fps, width, height, captions), mp4, "video");
 }
 
-Progress PdfExporter::progress() const {
-    std::lock_guard<std::mutex> lock(mProgressMutex);
-    return mProgress;
-}
-
 bool PdfExporter::launch(const std::vector<std::string>& args, const std::string& target,
                          const std::string& kind) {
     if (running()) return false;
@@ -53,19 +48,11 @@ bool PdfExporter::launch(const std::vector<std::string>& args, const std::string
     PdfExportState initial;
     initial.kind = kind;
     initial.path = target;
-    {
-        std::lock_guard<std::mutex> lock(mProgressMutex);
-        mProgress = {};
-        mProgress.text = "starting";
-    }
+    mProgress.reset("starting");
     return run(initial, [this, self, args, target, kind]() {
         std::string errors;
-        const int rc = runProgram(self.string(), args, &errors, [this](const std::string& line) {
-            Progress p;
-            if (!parseProgressLine(line, &p)) return;
-            std::lock_guard<std::mutex> lock(mProgressMutex);
-            mProgress = p;
-        });
+        const int rc = runProgram(self.string(), args, &errors,
+                                  [this](const std::string& line) { mProgress.feed(line); });
         PdfExportState state;
         state.ran = true;
         state.kind = kind;

@@ -111,20 +111,15 @@ void ProcessingWindow::render(const std::vector<TaskView>& tasks) {
         drawText(canvas, ellipsize(t.status, statusFont, card.width() - 24), card.left() + 12, card.top() + 40,
                  statusFont, statusTone);
         SkRect track = SkRect::MakeXYWH(card.left() + 12, card.top() + 50, card.width() - 24, 6);
-        fillRoundRect(canvas, track, 3, ui::kLine);
         if (!t.running) {
             fillRoundRect(canvas, track, 3, t.failed ? ui::kOver : ui::kAhead);
-        } else if (t.fraction >= 0.0f) {
-            const float bw = std::max(6.0f, track.width() * std::min(1.0f, t.fraction));
-            fillRoundRect(canvas, SkRect::MakeXYWH(track.left(), track.top(), bw, 6), 3, ui::kAccent);
-            char pct[16];
-            std::snprintf(pct, sizeof(pct), "%d%%", static_cast<int>(std::lround(std::min(1.0f, t.fraction) * 100)));
-            drawTextRight(canvas, pct, card.right() - 12, card.top() + 22, statusFont, ui::kDim);
         } else {
-            const float span = track.width() - 60;
-            const float p = static_cast<float>(std::fmod(glfwGetTime(), 2.0) / 2.0);
-            const float x = track.left() + span * (p < 0.5f ? p * 2 : (1 - p) * 2);
-            fillRoundRect(canvas, SkRect::MakeXYWH(x, track.top(), 60, 6), 3, ui::kAccent);
+            drawProgressTrack(canvas, track, t.fraction, glfwGetTime());
+            if (t.fraction >= 0.0f) {
+                char pct[16];
+                std::snprintf(pct, sizeof(pct), "%d%%", static_cast<int>(std::lround(std::min(1.0f, t.fraction) * 100)));
+                drawTextRight(canvas, pct, card.right() - 12, card.top() + 22, statusFont, ui::kDim);
+            }
         }
         y += rowH;
     }

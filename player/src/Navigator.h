@@ -28,4 +28,10 @@ bool navMatches(const App& app, int slide);
 // Move to the previous / next section heading.
 void navMoveSection(App& app, int direction);
 
+// The laser pointer: a red dot at the mouse with a trail fading out behind it. Drawn on the
+// slide itself, before the presenter takes its copy, so the presenter sees where the room
+// is being pointed.
+class Pointer;
+void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now);
+
 }  // namespace refract

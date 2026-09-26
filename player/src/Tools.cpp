@@ -32,6 +32,23 @@ fs::path executableDir() {
     return exe.empty() ? fs::path() : exe.parent_path();
 }
 
+namespace {
+
+// Hands over each complete line of a buffer that grows as a pipe is drained, once.
+struct LineSplitter {
+    size_t start = 0;
+    void feed(const std::string& buffer, const std::function<void(const std::string&)>& onLine) {
+        if (!onLine) return;
+        size_t end;
+        while ((end = buffer.find('\n', start)) != std::string::npos) {
+            onLine(buffer.substr(start, end - start));
+            start = end + 1;
+        }
+    }
+};
+
+}  // namespace
+
 int runProgram(const std::string& program, const std::vector<std::string>& args,
                std::string* errors, const std::function<void(const std::string&)>& onErrorLine) {
     std::vector<std::string> owned = args;
@@ -62,17 +79,11 @@ int runProgram(const std::string& program, const std::vector<std::string>& args,
         ::close(errFds[1]);
         char buf[4096];
         ssize_t n;
-        size_t lineStart = 0;
+        LineSplitter lines;
         while ((n = ::read(errFds[0], buf, sizeof(buf))) > 0) {
             errors->append(buf, (size_t)n);
             ::write(STDERR_FILENO, buf, (size_t)n);   // passed through as well as kept
-            if (onErrorLine) {
-                size_t end;
-                while ((end = errors->find('\n', lineStart)) != std::string::npos) {
-                    onErrorLine(errors->substr(lineStart, end - lineStart));
-                    lineStart = end + 1;
-                }
-            }
+            lines.feed(*errors, onErrorLine);
         }
         ::close(errFds[0]);
     }
@@ -213,7 +224,7 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
     // are drained together, or one filling up would stall the other.
     if (out) { ::close(pipeFds[1]); out->clear(); }
     if (errors) { ::close(errFds[1]); errors->clear(); }
-    size_t lineStart = 0;
+    LineSplitter lines;
     while ((out && pipeFds[0] >= 0) || (errors && errFds[0] >= 0)) {
         char buf[4096];
         bool progress = false;
@@ -228,14 +239,7 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
                 errors->append(buf, n);
                 std::cerr.write(buf, n);   // still the user's output
                 progress = true;
-                if (onErrorLine) {
-                    // Every complete line since the last one handed over.
-                    size_t end;
-                    while ((end = errors->find('\n', lineStart)) != std::string::npos) {
-                        onErrorLine(errors->substr(lineStart, end - lineStart));
-                        lineStart = end + 1;
-                    }
-                }
+                lines.feed(*errors, onErrorLine);
             } else { ::close(errFds[0]); errFds[0] = -1; }
         }
         if (!progress && pipeFds[0] < 0 && errFds[0] < 0) break;

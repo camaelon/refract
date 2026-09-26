@@ -23,7 +23,8 @@ foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeom
               plan:Plan
               slide_recorder:SlideRecorder deck_library:DeckLibrary
               wave_shape:WaveShape export_plan:ExportPlan
-              transcribe_progress:Transcriber,Tools,Progress)
+              transcribe_progress:Transcriber,Tools,Progress
+              pointer:Pointer voice_dir:VoiceDir tasks:Tasks,Transcriber,Tools,Progress)
     string(REPLACE ":" ";" parts ${suite})
     list(GET parts 0 name)
     list(GET parts 1 units)

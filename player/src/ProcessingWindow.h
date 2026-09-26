@@ -5,22 +5,14 @@
 // is doing, a bar — opened when a task starts and left up, with the outcome, until closed.
 #pragma once
 
+#include "Tasks.h"
+
 #include <memory>
-#include <string>
 #include <vector>
 
 struct GLFWwindow;
 
 namespace refract {
-
-// One background task as the window shows it.
-struct TaskView {
-    std::string name;          // "Export video talk.mp4"
-    std::string status;        // "slide 3/23 05_between.rc", "done", "failed: …"
-    float fraction = -1.0f;    // 0..1, or negative when unknown
-    bool running = false;
-    bool failed = false;       // finished, badly
-};
 
 class ProcessingWindow {
 public:

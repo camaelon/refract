@@ -75,4 +75,9 @@ std::string formatDuration(double seconds);
 // Local wall-clock time as HH:MM.
 std::string wallClock();
 
+// A progress bar: the track, and either the part done (`fraction` 0..1) or, when the
+// fraction is negative because nobody has said, a short runner sweeping back and forth on
+// `now` — the same bar wherever the player shows something in progress.
+void drawProgressTrack(SkCanvas* canvas, const SkRect& track, float fraction, double now);
+
 }  // namespace refract

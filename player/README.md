@@ -197,6 +197,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `R` | reload the slide |
 | `D` | debug overlay |
 | `S` | screenshot to `/tmp/refractplayer.png` |
+| `L` | laser pointer: a red dot with a fading trail in place of the arrow |
 | `shift`+`R` | re-record this slide's narration |
 | `H` | key card |
 | `Esc` | back out of whatever is on top — never quits |
@@ -256,6 +257,12 @@ above Minimize, because opening one is what that menu is mostly for here.
 |---|---|
 | `E` | correct the transcript |
 | `Esc` | leave edit mode |
+
+**The mouse over the slide.** The arrow hides after three seconds without moving and comes
+back on the first move: an arrow parked on a projected slide is the one thing the room
+notices. `L` turns it into a **laser pointer** — a large red dot with a trail that fades out
+behind it — drawn on the slide itself, so the presenter's "now" pane shows where the room
+is being pointed. `L` again brings the arrow back.
 
 The presenter window has a **play/pause button** beside the clock, doing the same thing as
 `T` — which is also what starts an armed recording, so a rehearsal can be driven without the
@@ -1311,7 +1318,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Sixteen C++ suites, none of which needs a window or a GPU. Thirteen of them need nothing but their
+Nineteen C++ suites, none of which needs a window or a GPU. Sixteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1320,7 +1327,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All sixteen, alongside the player:
+All nineteen, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1342,6 +1349,9 @@ ctest --test-dir player/build --output-on-failure
 | `wave_shape` | the presenter's waveform, read from a wav in every sample layout the recorder or anything else writes |
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
 | `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
+| `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
+| `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
+| `tasks` | the cards the processing window shows, worded from each worker's state |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 

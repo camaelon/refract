@@ -6,9 +6,9 @@
 // and picks up the result at the top of a frame to reload the captions on screen.
 #pragma once
 
+#include "Progress.h"
 #include "Worker.h"
 
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -27,6 +27,8 @@ struct TranscribeProgress {
 
 // The line captions.py prints for a step, parsed; false for any other line.
 bool parseTranscribeProgress(const std::string& line, TranscribeProgress* progress);
+// The same from a progress line already read: the recording split off the text.
+TranscribeProgress transcribeProgressFrom(const Progress& progress);
 
 struct TranscribeState {
     bool running = false;
@@ -50,11 +52,10 @@ public:
                const std::string& model, const std::string& language, const std::string& what);
 
     // The last progress reported by the running job (or the finished one).
-    TranscribeProgress progress() const;
+    TranscribeProgress progress() const { return transcribeProgressFrom(mProgress.get()); }
 
 private:
-    mutable std::mutex mProgressMutex;
-    TranscribeProgress mProgress;
+    ProgressSlot mProgress;
 };
 
 }  // namespace refract

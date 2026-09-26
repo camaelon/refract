@@ -78,6 +78,25 @@ struct PresenterWindow::Impl {
     // been audible; the trailing shape does.
     std::deque<float> levels;
     float peak = -1.0f;
+
+    // One frame's geometry, computed once in render() and handed to each part.
+    struct Frame {
+        SkCanvas* canvas = nullptr;
+        App* app = nullptr;
+        int w = 0, h = 0;
+        float pad = 0, fw = 0;
+        float barY = 0, panesTop = 0, panesH = 0;
+        float notesTop = 0, notesBottom = 0, progressH = 0;
+        bool showLevels = false, showRecord = false, showWave = false;
+        float levelsH = 0, waveH = 0;
+    };
+    void drawTopBar(const Frame& F);
+    void drawPanes(const Frame& F, const sk_sp<SkImage>& live);
+    void drawPane(const Frame& F);             // tabs, then the notes or the captions
+    void drawMeter(const Frame& F);            // the microphone's level, while recording
+    void drawNarrationStrip(const Frame& F);
+    void drawButtonsRow(const Frame& F);
+    void drawFooter(const Frame& F);           // the progress bar and the overlays
 };
 
 std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) {
@@ -388,36 +407,37 @@ void drawLevels(SkCanvas* canvas, const SkRect& box, const std::deque<float>& le
 
 }  // namespace
 
-void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
-    if (!mWindow || !mImpl) return;
-    glfwMakeContextCurrent(mWindow);
+namespace {
 
-    int w = 0, h = 0;
-    glfwGetWindowSize(mWindow, &w, &h);
-    if (w <= 0 || h <= 0) return;
-    if (w != mImpl->width || h != mImpl->height) {
-        mImpl->backend.resize(w, h);
-        mImpl->width = w;
-        mImpl->height = h;
-    }
-    int fbW = 0, fbH = 0;
-    glfwGetFramebufferSize(mWindow, &fbW, &fbH);
-    if (fbW != mImpl->fbWidth || fbH != mImpl->fbHeight) {
-        mImpl->backend.onFramebufferResize(fbW, fbH);
-        mImpl->fbWidth = fbW;
-        mImpl->fbHeight = fbH;
-    }
+// A pill button: the row's shape for everything but the record button.
+void pillButton(SkCanvas* canvas, const SkRect& box, const std::string& text, const SkFont& font,
+                SkColor fill, SkColor stroke, SkColor tone) {
+    fillRoundRect(canvas, box, 13, fill);
+    strokeRoundRect(canvas, box, 13, stroke, 1.0f);
+    drawTextCentred(canvas, text, box, font, tone);
+}
 
-    SkCanvas* canvas = mImpl->backend.canvas();
-    if (!canvas) return;
-    canvas->clear(ui::kBg);
+}  // namespace
 
+// ── The window, part by part ─────────────────────────────────────────
+// Each part takes the frame's geometry and draws its own region; the order they are
+// called in is the order they stack on screen.
+
+void PresenterWindow::Impl::drawTopBar(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
     const Deck& deck = app.deck;
-    const float pad = std::round(w * 0.022f);
-    const float fw  = w - pad * 2;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
 
     // ── Top bar: wall clock, talk timer, position ────────────────────
-    const float barY = pad + std::round(h * 0.052f);
     SkFont clockFont = uiFont(std::round(h * 0.075f), true);
     SkFont labelFont = uiFont(13);
     SkFont metaFont  = uiFont(std::round(h * 0.028f), true);
@@ -438,9 +458,9 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     // Play/pause for the talk, sitting against the clock it controls. It starts a recording
     // too, so a rehearsal can be driven without touching the keyboard.
     const float buttonSize = std::min(44.0f, clockFont.getSize() * 0.8f);
-    mImpl->clockButton = SkRect::MakeXYWH(timerX - buttonSize - 18,
+    clockButton = SkRect::MakeXYWH(timerX - buttonSize - 18,
                                           barY - buttonSize * 0.72f, buttonSize, buttonSize);
-    drawClockButton(canvas, mImpl->clockButton, app.clock.running, mImpl->buttonHot);
+    drawClockButton(canvas, clockButton, app.clock.running, buttonHot);
     // Under the timer: what the big number is not saying. Recording takes the line, since
     // knowing the microphone is live matters more than any of it.
     float subX = timerX;
@@ -501,11 +521,25 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                       labelFont, ui::kDim);
     }
 
+}
+
+void PresenterWindow::Impl::drawPanes(const Frame& F, const sk_sp<SkImage>& live) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
+
     // ── Slide panes: current (live) and next (a still) ───────────────
     // The split is 62/38 rather than even: the current slide is what you glance at, the
     // next one only needs to be recognisable.
-    const float panesTop = barY + std::round(h * 0.045f);
-    const float panesH   = std::round(h * 0.40f);
     const float gap      = pad * 0.8f;
     const float currentW = std::round((fw - gap) * 0.62f);
     SkRect currentBox = SkRect::MakeXYWH(pad, panesTop, currentW, panesH);
@@ -553,23 +587,22 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                  nextBox.centerY(), font, ui::kLine);
     }
 
-    // ── Notes ────────────────────────────────────────────────────────
-    const float notesTop = panesTop + panesH + std::round(h * 0.055f);
-    const float progressH = 6.0f;
-    // The meter is up whenever the microphone is: for a whole rehearsal, and for a single
-    // slide being recorded over.
-    const bool showLevels = (app.timing.recording() && app.recordAudio) || app.reRecording;
-    const float levelsH = showLevels ? 34.0f : 0.0f;
-    // Room for the buttons row under the notes — the record button, or the stop button
-    // while a whole run is being recorded — and for the meter when it is up.
-    const bool showRecord = !app.timing.recording() || mImpl->onStopRun != nullptr;
-    // The slide's narration, when it has one and the microphone is not on it: the shape of
-    // what was said, its name and length, and where playback has got to.
-    const bool showWave = mImpl->narration.envelope && !mImpl->narration.envelope->empty()
-                          && !showLevels && !app.reRecording;
-    const float waveH = showWave ? 72.0f : 0.0f;
-    const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f)
-                              - (showRecord ? 34.0f : 0.0f) - (showWave ? waveH + 8 : 0.0f);
+}
+
+void PresenterWindow::Impl::drawPane(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
+
     // ── Tabs: notes | captions ───────────────────────────────────────
     // Two labels in the pane's top-left, the way the slide panes are labelled; the one
     // showing is bright with a line under it.
@@ -578,47 +611,36 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         float x = pad;
         const float ty = notesTop - 8;
         const struct { const char* text; Tab tab; SkRect* box; } tabs[] = {
-            {"NOTES", Tab::Notes, &mImpl->notesTab}, {"CAPTIONS", Tab::Captions, &mImpl->captionsTab}};
+            {"NOTES", Tab::Notes, &notesTab}, {"CAPTIONS", Tab::Captions, &captionsTab}};
         for (const auto& t : tabs) {
             const float tw = textWidth(tabFont, t.text);
             *t.box = SkRect::MakeXYWH(x - 6, ty - 18, tw + 12, 26);
-            const bool on = mImpl->tab == t.tab;
-            const bool hot = !on && mImpl->over(*t.box);
+            const bool on = tab == t.tab;
+            const bool hot = !on && over(*t.box);
             drawText(canvas, t.text, x, ty, tabFont, on ? ui::kText : (hot ? ui::kText : ui::kDim));
             if (on) fillRect(canvas, SkRect::MakeXYWH(x, ty + 5, tw, 2), ui::kAccent);
             x += tw + 22;
         }
     }
-    mImpl->captionView.setActive(mImpl->tab == Tab::Captions);
+    captionView.setActive(tab == Tab::Captions);
     SkRect notesBox = SkRect::MakeLTRB(pad, notesTop, w - pad, notesBottom);
-    if (notesBox.height() > 40 && mImpl->tab == Tab::Captions) {
+    if (notesBox.height() > 40 && tab == Tab::Captions) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
         const float size = std::max(14.0f, std::round(h * 0.030f));
-        if (mImpl->captions && (!mImpl->captions->empty() || !mImpl->transcribing)) {
-            mImpl->captionView.draw(canvas, notesBox, app, *mImpl->captions, mImpl->playbackTime,
-                                    mImpl->playing, /*header=*/false, size);
+        if (captions && (!captions->empty() || !transcribing)) {
+            captionView.draw(canvas, notesBox, app, *captions, playbackTime,
+                                    playing, /*header=*/false, size);
         } else {
             // Nothing yet, and a transcription on its way: say where it has got to rather
             // than "no captions", with a bar when the tool has said how many slides it has.
             SkFont font = uiFont(15);
-            const std::string message = mImpl->transcribeStatus.empty()
-                ? std::string("transcribing\u2026") : "transcribing\u2026  " + mImpl->transcribeStatus;
+            const std::string message = transcribeStatus.empty()
+                ? std::string("transcribing\u2026") : "transcribing\u2026  " + transcribeStatus;
             drawText(canvas, message, notesBox.centerX() - textWidth(font, message) * 0.5f,
                      notesBox.centerY(), font, ui::kDim);
             const float bw = std::min(320.0f, notesBox.width() * 0.5f);
             SkRect track = SkRect::MakeXYWH(notesBox.centerX() - bw * 0.5f, notesBox.centerY() + 16, bw, 6);
-            fillRoundRect(canvas, track, 3, ui::kLine);
-            if (mImpl->transcribeFraction >= 0.0f) {
-                SkRect done = SkRect::MakeXYWH(track.left(), track.top(),
-                                               std::max(6.0f, bw * std::min(1.0f, mImpl->transcribeFraction)), 6);
-                fillRoundRect(canvas, done, 3, ui::kAccent);
-            } else {
-                // No count yet (the models are loading): a short runner going back and forth.
-                const float t = static_cast<float>(std::fmod(glfwGetTime(), 2.0) / 2.0);
-                const float span = bw - 60;
-                const float x = track.left() + span * (t < 0.5f ? t * 2 : (1 - t) * 2);
-                fillRoundRect(canvas, SkRect::MakeXYWH(x, track.top(), 60, 6), 3, ui::kAccent);
-            }
+            drawProgressTrack(canvas, track, transcribeFraction, glfwGetTime());
         }
     } else if (notesBox.height() > 40) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
@@ -644,23 +666,55 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         canvas->restore();
     }
 
+}
+
+void PresenterWindow::Impl::drawMeter(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
+
     // ── Input level ──────────────────────────────────────────────────
     if (showLevels) {
         SkRect box = SkRect::MakeXYWH(pad, h - pad - progressH - 10 - levelsH, fw, levelsH);
-        drawLevels(canvas, box, mImpl->levels, mImpl->peak);
-        if (mImpl->peak > 0.97f) {
+        drawLevels(canvas, box, levels, peak);
+        if (peak > 0.97f) {
             SkFont font = uiFont(10, true);
             drawTextRight(canvas, "CLIPPING", box.right() - 8,
                           box.top() + 12, font, ui::kOver);
         }
     }
 
+}
+
+void PresenterWindow::Impl::drawNarrationStrip(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
+
     // ── Narration ────────────────────────────────────────────────────
     // Under the buttons row, so neither sits on the other: the shape of what was said,
     // mirrored about a centre line the way a sound editor draws it, the part already
     // played in the accent colour, and the playhead with the time it has reached.
     if (showWave) {
-        const Narration& n = mImpl->narration;
+        const Narration& n = narration;
         const float top = notesBottom + 6 + (showRecord ? 34.0f : 0.0f);
         SkRect box = SkRect::MakeXYWH(pad, top, fw, waveH);
         fillRoundRect(canvas, box, 6, ui::kPanel);
@@ -714,46 +768,62 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         }
     }
 
+}
+
+void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
+
     // ── Re-record this slide ─────────────────────────────────────────
     // A take over one slide's narration. It is here rather than only on a key because it
     // overwrites a recording: what it will do should be visible before it is done, and what
     // it is doing should be unmistakable while it happens.
-    mImpl->recordButton = SkRect::MakeEmpty();
-    mImpl->discardButton = SkRect::MakeEmpty();
-    mImpl->autoplayBox = SkRect::MakeEmpty();
-    mImpl->stopButton = SkRect::MakeEmpty();
+    recordButton = SkRect::MakeEmpty();
+    discardButton = SkRect::MakeEmpty();
+    autoplayBox = SkRect::MakeEmpty();
+    stopButton = SkRect::MakeEmpty();
     // ── Stop the run ─────────────────────────────────────────────────
     // While a whole run is being recorded, the row holds one thing: the way to end it. Until
     // now the only ways were the next slide (which only closes this slide's wav) and quitting.
-    if (app.timing.recording() && mImpl->onStopRun) {
+    if (app.timing.recording() && onStopRun) {
         SkFont label = uiFont(12, true);
         const std::string text = "stop recording";
         const float bw = textWidth(label, text) + 44;
         const float by = notesBottom + 6;
-        mImpl->stopButton = SkRect::MakeXYWH(pad, by, bw, 26);
-        const bool hot = mImpl->over(mImpl->stopButton);
-        fillRoundRect(canvas, mImpl->stopButton, 13, ui::kPanel);
-        strokeRoundRect(canvas, mImpl->stopButton, 13, hot ? ui::kOver : ui::kLine, 1.0f);
+        stopButton = SkRect::MakeXYWH(pad, by, bw, 26);
+        const bool hot = over(stopButton);
+        fillRoundRect(canvas, stopButton, 13, ui::kPanel);
+        strokeRoundRect(canvas, stopButton, 13, hot ? ui::kOver : ui::kLine, 1.0f);
         // A square, the stop glyph, in the recording colour.
-        fillRoundRect(canvas, SkRect::MakeXYWH(mImpl->stopButton.left() + 12,
-                                               mImpl->stopButton.centerY() - 5, 10, 10), 2, ui::kOver);
-        drawText(canvas, text, mImpl->stopButton.left() + 30, mImpl->stopButton.centerY() + 4, label,
+        fillRoundRect(canvas, SkRect::MakeXYWH(stopButton.left() + 12,
+                                               stopButton.centerY() - 5, 10, 10), 2, ui::kOver);
+        drawText(canvas, text, stopButton.left() + 30, stopButton.centerY() + 4, label,
                  hot ? ui::kText : ui::kOver);
     }
     // ── Autoplay narration ───────────────────────────────────────────
     // On the same row, at the right: a slide that has a wav advances when it ends, so a
     // recorded talk plays itself; a slide without one waits for you as usual.
-    if (mImpl->onToggleAutoplay && showRecord && !app.deck.empty()) {
+    if (onToggleAutoplay && showRecord && !app.deck.empty()) {
         SkFont label = uiFont(12, true);
         const std::string text = "autoplay narration";
         const float tw = textWidth(label, text);
         const float box = 16.0f;
         const float by = notesBottom + 6;
         const float right = w - pad;
-        mImpl->autoplayBox = SkRect::MakeXYWH(right - tw - 10 - box, by + 5, box + 10 + tw, box);
-        const bool hot = mImpl->over(mImpl->autoplayBox);
+        autoplayBox = SkRect::MakeXYWH(right - tw - 10 - box, by + 5, box + 10 + tw, box);
+        const bool hot = over(autoplayBox);
         const SkColor tone = app.autoplayVoice ? ui::kText : (hot ? ui::kText : ui::kDim);
-        SkRect square = SkRect::MakeXYWH(mImpl->autoplayBox.left(), by + 5, box, box);
+        SkRect square = SkRect::MakeXYWH(autoplayBox.left(), by + 5, box, box);
         fillRoundRect(canvas, square, 3, ui::kPanel);
         strokeRoundRect(canvas, square, 3, app.autoplayVoice ? ui::kText : (hot ? ui::kDim : ui::kLine), 1.0f);
         if (app.autoplayVoice) {
@@ -771,52 +841,48 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         }
         drawText(canvas, text, square.right() + 10, square.centerY() + 4, label, tone);
     }
-    mImpl->deleteButton = SkRect::MakeEmpty();
-    mImpl->confirmDelete = SkRect::MakeEmpty();
-    mImpl->confirmKeep = SkRect::MakeEmpty();
-    mImpl->deleteSlide = app.deck.empty() ? -1 : app.current();
-    if (mImpl->confirmDeleteSlide >= 0 && mImpl->confirmDeleteSlide != mImpl->deleteSlide) {
-        mImpl->confirmDeleteSlide = -1;          // asked about a slide no longer on screen
+    deleteButton = SkRect::MakeEmpty();
+    confirmDelete = SkRect::MakeEmpty();
+    confirmKeep = SkRect::MakeEmpty();
+    deleteSlide = app.deck.empty() ? -1 : app.current();
+    if (confirmDeleteSlide >= 0 && confirmDeleteSlide != deleteSlide) {
+        confirmDeleteSlide = -1;          // asked about a slide no longer on screen
     }
     // ── Delete this slide's recording? ───────────────────────────────
     // Asked in the row itself rather than in a dialog. The layout is the safety: keep sits
     // where the delete-recording button was, so a repeated click there keeps; the red
     // delete is at the far end of the row and dead for the first moments. Never one click.
-    if (mImpl->confirmDeleteSlide >= 0 && !app.timing.recording() && !app.reRecording) {
+    if (confirmDeleteSlide >= 0 && !app.timing.recording() && !app.reRecording) {
         SkFont label = uiFont(12, true);
         const float by = notesBottom + 6;
-        const std::string question = mImpl->deleteGoesToTrash
-            ? "move " + mImpl->narration.label + " and its transcript to the Trash?"
-            : "delete " + mImpl->narration.label + " and its transcript? this cannot be undone";
+        const std::string question = deleteGoesToTrash
+            ? "move " + narration.label + " and its transcript to the Trash?"
+            : "delete " + narration.label + " and its transcript? this cannot be undone";
         const float kw = textWidth(label, "keep") + 24;
-        mImpl->confirmKeep = SkRect::MakeXYWH(pad, by, kw, 26);
-        const bool khot = mImpl->over(mImpl->confirmKeep);
-        fillRoundRect(canvas, mImpl->confirmKeep, 13, ui::kPanel);
-        strokeRoundRect(canvas, mImpl->confirmKeep, 13, khot ? ui::kText : ui::kDim, 1.0f);
-        drawTextCentred(canvas, "keep", mImpl->confirmKeep, label, ui::kText);
-        float x = mImpl->confirmKeep.right() + 14;
+        confirmKeep = SkRect::MakeXYWH(pad, by, kw, 26);
+        const bool khot = over(confirmKeep);
+        pillButton(canvas, confirmKeep, "keep", label, ui::kPanel, khot ? ui::kText : ui::kDim, ui::kText);
+        float x = confirmKeep.right() + 14;
         x += drawText(canvas, question, x, by + 17, label, ui::kWarn) + 40;
         const float dw = textWidth(label, "delete") + 24;
-        mImpl->confirmDelete = SkRect::MakeXYWH(x, by, dw, 26);
-        const bool armed = glfwGetTime() - mImpl->confirmShownAt >= kConfirmArmSec;
-        const bool dhot = armed && mImpl->over(mImpl->confirmDelete);
-        fillRoundRect(canvas, mImpl->confirmDelete, 13, dhot ? ui::kOver : ui::kPanel);
-        strokeRoundRect(canvas, mImpl->confirmDelete, 13, armed ? ui::kOver : ui::kLine, 1.0f);
-        drawTextCentred(canvas, "delete", mImpl->confirmDelete, label,
-                        dhot ? 0xFF1A0606 : (armed ? ui::kOver : ui::kLine));
-    } else if (mImpl->onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
+        confirmDelete = SkRect::MakeXYWH(x, by, dw, 26);
+        const bool armed = glfwGetTime() - confirmShownAt >= kConfirmArmSec;
+        const bool dhot = armed && over(confirmDelete);
+        pillButton(canvas, confirmDelete, "delete", label, dhot ? ui::kOver : ui::kPanel,
+                   armed ? ui::kOver : ui::kLine, dhot ? 0xFF1A0606 : (armed ? ui::kOver : ui::kLine));
+    } else if (onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
         SkFont label = uiFont(12, true);
         const std::string text = app.reRecording
             ? "stop recording"
             : "re-record slide " + std::to_string(app.current() + 1);
         const float bw = textWidth(label, text) + 44;
         const float by = notesBottom + 6;
-        mImpl->recordButton = SkRect::MakeXYWH(pad, by, bw, 26);
+        recordButton = SkRect::MakeXYWH(pad, by, bw, 26);
 
-        const bool hot = mImpl->over(mImpl->recordButton);
+        const bool hot = over(recordButton);
         const SkColor tone = app.reRecording ? ui::kOver : (hot ? ui::kText : ui::kDim);
-        fillRoundRect(canvas, mImpl->recordButton, 13, ui::kPanel);
-        strokeRoundRect(canvas, mImpl->recordButton, 13,
+        fillRoundRect(canvas, recordButton, 13, ui::kPanel);
+        strokeRoundRect(canvas, recordButton, 13,
                         app.reRecording ? ui::kOver : (hot ? ui::kDim : ui::kLine), 1.0f);
 
         // A filled dot, drawn rather than written: the chrome has one typeface and a record
@@ -828,49 +894,60 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
             dot.setAlphaf(0.45f + 0.55f * static_cast<float>(
                 0.5 + 0.5 * std::sin(glfwGetTime() * 4.0)));
         }
-        canvas->drawCircle(mImpl->recordButton.left() + 17,
-                           mImpl->recordButton.centerY(), 5.5f, dot);
-        drawText(canvas, text, mImpl->recordButton.left() + 30,
-                 mImpl->recordButton.centerY() + 4, label, tone);
+        canvas->drawCircle(recordButton.left() + 17,
+                           recordButton.centerY(), 5.5f, dot);
+        drawText(canvas, text, recordButton.left() + 30,
+                 recordButton.centerY() + 4, label, tone);
 
-        if (!app.reRecording && mImpl->onTranscribeSlide && showWave) {
+        if (!app.reRecording && onTranscribeSlide && showWave) {
             std::string ttext = "transcribe slide " + std::to_string(app.current() + 1);
-            if (mImpl->transcribing) {
+            if (transcribing) {
                 ttext = "transcribing\u2026";
-                if (!mImpl->transcribeStatus.empty()) ttext += "  " + mImpl->transcribeStatus;
+                if (!transcribeStatus.empty()) ttext += "  " + transcribeStatus;
             }
             const float tw = textWidth(label, ttext) + 24;
-            mImpl->transcribeButton = SkRect::MakeXYWH(mImpl->recordButton.right() + 8, by, tw, 26);
-            const bool thot = mImpl->over(mImpl->transcribeButton) && !mImpl->transcribing;
-            fillRoundRect(canvas, mImpl->transcribeButton, 13, ui::kPanel);
-            strokeRoundRect(canvas, mImpl->transcribeButton, 13, thot ? ui::kDim : ui::kLine, 1.0f);
-            drawTextCentred(canvas, ttext, mImpl->transcribeButton, label,
-                            mImpl->transcribing ? ui::kDim : (thot ? ui::kText : ui::kDim));
+            transcribeButton = SkRect::MakeXYWH(recordButton.right() + 8, by, tw, 26);
+            const bool thot = over(transcribeButton) && !transcribing;
+            pillButton(canvas, transcribeButton, ttext, label, ui::kPanel, thot ? ui::kDim : ui::kLine,
+                       transcribing ? ui::kDim : (thot ? ui::kText : ui::kDim));
         } else {
-            mImpl->transcribeButton = SkRect::MakeEmpty();
+            transcribeButton = SkRect::MakeEmpty();
         }
-        if (!app.reRecording && mImpl->onDeleteRecording && showWave && !mImpl->transcribing) {
+        if (!app.reRecording && onDeleteRecording && showWave && !transcribing) {
             const std::string dtext = "delete recording";
             const float dw = textWidth(label, dtext) + 24;
-            const SkRect& before = mImpl->transcribeButton.isEmpty() ? mImpl->recordButton
-                                                                     : mImpl->transcribeButton;
-            mImpl->deleteButton = SkRect::MakeXYWH(before.right() + 8, by, dw, 26);
-            const bool dhot = mImpl->over(mImpl->deleteButton);
-            fillRoundRect(canvas, mImpl->deleteButton, 13, ui::kPanel);
-            strokeRoundRect(canvas, mImpl->deleteButton, 13, dhot ? ui::kOver : ui::kLine, 1.0f);
-            drawTextCentred(canvas, dtext, mImpl->deleteButton, label, dhot ? ui::kOver : ui::kDim);
+            const SkRect& before = transcribeButton.isEmpty() ? recordButton
+                                                                     : transcribeButton;
+            deleteButton = SkRect::MakeXYWH(before.right() + 8, by, dw, 26);
+            const bool dhot = over(deleteButton);
+            pillButton(canvas, deleteButton, dtext, label, ui::kPanel, dhot ? ui::kOver : ui::kLine,
+                       dhot ? ui::kOver : ui::kDim);
         }
         if (app.reRecording) {
             const float dw = textWidth(label, "discard") + 24;
-            mImpl->discardButton =
-                SkRect::MakeXYWH(mImpl->recordButton.right() + 8, by, dw, 26);
-            const bool dhot = mImpl->over(mImpl->discardButton);
-            fillRoundRect(canvas, mImpl->discardButton, 13, ui::kPanel);
-            strokeRoundRect(canvas, mImpl->discardButton, 13, dhot ? ui::kDim : ui::kLine, 1.0f);
-            drawTextCentred(canvas, "discard", mImpl->discardButton, label,
-                            dhot ? ui::kText : ui::kDim);
+            discardButton =
+                SkRect::MakeXYWH(recordButton.right() + 8, by, dw, 26);
+            const bool dhot = over(discardButton);
+            pillButton(canvas, discardButton, "discard", label, ui::kPanel, dhot ? ui::kDim : ui::kLine,
+                       dhot ? ui::kText : ui::kDim);
         }
     }
+
+}
+
+void PresenterWindow::Impl::drawFooter(const Frame& F) {
+    SkCanvas* canvas = F.canvas;
+    App& app = *F.app;
+    const Deck& deck = app.deck;
+    const int w = F.w, h = F.h;
+    const float pad = F.pad, fw = F.fw;
+    const float barY = F.barY, panesTop = F.panesTop, panesH = F.panesH;
+    const float notesTop = F.notesTop, notesBottom = F.notesBottom, progressH = F.progressH;
+    const bool showLevels = F.showLevels, showRecord = F.showRecord, showWave = F.showWave;
+    const float levelsH = F.levelsH, waveH = F.waveH;
+    (void)deck; (void)w; (void)h; (void)pad; (void)fw; (void)barY; (void)panesTop; (void)panesH;
+    (void)notesTop; (void)notesBottom; (void)progressH; (void)showLevels; (void)showRecord;
+    (void)showWave; (void)levelsH; (void)waveH;
 
     // ── Progress ─────────────────────────────────────────────────────
     // Where you should be by now. A rehearsal is the better answer — it is what this talk
@@ -895,6 +972,83 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     // The navigator, the help card and a pending jump live here rather than on the slide
     // window whenever this window is open.
     drawOverlays(canvas, app, w, h);
+
+}
+
+void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
+    if (!mWindow || !mImpl) return;
+    glfwMakeContextCurrent(mWindow);
+
+    int w = 0, h = 0;
+    glfwGetWindowSize(mWindow, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    if (w != mImpl->width || h != mImpl->height) {
+        mImpl->backend.resize(w, h);
+        mImpl->width = w;
+        mImpl->height = h;
+    }
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(mWindow, &fbW, &fbH);
+    if (fbW != mImpl->fbWidth || fbH != mImpl->fbHeight) {
+        mImpl->backend.onFramebufferResize(fbW, fbH);
+        mImpl->fbWidth = fbW;
+        mImpl->fbHeight = fbH;
+    }
+
+    SkCanvas* canvas = mImpl->backend.canvas();
+    if (!canvas) return;
+    canvas->clear(ui::kBg);
+
+    Impl::Frame F;
+    F.canvas = canvas;
+    F.app = &app;
+    F.w = w;
+    F.h = h;
+    F.pad = std::round(w * 0.022f);
+    F.fw = w - F.pad * 2;
+    F.barY = F.pad + std::round(h * 0.052f);
+    mImpl->drawTopBar(F);
+
+    F.panesTop = F.barY + std::round(h * 0.045f);
+    F.panesH = std::round(h * 0.40f);
+    mImpl->drawPanes(F, live);
+
+    // What sits under the panes — the notes pane, the buttons row, the narration strip, the
+    // meter, the progress bar — is laid out from the bottom up, each part claiming its
+    // height only when it is shown.
+    {
+        const float pad = F.pad, panesTop = F.panesTop, panesH = F.panesH;
+    // ── Notes ────────────────────────────────────────────────────────
+    const float notesTop = panesTop + panesH + std::round(h * 0.055f);
+    const float progressH = 6.0f;
+    // The meter is up whenever the microphone is: for a whole rehearsal, and for a single
+    // slide being recorded over.
+    const bool showLevels = (app.timing.recording() && app.recordAudio) || app.reRecording;
+    const float levelsH = showLevels ? 34.0f : 0.0f;
+    // Room for the buttons row under the notes — the record button, or the stop button
+    // while a whole run is being recorded — and for the meter when it is up.
+    const bool showRecord = !app.timing.recording() || mImpl->onStopRun != nullptr;
+    // The slide's narration, when it has one and the microphone is not on it: the shape of
+    // what was said, its name and length, and where playback has got to.
+    const bool showWave = mImpl->narration.envelope && !mImpl->narration.envelope->empty()
+                          && !showLevels && !app.reRecording;
+    const float waveH = showWave ? 72.0f : 0.0f;
+    const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f)
+                              - (showRecord ? 34.0f : 0.0f) - (showWave ? waveH + 8 : 0.0f);
+        F.notesTop = notesTop;
+        F.notesBottom = notesBottom;
+        F.progressH = progressH;
+        F.showLevels = showLevels;
+        F.levelsH = levelsH;
+        F.showRecord = showRecord;
+        F.showWave = showWave;
+        F.waveH = waveH;
+    }
+    mImpl->drawPane(F);
+    mImpl->drawMeter(F);
+    mImpl->drawNarrationStrip(F);
+    mImpl->drawButtonsRow(F);
+    mImpl->drawFooter(F);
 
     mImpl->backend.present();
     glfwSwapBuffers(mWindow);

@@ -94,6 +94,9 @@ set(REFRACTPLAYER_SOURCES
     src/PdfExporter.cpp
     src/Transcriber.cpp
     src/Progress.cpp
+    src/Pointer.cpp
+    src/Tasks.cpp
+    src/VoiceDir.cpp
     src/ProcessingWindow.cpp
     src/ExportPlan.cpp
     src/WaveShape.cpp

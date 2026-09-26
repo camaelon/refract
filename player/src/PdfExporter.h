@@ -11,8 +11,6 @@
 #include "Progress.h"
 #include "Worker.h"
 
-#include <mutex>
-
 #include <string>
 #include <vector>
 
@@ -48,12 +46,11 @@ public:
                     double fps, int width, int height, bool captions = false);
 
     // Where the running export has got to, from the progress lines the child prints.
-    Progress progress() const;
+    Progress progress() const { return mProgress.get(); }
 
 private:
     bool launch(const std::vector<std::string>& args, const std::string& target, const std::string& kind);
-    mutable std::mutex mProgressMutex;
-    Progress mProgress;
+    ProgressSlot mProgress;
 };
 
 }  // namespace refract
