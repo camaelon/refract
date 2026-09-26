@@ -32,4 +32,10 @@ struct VideoChoice {
 };
 bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out);
 
+// Move a file to the Trash rather than deleting it, so a wrong click can be undone from the
+// Finder. False when it could not be moved (the file stays). Elsewhere than macOS the file is
+// removed outright, and the caller's wording should say so.
+bool moveToTrash(const std::string& path);
+bool trashIsAvailable();
+
 }  // namespace refract

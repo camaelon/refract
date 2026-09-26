@@ -51,6 +51,12 @@ void Captions::loadForVoice(const fs::path& wav) {
     }
 }
 
+void Captions::reload() {
+    const std::string entry = mEntry;
+    mEntry.clear();
+    loadForVoice(entry);
+}
+
 void Captions::replaceRange(int first, int last, const std::string& text) {
     const int count = static_cast<int>(mWords.size());
     if (first < 0 || last < first || last >= count) return;

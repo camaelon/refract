@@ -1,14 +1,16 @@
 // A close-caption window: the narration for the current slide, with each word lit as it is
 // spoken.
 //
-// Driven by the audio clock rather than by anything counted on the main thread, so the
-// highlight stays on the word actually coming out of the speakers. With no audio playing it
-// still shows the slide's transcript, unlit — which makes it a serviceable teleprompter for
-// a talk whose narration has been written down but is being delivered live.
+// A window around a CaptionView — the same widget the presenter shows on its Captions tab.
+// This owns the GLFW window and forwards it the mouse; the caller installs the key callback
+// so every window shares one set of bindings, and hands keys here first.
 #pragma once
 
 #include "App.h"
 #include "Captions.h"
+#include "CaptionView.h"
+
+#include "rcplayer/CpuRenderBackend.h"
 
 #include <functional>
 #include <memory>
@@ -19,8 +21,7 @@ namespace refract {
 
 class CaptionWindow {
 public:
-    // Opens the window. Null when GLFW could not create it. The caller installs the key
-    // callback so every window shares one set of bindings.
+    // Opens the window. Null when GLFW could not create it.
     static std::unique_ptr<CaptionWindow> Create(int width, int height);
     ~CaptionWindow();
 
@@ -31,31 +32,24 @@ public:
     // actually running, which is the difference between lighting words and just showing them.
     void render(const App& app, Captions& captions, double playbackTime, bool playing);
 
-    // ── Correcting the transcript ────────────────────────────────────
-    // A transcriber mishears words, and the place you notice is here, watching them go by.
-    // So they can be fixed here: click Edit, click a word, type the right one.
-
+    // The widget, for keys, edit state and the editing-changed hook. See CaptionView.
+    CaptionView& view() { return mImpl->view; }
     bool isEditing() const;
-
-    // Leave edit mode, keeping the word in progress. Used on the way out, so quitting
-    // mid-correction is not the one way to lose one.
     void finishEditing();
-
-    // Called when edit mode is entered or left. The narration should stop while the words
-    // are being changed — the highlight would be moving under the cursor — and start again
-    // from the beginning of the slide afterwards, so the correction can be heard in place.
     void setOnEditingChanged(std::function<void(bool editing)> action);
-
-    // Keyboard while editing. Returns true when the key was consumed, in which case the
-    // player's own bindings must not also see it: typing "b" into a word should not blank
-    // the projector.
     bool handleKey(int key, int action, int mods);
     void handleChar(unsigned int codepoint);
 
 private:
     CaptionWindow() = default;
 
-    struct Impl;
+    struct Impl {
+        CpuRenderBackend backend;
+        int width = 0, height = 0;
+        int fbWidth = 0, fbHeight = 0;
+        double mouseX = 0, mouseY = 0;
+        CaptionView view;
+    };
     std::unique_ptr<Impl> mImpl;
     GLFWwindow* mWindow = nullptr;
 };

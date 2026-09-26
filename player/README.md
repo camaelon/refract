@@ -106,12 +106,28 @@ would have made a slide that *is* animating cache as settled; the opcode tables 
 `std::call_once`; the Java-compatible RNG is per thread; and `StillHosts`' label font no longer
 hands out a reference to a static it reassigns on the next call.
 
-**The narration strip.** When the slide on screen has a recording, a strip above the buttons
-shows its waveform, its file name and its length, with a playhead running along it while it
-plays. Beside the re-record button, **transcribe slide N** runs `captions.py` on that one
-recording in the background (redoing it even if it looks up to date) and reloads the
-captions when it lands; **File ▸ Transcribe Narration** does the whole voice directory the
-same way. Both are the `--transcribe` path, without leaving the talk.
+**Notes and captions.** The pane under the slides has two tabs. **Notes** is the speaker
+notes. **Captions** is the same widget as the [caption window](#captions) — the slide's
+transcript with each word lit as it is spoken, and **Edit** (or `E` while the tab is
+showing) to correct it in place, exactly as there. The tab that was showing comes back with
+the rest of the session.
+
+**The narration strip.** When the slide on screen has a recording, a strip under the buttons
+shows its waveform, its file name and its length, with a playhead and the time it has reached
+while it plays. Beside the re-record button, **transcribe slide N** runs `captions.py` on that
+one recording in the background (redoing it even if it looks up to date), switches the pane
+to its captions tab, and puts the transcript there when it lands — so a slide can be
+transcribed, read and corrected without leaving the presenter. **File ▸ Transcribe
+Narration** does the whole voice directory the same way. Both are the `--transcribe` path. While one runs, the button and the captions tab
+say where it has got to — "3 of 23 · aligning 07" — with a bar that fills as slides finish
+(and sweeps while the models load, before there is a count), read from the progress lines
+`captions.py` prints.
+
+**Delete recording**, beside those two, moves the slide's wav together with its transcript
+and word timings to the Trash (removes them, on other platforms). It asks first, in the row
+itself: **keep** takes the place the button had, so a repeated click there keeps; the
+question follows; the red **delete** is at the far end of the row and stays dead for the
+first moment. The question goes away on its own if the slide changes.
 
 **Autoplay narration**, a checkbox at the foot of the presenter beside the record button:
 with it ticked, a slide that has a narration wav advances on its own when the wav ends, so
@@ -226,7 +242,7 @@ above Minimize, because opening one is what that menu is mostly for here.
 | double / triple / quadruple click | word, line, paragraph |
 | `cmd`+`Enter` | split the slide here |
 
-**In the caption window**
+**In the caption window, and the presenter's captions tab**
 
 | Key | |
 |---|---|
@@ -786,9 +802,10 @@ every few seconds, so a rehearsal that ends by being killed still leaves a usabl
 
 **Re-recording one slide.** A rehearsal is recorded in one pass, and a slide that came out
 badly used to cost the whole take. The presenter window has a **record button** under the
-notes — `● re-record slide 12` — which becomes `● keep take` with a pulsing dot while the
-microphone is open, and grows a **discard** button beside it. `shift`+`R` does the same thing,
-and `Esc` discards.
+notes — `● re-record slide 12` — which becomes `● stop recording` with a pulsing dot while
+the microphone is open, and grows a **discard** button beside it. Stopping keeps the take.
+`shift`+`R` does the same thing, and `Esc` discards. The new take's waveform is on the
+narration strip the moment it is kept.
 
 The new take goes to a temporary file and only replaces the old one when you keep it, or when
 you leave the slide. Discarding leaves the old one untouched. Its transcript and word timings
@@ -881,6 +898,10 @@ catching: a talk recorded with the microphone muted looks exactly like one that 
 up until you play it back.
 
 Pausing the talk pauses the capture, so a break does not land in the middle of a slide's wav.
+A **stop recording** button sits under the notes for as long as the run is being recorded:
+it closes the slide's wav, writes the trace, and brings playback back so the takes can be
+heard at once. Before it, a run ended only at quit, and a slide's wav only when the next
+slide came up.
 
 A recorded talk plays itself back:
 
@@ -984,7 +1005,8 @@ python3 player/tools/assets.py <deck>/out --remove includes/old-logo.png
 ## Captions
 
 A recorded narration can be transcribed and aligned into per-word timings, and then read
-back as a close-caption window with each word lit as it is spoken:
+back as a close-caption window with each word lit as it is spoken (the presenter shows the
+same thing on its captions tab):
 
 ```sh
 prebuilt/refractplayer mytalk/out --record-audio     # record the narration
@@ -1272,7 +1294,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Fifteen C++ suites, none of which needs a window or a GPU. Twelve of them need nothing but their
+Sixteen C++ suites, none of which needs a window or a GPU. Thirteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1281,7 +1303,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All fifteen, alongside the player:
+All sixteen, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1302,6 +1324,7 @@ ctest --test-dir player/build --output-on-failure
 | `plan` | the talk's planned length, and where in the deck it says you should be |
 | `wave_shape` | the presenter's waveform, read from a wav in every sample layout the recorder or anything else writes |
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
+| `transcribe_progress` | the progress lines `captions.py` prints, as the presenter reads and words them |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 

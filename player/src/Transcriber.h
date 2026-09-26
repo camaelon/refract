@@ -8,10 +8,25 @@
 
 #include "Worker.h"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace refract {
+
+// Where a running transcription has got to, from the progress lines captions.py prints:
+// `done` of `total` slides finished, and what it is doing to which one now.
+struct TranscribeProgress {
+    int done = 0;
+    int total = 0;
+    std::string phase;         // "loading the transcriber", "transcribing", "aligning", "done"
+    std::string stem;          // the recording in hand, "07", when there is one
+    std::string label() const; // "3 of 23 · aligning 07", for a status line
+    float fraction() const { return total > 0 ? static_cast<float>(done) / total : -1.0f; }
+};
+
+// The line captions.py prints for a step, parsed; false for any other line.
+bool parseTranscribeProgress(const std::string& line, TranscribeProgress* progress);
 
 struct TranscribeState {
     bool running = false;
@@ -33,6 +48,13 @@ public:
     // all). False when a job is already running.
     bool start(const std::string& voiceDir, const std::vector<std::string>& stems,
                const std::string& model, const std::string& language, const std::string& what);
+
+    // The last progress reported by the running job (or the finished one).
+    TranscribeProgress progress() const;
+
+private:
+    mutable std::mutex mProgressMutex;
+    TranscribeProgress mProgress;
 };
 
 }  // namespace refract

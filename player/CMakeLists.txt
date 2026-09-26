@@ -100,6 +100,7 @@ set(REFRACTPLAYER_SOURCES
     src/Plan.cpp
     src/Utf8.cpp
     src/BuildPanel.cpp
+    src/CaptionView.cpp
     src/CaptionWindow.cpp
     src/Captions.cpp
     src/Deck.cpp

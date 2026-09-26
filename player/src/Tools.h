@@ -6,6 +6,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -32,8 +33,12 @@ std::filesystem::path findTool(const std::string& name);
 // in JSON, and a caller that is going to parse it wants it back rather than on screen. `errors`
 // captures stderr *as well as* passing it through, so a window can show the last line of it:
 // "see the terminal" is no help when the player was started from Finder.
+//
+// `onErrorLine` is called with each complete line of stderr as it arrives, on the calling
+// thread, for a tool that reports progress that way while it runs (captions.py does).
 int runTool(const std::string& name, const std::vector<std::string>& args,
-            std::string* out = nullptr, std::string* errors = nullptr);
+            std::string* out = nullptr, std::string* errors = nullptr,
+            const std::function<void(const std::string&)>& onErrorLine = nullptr);
 
 // Compile a RemoteCompose document written as JSON into the binary wire format the engine
 // reads. That compiler is json2rc — a JVM tool, the same one the build uses — so this is a

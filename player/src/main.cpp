@@ -66,6 +66,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -133,6 +134,7 @@ bool wantEditor = false;
 void noteSlideShown();
 void startRunIfArmed();
 bool captionsEditing();
+void captionEditingChanged(bool editing);
 void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
@@ -298,9 +300,17 @@ fs::path voiceFileFor(int slide, const char* extension) {
 // Which slides have narration, for the deck view to show. Done once per deck rather than per
 // frame: it is a look at the disk for every slide, and the answer only changes when the deck
 // is rebuilt or something is recorded.
+// Where this deck's narration lives: <deck>/voice when there is one, else the player's
+// default beside the slides (out/voice) — the same answer voicePathFor gives, asked once.
+fs::path voiceDir() {
+    if (!g.voiceDirOverride.empty()) return g.voiceDirOverride;
+    if (g.files.empty()) return {};
+    const fs::path wav = voicePathFor(g.files.front());
+    return wav.empty() ? fs::path() : wav.parent_path();
+}
+
 void refreshVoicePresence() {
     app.voice.assign(app.deck.size(), 0);
-    if (g.voiceDirOverride.empty()) return;
     for (int i = 0; i < app.deck.size(); i++) {
         const fs::path wav = voiceFileFor(i);
         std::error_code ec;
@@ -406,6 +416,45 @@ void toggleTalkClock() {
     }
 }
 
+// End a recorded run where the presenter says to: the slide's wav is closed, the trace is
+// written, and playback comes back so the takes can be heard straight away.
+void stopRun() {
+    if (!app.timing.recording()) return;
+    if (recorder) recorder->stop();
+    app.timing.finish(app.clock.elapsed);
+    refreshVoicePresence();
+    if (!voice && app.recordAudio) {
+        voice = refract::AudioPlayer::Create();
+        if (voice) g.voiceOverEnabled = false;   // the player's own playback stays off; this one plays
+    }
+    std::cerr << "refractplayer: recording stopped\n";
+}
+
+// Take away the slide's recording, and with it the transcript and timings made from it: a
+// transcript of a take that no longer exists would only mislead the next transcription
+// (captions.py aligns against NN.txt when it finds one). The presenter has already asked.
+// The files go to the Trash, not away: a take is minutes of someone's voice, and the one
+// click that removes it must be one the Finder can put back.
+void deleteRecording(int slide) {
+    if (app.deck.empty() || slide < 0 || slide >= app.deck.size()) return;
+    const fs::path wav = voiceFileFor(slide);
+    if (wav.empty()) return;
+    if (voice) { voice->stop(); voicePlaying = false; }
+    int moved = 0;
+    for (const char* ext : {".wav", ".txt", ".words.json"}) {
+        fs::path path = wav;
+        path.replace_extension();
+        path += ext;
+        std::error_code ec;
+        if (fs::exists(path, ec) && refract::moveToTrash(path.string())) moved++;
+    }
+    refreshVoicePresence();
+    captions.loadForVoice(wav);
+    captions.reload();
+    std::cerr << "refractplayer: " << (refract::trashIsAvailable() ? "moved to the Trash: " : "deleted: ")
+              << wav.filename().string() << " and its transcript (" << moved << " files)\n";
+}
+
 void startRunIfArmed() {
     if (!app.recordArmed || !app.clock.running) return;
     app.recordArmed = false;
@@ -431,17 +480,37 @@ void openPresenter() {
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
     session.restore("presenter", presenter->window());
-    presenter->setOnTranscribeSlide([] { transcribe(true); });
+    presenter->setOnTranscribeSlide([] {
+        transcribe(true);
+        // The result is wanted where the button is: the captions tab shows it as it lands.
+        presenter->showTab(refract::PresenterWindow::Tab::Captions);
+    });
+    presenter->captionView().setOnEditingChanged(captionEditingChanged);
+    // The tab that was showing last time comes back, like the rest of the session.
+    if (session.presenterCaptions) presenter->showTab(refract::PresenterWindow::Tab::Captions);
     presenter->setOnToggleAutoplay([] {
         app.autoplayVoice = !app.autoplayVoice;
         saveSessionIfChanged();
     });
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
+    presenter->setOnStopRun(stopRun);
+    presenter->setOnDeleteRecording(deleteRecording);
+    presenter->setDeleteGoesToTrash(refract::trashIsAvailable());
     // Both windows take the same keys: you should be able to drive the talk from whichever
     // one has focus, and which one that is depends on where you last clicked.
-    glfwSetKeyCallback(presenter->window(), playerKeyCallback);
+    // The captions tab gets first refusal, as the caption window does: while a word is
+    // being retyped every key belongs to it.
+    glfwSetKeyCallback(presenter->window(),
+                       [](GLFWwindow* w, int key, int scancode, int action, int mods) {
+        if (presenter && presenter->captionView().handleKey(key, action, mods)) return;
+        playerKeyCallback(w, key, scancode, action, mods);
+    });
     glfwSetCharCallback(presenter->window(), [](GLFWwindow*, unsigned int codepoint) {
+        if (presenter && presenter->captionView().isEditing()) {
+            presenter->captionView().handleChar(codepoint);
+            return;
+        }
         // The navigator draws on this window when it is open, so it is typed into here too.
         if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
             app.navFilter.push_back(static_cast<char>(codepoint < 0x80 ? codepoint : '?'));
@@ -455,8 +524,29 @@ void openPresenter() {
     }
 }
 
+// The transcript is being corrected somewhere — the caption window, or the presenter's
+// captions tab; both show the same words and either may be the one being typed into.
 bool captionsEditing() {
-    return captionWindow && captionWindow->isEditing();
+    return (captionWindow && captionWindow->isEditing())
+        || (presenter && presenter->captionView().isEditing());
+}
+
+// Entering or leaving edit mode, in either place.
+void captionEditingChanged(bool editing) {
+    if (!voice) return;
+    if (editing) {
+        // Nothing should be playing while the words are being changed.
+        voice->stop();
+        voicePlaying = false;
+    } else {
+        // Pick up shortly before the first correction rather than at the top of the
+        // slide. The point of replaying is to hear the change against the audio it was
+        // made for, and a long narration should not have to be sat through to reach it.
+        // With nothing changed there is nothing to hear, so it starts from the top.
+        constexpr double kLeadInSec = 1.5;
+        const double edited = captions.earliestEdit();
+        playSlideAudio(edited < 0.0 ? 0.0 : std::max(0.0, edited - kLeadInSec));
+    }
 }
 
 void openCaptions() {
@@ -476,22 +566,7 @@ void openCaptions() {
     });
 
     session.restore("captions", captionWindow->window());
-    captionWindow->setOnEditingChanged([](bool editing) {
-        if (!voice) return;
-        if (editing) {
-            // Nothing should be playing while the words are being changed.
-            voice->stop();
-            voicePlaying = false;
-        } else {
-            // Pick up shortly before the first correction rather than at the top of the
-            // slide. The point of replaying is to hear the change against the audio it was
-            // made for, and a long narration should not have to be sat through to reach it.
-            // With nothing changed there is nothing to hear, so it starts from the top.
-            constexpr double kLeadInSec = 1.5;
-            const double edited = captions.earliestEdit();
-            playSlideAudio(edited < 0.0 ? 0.0 : std::max(0.0, edited - kLeadInSec));
-        }
-    });
+    captionWindow->setOnEditingChanged(captionEditingChanged);
 }
 
 void toggleCaptions() {
@@ -546,20 +621,33 @@ refract::BuildRunner builder;
 
 // ── Narration on the presenter ───────────────────────────────────────
 //
-// The shape of a slide's recording, read once from its wav and kept by path, so the
-// presenter can draw it and mark where playback is. A wav that cannot be read is remembered
-// as empty rather than tried again every frame.
-std::map<std::string, refract::WaveShape> waveShapes;
+// The shape of a slide's recording, read from its wav and kept by path, so the presenter
+// can draw it and mark where playback is. Kept with the file's size and time, and read again
+// when either changes: a take just recorded, or a transcription's neighbour, has to show up
+// without a restart. A wav that cannot be read is remembered as empty rather than tried
+// again every frame — until the file changes.
+struct CachedWaveShape {
+    refract::WaveShape shape;
+    std::uintmax_t size = 0;
+    fs::file_time_type written;
+};
+std::map<std::string, CachedWaveShape> waveShapes;
 
 const refract::WaveShape* waveShapeFor(const fs::path& wav) {
     if (wav.empty()) return nullptr;
+    std::error_code ec;
+    const std::uintmax_t size = fs::file_size(wav, ec);
+    if (ec) return nullptr;
+    const fs::file_time_type written = fs::last_write_time(wav, ec);
     auto it = waveShapes.find(wav.string());
-    if (it == waveShapes.end()) {
-        refract::WaveShape shape;
-        refract::readWaveShape(wav.string(), 240, &shape);
-        it = waveShapes.emplace(wav.string(), std::move(shape)).first;
+    if (it == waveShapes.end() || it->second.size != size || it->second.written != written) {
+        CachedWaveShape entry;
+        entry.size = size;
+        entry.written = written;
+        refract::readWaveShape(wav.string(), 240, &entry.shape);
+        it = waveShapes.insert_or_assign(wav.string(), std::move(entry)).first;
     }
-    return it->second.envelope.empty() ? nullptr : &it->second;
+    return it->second.shape.envelope.empty() ? nullptr : &it->second.shape;
 }
 
 // ── Transcribing ─────────────────────────────────────────────────────
@@ -606,8 +694,14 @@ void collectTranscription() {
     if (state.running || !state.ran) return;
     transcribeReported = true;
     if (state.ok) {
-        std::cerr << "refractplayer: transcribed " << state.what << "\n";
-        if (!app.deck.empty()) captions.loadForVoice(voiceFileFor(g.currentIndex));
+        // Read again, not merely loaded: the captions for this wav were already looked up
+        // (and found missing, or old) and would otherwise stay that way until a restart.
+        if (!app.deck.empty()) {
+            captions.loadForVoice(voiceFileFor(g.currentIndex));
+            captions.reload();
+        }
+        std::cerr << "refractplayer: transcribed " << state.what << " ("
+                  << captions.words().size() << " words on the slide shown)\n";
     } else {
         std::cerr << "refractplayer: transcription of " << state.what << " failed: " << state.error << "\n";
     }
@@ -747,6 +841,7 @@ void captureSession() {
     session.captions = captionWindow != nullptr;
     session.assets = assetWindow != nullptr;
     session.autoplayVoice = app.autoplayVoice;
+    if (presenter) session.presenterCaptions = presenter->tab() == refract::PresenterWindow::Tab::Captions;
 
     if (assetWindow) session.capture("assets", assetWindow->window());
     if (presenter) session.capture("presenter", presenter->window());
@@ -1211,7 +1306,7 @@ int main(int argc, char* argv[]) {
                                                    : fs::path(input).parent_path().parent_path();
         if (fs::is_directory(deckDir / "voice")) g.voiceDirOverride = deckDir / "voice";
         app.deck.build(entries, input);
-        if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
+        if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
         int from = 0, to = 0;
         if (!refract::videoRange(app.deck.size(), options.videoFrom, options.videoTo, &from, &to)) {
@@ -1361,7 +1456,7 @@ int main(int argc, char* argv[]) {
     // ── Rehearsal ────────────────────────────────────────────────────
     // Which wav belongs to which slide. Loaded before anything plays, because after a reorder
     // the numbers on the files are no longer the numbers on the slides.
-    if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
+    if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
     if (options.record) {
         fs::path tracePathFor = refract::deckSidecarPath(input, "timing.json");
@@ -1537,6 +1632,12 @@ int main(int argc, char* argv[]) {
     });
 
     refreshVoicePresence();
+    {
+        int narrated = 0;
+        for (int v : app.voice) narrated += v;
+        if (narrated) std::cerr << "refractplayer: " << narrated << " slides have narration in "
+                                << voiceDir().string() << "\n";
+    }
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
     playSlideAudio();
@@ -1741,7 +1842,9 @@ int main(int argc, char* argv[]) {
                 }
                 {
                     refract::PresenterWindow::Narration narration;
-                    const fs::path wav = app.deck.empty() ? fs::path() : voiceFileFor(g.currentIndex);
+                    // Not while the microphone is writing it: the file grows every frame and
+                    // would be parsed every frame, and the strip is not shown then anyway.
+                    const fs::path wav = (app.deck.empty() || listening) ? fs::path() : voiceFileFor(g.currentIndex);
                     if (const refract::WaveShape* shape = waveShapeFor(wav)) {
                         narration.label = wav.filename().string();
                         narration.envelope = &shape->envelope;
@@ -1749,7 +1852,13 @@ int main(int argc, char* argv[]) {
                         narration.position = (voicePlaying && voice && voice->isPlaying()) ? voice->currentTime() : -1.0;
                     }
                     presenter->setNarration(narration);
-                    presenter->setTranscribing(transcriber.running());
+                    {
+                        const refract::TranscribeProgress progress = transcriber.progress();
+                        presenter->setTranscribing(transcriber.running(), progress.label(), progress.fraction());
+                    }
+                    // The captions tab follows the audio clock, as the caption window does.
+                    presenter->setCaptions(&captions, voice ? voice->currentTime() : 0.0,
+                                           voice && voice->isPlaying());
                 }
                 presenter->render(app, liveFrame);
                 lastPresenterDraw = elapsed;
@@ -1849,6 +1958,7 @@ int main(int argc, char* argv[]) {
     // An edit in progress is finished rather than dropped: it is saved on leaving edit mode,
     // and quitting mid-word should not be the one way to lose it.
     if (captionWindow && captionWindow->isEditing()) captionWindow->finishEditing();
+    if (presenter && presenter->captionView().isEditing()) presenter->captionView().finishEditing();
 
     stopSlideRecording(/*keep=*/true);
     if (app.timing.recording()) app.timing.finish(app.clock.elapsed);

@@ -153,7 +153,8 @@ bool compileRcJson(const std::string& jsonPath, const std::string& rcPath) {
 }
 
 int runTool(const std::string& name, const std::vector<std::string>& args,
-            std::string* out, std::string* errors) {
+            std::string* out, std::string* errors,
+            const std::function<void(const std::string&)>& onErrorLine) {
     const fs::path script = findTool(name);
     if (script.empty()) {
         std::cerr << "refractplayer: cannot find tools/" << name << "\n";
@@ -204,6 +205,7 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
     // are drained together, or one filling up would stall the other.
     if (out) { ::close(pipeFds[1]); out->clear(); }
     if (errors) { ::close(errFds[1]); errors->clear(); }
+    size_t lineStart = 0;
     while ((out && pipeFds[0] >= 0) || (errors && errFds[0] >= 0)) {
         char buf[4096];
         bool progress = false;
@@ -218,6 +220,14 @@ int runTool(const std::string& name, const std::vector<std::string>& args,
                 errors->append(buf, n);
                 std::cerr.write(buf, n);   // still the user's output
                 progress = true;
+                if (onErrorLine) {
+                    // Every complete line since the last one handed over.
+                    size_t end;
+                    while ((end = errors->find('\n', lineStart)) != std::string::npos) {
+                        onErrorLine(errors->substr(lineStart, end - lineStart));
+                        lineStart = end + 1;
+                    }
+                }
             } else { ::close(errFds[0]); errFds[0] = -1; }
         }
         if (!progress && pipeFds[0] < 0 && errFds[0] < 0) break;

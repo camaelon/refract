@@ -43,6 +43,7 @@ bool Session::load(const std::string& source) {
     }
     editorAutoSave = doc.value("editorAutoSave", false);
     autoplayVoice = doc.value("autoplayVoice", false);
+    presenterCaptions = doc.value("presenterCaptions", false);
     buildWatch = doc.value("buildWatch", false);
     if (doc["build"].is_object()) {
         buildTransitions = doc["build"].value("transitions", false);
@@ -72,6 +73,7 @@ std::string Session::serialise() const {
     }
     doc["editorAutoSave"] = editorAutoSave;
     doc["autoplayVoice"] = autoplayVoice;
+    doc["presenterCaptions"] = presenterCaptions;
     doc["buildWatch"] = buildWatch;
     doc["build"] = {{"transitions", buildTransitions}, {"debug", buildDebug},
                     {"force", buildForce}, {"keepJson", buildKeepJson}};

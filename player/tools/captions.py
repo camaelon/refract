@@ -98,6 +98,12 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
             return 1
     print(f"captions: {len(wavs)} recorded slide(s) in {voice_dir}")
 
+    # Progress, one line per step, for whoever is watching — the player reads these off
+    # stderr and shows them in the presenter, since a whole deck is minutes of silence
+    # otherwise. `done` counts slides finished, `total` the ones being processed.
+    def progress(done: int, total: int, phase: str, stem: str = "") -> None:
+        print(f"progress: {done}/{total} {phase} {stem}".rstrip(), file=sys.stderr, flush=True)
+
     # Only pay for a model if something actually needs it.
     pending = []
     for wav in wavs:
@@ -120,6 +126,8 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
     # A transcript the user has already written or corrected is authoritative; whisper is
     # only needed for the slides that have none.
     needs_transcription = any(not os.path.exists(t) for _, _, t, _ in pending)
+    if needs_transcription:
+        progress(0, len(pending), "loading the transcriber")
     transcribe = _load_transcriber(model_name) if needs_transcription else None
     if needs_transcription and transcribe is None:
         print("captions: no transcriber available. Install one with:\n"
@@ -127,6 +135,7 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
               file=sys.stderr)
         return 2
 
+    progress(0, len(pending), "loading the aligner")
     align = _load_aligner(language, device)
     if align is None:
         print("captions: whisperx is required for word timings. Install with:\n"
@@ -134,12 +143,13 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
         return 2
 
     failures = 0
-    for stem, wav_path, txt_path, json_path in pending:
+    for done, (stem, wav_path, txt_path, json_path) in enumerate(pending):
         if os.path.exists(txt_path):
             with open(txt_path) as f:
                 text = f.read().strip()
             source = "transcript"
         else:
+            progress(done, len(pending), "transcribing", stem)
             text = transcribe(wav_path, language)
             with open(txt_path, "w") as f:
                 f.write(text + "\n")
@@ -152,6 +162,7 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
                            "text": "", "words": []}, f, indent=2)
             continue
 
+        progress(done, len(pending), "aligning", stem)
         try:
             words, duration = align(wav_path, text)
         except Exception as e:                      # noqa: BLE001 - one bad slide is not fatal
@@ -176,6 +187,7 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
             json.dump(payload, f, indent=2)
         print(f"  {stem}  {source}, {len(payload['words'])} words")
 
+    progress(len(pending), len(pending), "done")
     return 1 if failures else 0
 
 

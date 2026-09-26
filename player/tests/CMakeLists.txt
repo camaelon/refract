@@ -22,7 +22,8 @@ foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeom
               options:Options completion:Completion utf8:Utf8 scrolling:Scrolling
               plan:Plan
               slide_recorder:SlideRecorder deck_library:DeckLibrary
-              wave_shape:WaveShape export_plan:ExportPlan)
+              wave_shape:WaveShape export_plan:ExportPlan
+              transcribe_progress:Transcriber,Tools)
     string(REPLACE ":" ";" parts ${suite})
     list(GET parts 0 name)
     list(GET parts 1 units)

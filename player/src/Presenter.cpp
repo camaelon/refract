@@ -27,6 +27,9 @@ namespace refract {
 // eight seconds of trailing history.
 constexpr size_t kLevelHistory = 160;
 
+// How long after "delete recording" is clicked the red delete button stays dead.
+constexpr double kConfirmArmSec = 0.8;
+
 struct PresenterWindow::Impl {
     CpuRenderBackend backend;
     int width = 0, height = 0;
@@ -35,12 +38,31 @@ struct PresenterWindow::Impl {
     std::function<void()> onToggleClock;
     std::function<void()> onRecordSlide;
     std::function<void()> onDiscardTake;
+    std::function<void()> onStopRun;
+    SkRect stopButton = SkRect::MakeEmpty();
+    std::function<void(int)> onDeleteRecording;
+    bool deleteGoesToTrash = false;
+    double confirmShownAt = 0.0;               // when the question went up; delete is dead for a moment
+    SkRect deleteButton = SkRect::MakeEmpty();
+    // The question shown in place of the row after "delete recording": which slide it was
+    // asked for, so it goes away by itself when the slide changes under it.
+    int confirmDeleteSlide = -1;
+    SkRect confirmDelete = SkRect::MakeEmpty(), confirmKeep = SkRect::MakeEmpty();
+    int deleteSlide = -1;                       // the slide the delete button was drawn for
     std::function<void()> onToggleAutoplay;
     SkRect autoplayBox = SkRect::MakeEmpty();
     std::function<void()> onTranscribeSlide;
     SkRect transcribeButton = SkRect::MakeEmpty();
     bool transcribing = false;
+    std::string transcribeStatus;
+    float transcribeFraction = -1.0f;
     PresenterWindow::Narration narration;
+    PresenterWindow::Tab tab = PresenterWindow::Tab::Notes;
+    SkRect notesTab = SkRect::MakeEmpty(), captionsTab = SkRect::MakeEmpty();
+    CaptionView captionView;
+    Captions* captions = nullptr;
+    double playbackTime = 0.0;
+    bool playing = false;
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
     SkRect recordButton = SkRect::MakeEmpty();
     SkRect discardButton = SkRect::MakeEmpty();
@@ -87,15 +109,38 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         self->mImpl->mouseY = y;
         self->mImpl->buttonHot =
             self->mImpl->clockButton.contains(static_cast<float>(x), static_cast<float>(y));
+        self->mImpl->captionView.mouseMove(static_cast<float>(x), static_cast<float>(y));
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int) {
         if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
         Impl& impl = *self->mImpl;
+        if (impl.over(impl.notesTab)) { self->showTab(Tab::Notes); return; }
+        if (impl.over(impl.captionsTab)) { self->showTab(Tab::Captions); return; }
+        if (impl.tab == Tab::Captions) {
+            const bool shift = (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                                || glfwGetKey(w, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+            if (impl.captionView.click(static_cast<float>(impl.mouseX), static_cast<float>(impl.mouseY), shift)) return;
+        }
         if (impl.over(impl.clockButton) && impl.onToggleClock) impl.onToggleClock();
         else if (impl.over(impl.recordButton) && impl.onRecordSlide) impl.onRecordSlide();
         else if (impl.over(impl.discardButton) && impl.onDiscardTake) impl.onDiscardTake();
+        else if (impl.over(impl.stopButton) && impl.onStopRun) impl.onStopRun();
+        else if (impl.over(impl.deleteButton)) {
+            impl.confirmDeleteSlide = impl.deleteSlide;
+            impl.confirmShownAt = glfwGetTime();
+        }
+        else if (impl.over(impl.confirmKeep)) impl.confirmDeleteSlide = -1;
+        else if (impl.over(impl.confirmDelete)) {
+            // Not in the first moments: a second click where the first one landed — a
+            // double-click, or a click repeated because nothing seemed to happen — must not
+            // be the confirmation. The button is drawn dead until then.
+            if (glfwGetTime() - impl.confirmShownAt < kConfirmArmSec) return;
+            const int slide = impl.confirmDeleteSlide;
+            impl.confirmDeleteSlide = -1;
+            if (impl.onDeleteRecording) impl.onDeleteRecording(slide);
+        }
         else if (impl.over(impl.autoplayBox) && impl.onToggleAutoplay) impl.onToggleAutoplay();
         else if (impl.over(impl.transcribeButton) && impl.onTranscribeSlide && !impl.transcribing) impl.onTranscribeSlide();
     });
@@ -123,6 +168,16 @@ void PresenterWindow::setOnRecordSlide(std::function<void()> record,
     mImpl->onDiscardTake = std::move(discard);
 }
 
+void PresenterWindow::setOnStopRun(std::function<void()> stop) {
+    mImpl->onStopRun = std::move(stop);
+}
+
+void PresenterWindow::setOnDeleteRecording(std::function<void(int)> remove) {
+    mImpl->onDeleteRecording = std::move(remove);
+}
+
+void PresenterWindow::setDeleteGoesToTrash(bool trash) { mImpl->deleteGoesToTrash = trash; }
+
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
     mImpl->onToggleAutoplay = std::move(toggle);
 }
@@ -131,7 +186,29 @@ void PresenterWindow::setOnTranscribeSlide(std::function<void()> transcribe) {
     mImpl->onTranscribeSlide = std::move(transcribe);
 }
 
-void PresenterWindow::setTranscribing(bool busy) { mImpl->transcribing = busy; }
+void PresenterWindow::setTranscribing(bool busy, const std::string& status, float fraction) {
+    mImpl->transcribing = busy;
+    mImpl->transcribeStatus = status;
+    mImpl->transcribeFraction = fraction;
+}
+
+void PresenterWindow::setCaptions(Captions* captions, double playbackTime, bool playing) {
+    mImpl->captions = captions;
+    mImpl->playbackTime = playbackTime;
+    mImpl->playing = playing;
+}
+
+void PresenterWindow::showTab(Tab tab) {
+    if (mImpl->tab == tab) return;
+    // An edit in progress belongs to the captions tab; leaving it finishes (and saves) it.
+    if (tab != Tab::Captions) mImpl->captionView.finishEditing();
+    mImpl->tab = tab;
+    mImpl->captionView.setActive(tab == Tab::Captions);
+}
+
+PresenterWindow::Tab PresenterWindow::tab() const { return mImpl->tab; }
+
+CaptionView& PresenterWindow::captionView() { return mImpl->captionView; }
 
 void PresenterWindow::setNarration(const Narration& narration) { mImpl->narration = narration; }
 
@@ -483,17 +560,67 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     // slide being recorded over.
     const bool showLevels = (app.timing.recording() && app.recordAudio) || app.reRecording;
     const float levelsH = showLevels ? 34.0f : 0.0f;
-    // Room for the record button under the notes, and for the meter when it is up.
-    const bool showRecord = !app.timing.recording();
+    // Room for the buttons row under the notes — the record button, or the stop button
+    // while a whole run is being recorded — and for the meter when it is up.
+    const bool showRecord = !app.timing.recording() || mImpl->onStopRun != nullptr;
     // The slide's narration, when it has one and the microphone is not on it: the shape of
     // what was said, its name and length, and where playback has got to.
     const bool showWave = mImpl->narration.envelope && !mImpl->narration.envelope->empty()
                           && !showLevels && !app.reRecording;
-    const float waveH = showWave ? 46.0f : 0.0f;
+    const float waveH = showWave ? 72.0f : 0.0f;
     const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f)
                               - (showRecord ? 34.0f : 0.0f) - (showWave ? waveH + 8 : 0.0f);
+    // ── Tabs: notes | captions ───────────────────────────────────────
+    // Two labels in the pane's top-left, the way the slide panes are labelled; the one
+    // showing is bright with a line under it.
+    {
+        SkFont tabFont = uiFont(13, true);
+        float x = pad;
+        const float ty = notesTop - 8;
+        const struct { const char* text; Tab tab; SkRect* box; } tabs[] = {
+            {"NOTES", Tab::Notes, &mImpl->notesTab}, {"CAPTIONS", Tab::Captions, &mImpl->captionsTab}};
+        for (const auto& t : tabs) {
+            const float tw = textWidth(tabFont, t.text);
+            *t.box = SkRect::MakeXYWH(x - 6, ty - 18, tw + 12, 26);
+            const bool on = mImpl->tab == t.tab;
+            const bool hot = !on && mImpl->over(*t.box);
+            drawText(canvas, t.text, x, ty, tabFont, on ? ui::kText : (hot ? ui::kText : ui::kDim));
+            if (on) fillRect(canvas, SkRect::MakeXYWH(x, ty + 5, tw, 2), ui::kAccent);
+            x += tw + 22;
+        }
+    }
+    mImpl->captionView.setActive(mImpl->tab == Tab::Captions);
     SkRect notesBox = SkRect::MakeLTRB(pad, notesTop, w - pad, notesBottom);
-    if (notesBox.height() > 40) {
+    if (notesBox.height() > 40 && mImpl->tab == Tab::Captions) {
+        fillRoundRect(canvas, notesBox, 6, ui::kPanel);
+        const float size = std::max(14.0f, std::round(h * 0.030f));
+        if (mImpl->captions && (!mImpl->captions->empty() || !mImpl->transcribing)) {
+            mImpl->captionView.draw(canvas, notesBox, app, *mImpl->captions, mImpl->playbackTime,
+                                    mImpl->playing, /*header=*/false, size);
+        } else {
+            // Nothing yet, and a transcription on its way: say where it has got to rather
+            // than "no captions", with a bar when the tool has said how many slides it has.
+            SkFont font = uiFont(15);
+            const std::string message = mImpl->transcribeStatus.empty()
+                ? std::string("transcribing\u2026") : "transcribing\u2026  " + mImpl->transcribeStatus;
+            drawText(canvas, message, notesBox.centerX() - textWidth(font, message) * 0.5f,
+                     notesBox.centerY(), font, ui::kDim);
+            const float bw = std::min(320.0f, notesBox.width() * 0.5f);
+            SkRect track = SkRect::MakeXYWH(notesBox.centerX() - bw * 0.5f, notesBox.centerY() + 16, bw, 6);
+            fillRoundRect(canvas, track, 3, ui::kLine);
+            if (mImpl->transcribeFraction >= 0.0f) {
+                SkRect done = SkRect::MakeXYWH(track.left(), track.top(),
+                                               std::max(6.0f, bw * std::min(1.0f, mImpl->transcribeFraction)), 6);
+                fillRoundRect(canvas, done, 3, ui::kAccent);
+            } else {
+                // No count yet (the models are loading): a short runner going back and forth.
+                const float t = static_cast<float>(std::fmod(glfwGetTime(), 2.0) / 2.0);
+                const float span = bw - 60;
+                const float x = track.left() + span * (t < 0.5f ? t * 2 : (1 - t) * 2);
+                fillRoundRect(canvas, SkRect::MakeXYWH(x, track.top(), 60, 6), 3, ui::kAccent);
+            }
+        }
+    } else if (notesBox.height() > 40) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
         const std::string& notes = app.deck.notesFor(app.current());
         SkFont notesFont = uiFont(std::max(14.0f, std::round(h * 0.030f)));
@@ -529,30 +656,52 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     }
 
     // ── Narration ────────────────────────────────────────────────────
+    // Under the buttons row, so neither sits on the other: the shape of what was said,
+    // mirrored about a centre line the way a sound editor draws it, the part already
+    // played in the accent colour, and the playhead with the time it has reached.
     if (showWave) {
         const Narration& n = mImpl->narration;
-        const float top = notesBottom + 6;
+        const float top = notesBottom + 6 + (showRecord ? 34.0f : 0.0f);
         SkRect box = SkRect::MakeXYWH(pad, top, fw, waveH);
         fillRoundRect(canvas, box, 6, ui::kPanel);
-        // Name and length in the corner; the wave takes the rest of the strip.
         SkFont label = uiFont(11, true);
         std::string caption = n.label;
         if (n.duration > 0.0) caption += "  ·  " + formatDuration(n.duration);
         drawText(canvas, caption, box.left() + 10, box.top() + 14, label, ui::kDim);
-        const float waveTop = box.top() + 19, waveBottom = box.bottom() - 5;
-        const float mid = (waveTop + waveBottom) * 0.5f, half = (waveBottom - waveTop) * 0.5f;
-        const float left = box.left() + 10, width = box.width() - 20;
-        const size_t bins = n.envelope->size();
         const float played = (n.position >= 0.0 && n.duration > 0.0)
             ? static_cast<float>(std::min(1.0, n.position / n.duration)) : -1.0f;
+        if (played >= 0.0f) {
+            drawTextRight(canvas, formatDuration(n.position) + " / " + formatDuration(n.duration),
+                          box.right() - 10, box.top() + 14, label, ui::kAccent);
+        }
+        const float waveTop = box.top() + 22, waveBottom = box.bottom() - 6;
+        const float mid = std::round((waveTop + waveBottom) * 0.5f), half = (waveBottom - waveTop) * 0.5f;
+        const float left = box.left() + 10, width = box.width() - 20;
+        // The centre line, faint, so a silent stretch still reads as a stretch.
+        fillRect(canvas, SkRect::MakeLTRB(left, mid - 0.5f, left + width, mid + 0.5f), ui::kLine);
+        const size_t bins = n.envelope->size();
+        // Scaled to the recording's own loudest moment: a quiet take is still a shape,
+        // and what matters here is where the speech is, not how loud the room was.
+        float loudest = 0.0f;
+        for (float v : *n.envelope) loudest = std::max(loudest, v);
+        const float gain = loudest > 0.0f ? 1.0f / loudest : 1.0f;
+        // As many bars as fit at three pixels each; wider strips get a bar per bin.
+        const size_t bars = std::max<size_t>(1, std::min(bins, static_cast<size_t>(width / 3.0f)));
         SkPaint bar;
-        bar.setAntiAlias(false);
-        for (size_t i = 0; i < bins; i++) {
-            const float x0 = left + width * i / bins, x1 = left + width * (i + 1) / bins;
-            const float a = std::max(0.02f, (*n.envelope)[i]) * half;
-            const float f = static_cast<float>(i + 1) / bins;
-            bar.setColor(played >= 0.0f && f <= played ? ui::kText : ui::kLine);
-            canvas->drawRect(SkRect::MakeLTRB(x0, mid - a, std::max(x0 + 1.0f, x1 - 1.0f), mid + a), bar);
+        bar.setAntiAlias(true);
+        for (size_t i = 0; i < bars; i++) {
+            // The loudest bin under this bar.
+            const size_t b0 = i * bins / bars, b1 = std::max(b0 + 1, (i + 1) * bins / bars);
+            float peak = 0.0f;
+            for (size_t b = b0; b < b1 && b < bins; b++) peak = std::max(peak, (*n.envelope)[b]);
+            // Quiet speech is most of a recording; lifting the low end keeps it visible
+            // without flattening the loud parts.
+            const float a = std::max(1.5f, std::pow(std::min(1.0f, peak * gain), 0.6f) * half);
+            const float x0 = left + width * i / bars, x1 = left + width * (i + 1) / bars;
+            const float f = static_cast<float>(i + 0.5f) / bars;
+            bar.setColor(played >= 0.0f && f <= played ? ui::kAccent : 0xFF5A6273);
+            const float bw = std::max(1.0f, x1 - x0 - 1.0f);
+            canvas->drawRoundRect(SkRect::MakeLTRB(x0, mid - a, x0 + bw, mid + a), bw * 0.5f, bw * 0.5f, bar);
         }
         if (played >= 0.0f) {
             SkPaint head;
@@ -561,6 +710,7 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
             head.setStrokeWidth(2.0f);
             const float x = left + width * played;
             canvas->drawLine(x, waveTop - 2, x, waveBottom + 2, head);
+            canvas->drawCircle(x, waveTop - 2, 3.5f, head);
         }
     }
 
@@ -571,6 +721,25 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     mImpl->recordButton = SkRect::MakeEmpty();
     mImpl->discardButton = SkRect::MakeEmpty();
     mImpl->autoplayBox = SkRect::MakeEmpty();
+    mImpl->stopButton = SkRect::MakeEmpty();
+    // ── Stop the run ─────────────────────────────────────────────────
+    // While a whole run is being recorded, the row holds one thing: the way to end it. Until
+    // now the only ways were the next slide (which only closes this slide's wav) and quitting.
+    if (app.timing.recording() && mImpl->onStopRun) {
+        SkFont label = uiFont(12, true);
+        const std::string text = "stop recording";
+        const float bw = textWidth(label, text) + 44;
+        const float by = notesBottom + 6;
+        mImpl->stopButton = SkRect::MakeXYWH(pad, by, bw, 26);
+        const bool hot = mImpl->over(mImpl->stopButton);
+        fillRoundRect(canvas, mImpl->stopButton, 13, ui::kPanel);
+        strokeRoundRect(canvas, mImpl->stopButton, 13, hot ? ui::kOver : ui::kLine, 1.0f);
+        // A square, the stop glyph, in the recording colour.
+        fillRoundRect(canvas, SkRect::MakeXYWH(mImpl->stopButton.left() + 12,
+                                               mImpl->stopButton.centerY() - 5, 10, 10), 2, ui::kOver);
+        drawText(canvas, text, mImpl->stopButton.left() + 30, mImpl->stopButton.centerY() + 4, label,
+                 hot ? ui::kText : ui::kOver);
+    }
     // ── Autoplay narration ───────────────────────────────────────────
     // On the same row, at the right: a slide that has a wav advances when it ends, so a
     // recorded talk plays itself; a slide without one waits for you as usual.
@@ -602,10 +771,43 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         }
         drawText(canvas, text, square.right() + 10, square.centerY() + 4, label, tone);
     }
-    if (mImpl->onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
+    mImpl->deleteButton = SkRect::MakeEmpty();
+    mImpl->confirmDelete = SkRect::MakeEmpty();
+    mImpl->confirmKeep = SkRect::MakeEmpty();
+    mImpl->deleteSlide = app.deck.empty() ? -1 : app.current();
+    if (mImpl->confirmDeleteSlide >= 0 && mImpl->confirmDeleteSlide != mImpl->deleteSlide) {
+        mImpl->confirmDeleteSlide = -1;          // asked about a slide no longer on screen
+    }
+    // ── Delete this slide's recording? ───────────────────────────────
+    // Asked in the row itself rather than in a dialog. The layout is the safety: keep sits
+    // where the delete-recording button was, so a repeated click there keeps; the red
+    // delete is at the far end of the row and dead for the first moments. Never one click.
+    if (mImpl->confirmDeleteSlide >= 0 && !app.timing.recording() && !app.reRecording) {
+        SkFont label = uiFont(12, true);
+        const float by = notesBottom + 6;
+        const std::string question = mImpl->deleteGoesToTrash
+            ? "move " + mImpl->narration.label + " and its transcript to the Trash?"
+            : "delete " + mImpl->narration.label + " and its transcript? this cannot be undone";
+        const float kw = textWidth(label, "keep") + 24;
+        mImpl->confirmKeep = SkRect::MakeXYWH(pad, by, kw, 26);
+        const bool khot = mImpl->over(mImpl->confirmKeep);
+        fillRoundRect(canvas, mImpl->confirmKeep, 13, ui::kPanel);
+        strokeRoundRect(canvas, mImpl->confirmKeep, 13, khot ? ui::kText : ui::kDim, 1.0f);
+        drawTextCentred(canvas, "keep", mImpl->confirmKeep, label, ui::kText);
+        float x = mImpl->confirmKeep.right() + 14;
+        x += drawText(canvas, question, x, by + 17, label, ui::kWarn) + 40;
+        const float dw = textWidth(label, "delete") + 24;
+        mImpl->confirmDelete = SkRect::MakeXYWH(x, by, dw, 26);
+        const bool armed = glfwGetTime() - mImpl->confirmShownAt >= kConfirmArmSec;
+        const bool dhot = armed && mImpl->over(mImpl->confirmDelete);
+        fillRoundRect(canvas, mImpl->confirmDelete, 13, dhot ? ui::kOver : ui::kPanel);
+        strokeRoundRect(canvas, mImpl->confirmDelete, 13, armed ? ui::kOver : ui::kLine, 1.0f);
+        drawTextCentred(canvas, "delete", mImpl->confirmDelete, label,
+                        dhot ? 0xFF1A0606 : (armed ? ui::kOver : ui::kLine));
+    } else if (mImpl->onRecordSlide && !app.timing.recording() && !app.deck.empty()) {
         SkFont label = uiFont(12, true);
         const std::string text = app.reRecording
-            ? "keep take"
+            ? "stop recording"
             : "re-record slide " + std::to_string(app.current() + 1);
         const float bw = textWidth(label, text) + 44;
         const float by = notesBottom + 6;
@@ -632,8 +834,11 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                  mImpl->recordButton.centerY() + 4, label, tone);
 
         if (!app.reRecording && mImpl->onTranscribeSlide && showWave) {
-            const std::string ttext = mImpl->transcribing ? "transcribing\u2026"
-                                                          : "transcribe slide " + std::to_string(app.current() + 1);
+            std::string ttext = "transcribe slide " + std::to_string(app.current() + 1);
+            if (mImpl->transcribing) {
+                ttext = "transcribing\u2026";
+                if (!mImpl->transcribeStatus.empty()) ttext += "  " + mImpl->transcribeStatus;
+            }
             const float tw = textWidth(label, ttext) + 24;
             mImpl->transcribeButton = SkRect::MakeXYWH(mImpl->recordButton.right() + 8, by, tw, 26);
             const bool thot = mImpl->over(mImpl->transcribeButton) && !mImpl->transcribing;
@@ -643,6 +848,17 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
                             mImpl->transcribing ? ui::kDim : (thot ? ui::kText : ui::kDim));
         } else {
             mImpl->transcribeButton = SkRect::MakeEmpty();
+        }
+        if (!app.reRecording && mImpl->onDeleteRecording && showWave && !mImpl->transcribing) {
+            const std::string dtext = "delete recording";
+            const float dw = textWidth(label, dtext) + 24;
+            const SkRect& before = mImpl->transcribeButton.isEmpty() ? mImpl->recordButton
+                                                                     : mImpl->transcribeButton;
+            mImpl->deleteButton = SkRect::MakeXYWH(before.right() + 8, by, dw, 26);
+            const bool dhot = mImpl->over(mImpl->deleteButton);
+            fillRoundRect(canvas, mImpl->deleteButton, 13, ui::kPanel);
+            strokeRoundRect(canvas, mImpl->deleteButton, 13, dhot ? ui::kOver : ui::kLine, 1.0f);
+            drawTextCentred(canvas, dtext, mImpl->deleteButton, label, dhot ? ui::kOver : ui::kDim);
         }
         if (app.reRecording) {
             const float dw = textWidth(label, "discard") + 24;

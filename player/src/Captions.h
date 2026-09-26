@@ -29,6 +29,10 @@ public:
     // question the deck has to answer once the deck has been reordered — see VoiceIndex.
     void loadForVoice(const std::filesystem::path& wav);
 
+    // Read the same wav's captions again: a transcription has just landed for it, and the
+    // miss (or the old words) cached for it is out of date.
+    void reload();
+
     bool empty() const { return mWords.empty(); }
     const std::vector<CaptionWord>& words() const { return mWords; }
     const std::string& text() const { return mText; }

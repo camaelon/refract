@@ -105,4 +105,15 @@ std::string chooseNewDeck() {
     }
 }
 
+bool trashIsAvailable() { return true; }
+
+bool moveToTrash(const std::string& path) {
+    @autoreleasepool {
+        NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+        NSError* error = nil;
+        const BOOL ok = [[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:&error];
+        return ok == YES;
+    }
+}
+
 }  // namespace refract
