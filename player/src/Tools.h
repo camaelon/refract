@@ -21,8 +21,11 @@ std::filesystem::path executableDir();
 // Run any program, waiting for it. stdout goes to the terminal; stderr is captured into
 // `errors` (when given) as well as passed through, like runTool. The exit status, or -1
 // when it could not be started. Safe on a worker thread.
+//
+// `onErrorLine`, as for runTool: each complete line of stderr as it arrives.
 int runProgram(const std::string& program, const std::vector<std::string>& args,
-               std::string* errors = nullptr);
+               std::string* errors = nullptr,
+               const std::function<void(const std::string&)>& onErrorLine = nullptr);
 
 // Where `player/tools/<name>` is, or empty when it cannot be found.
 std::filesystem::path findTool(const std::string& name);

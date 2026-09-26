@@ -37,6 +37,10 @@ class CliArgs(unittest.TestCase):
         self.assertEqual(a.fps, 24.0)
         self.assertEqual(a.dwell, 2.5)
 
+    def test_video_captions(self):
+        self.assertFalse(self.parse("--video").captions, "off unless asked: it makes the picture taller")
+        self.assertTrue(self.parse("--video", "--captions").captions)
+
     def test_video_defaults_cover_the_whole_deck(self):
         a = self.parse("--video")
         self.assertEqual((a.video_from, a.video_to), (1, 0), "0 for --to means the last slide")
@@ -45,7 +49,7 @@ class CliArgs(unittest.TestCase):
 
     def test_every_flag_is_in_the_help(self):
         text = refract.build_parser().format_help()
-        for flag in ("--pdf", "--images", "--video", "--from", "--to", "--fps", "--dwell",
+        for flag in ("--pdf", "--images", "--video", "--from", "--to", "--fps", "--dwell", "--captions",
                      "--watch", "--force", "--json-only", "--json2rc", "--check", "--transitions"):
             self.assertIn(flag, text, flag)
 

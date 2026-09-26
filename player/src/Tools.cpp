@@ -33,7 +33,7 @@ fs::path executableDir() {
 }
 
 int runProgram(const std::string& program, const std::vector<std::string>& args,
-               std::string* errors) {
+               std::string* errors, const std::function<void(const std::string&)>& onErrorLine) {
     std::vector<std::string> owned = args;
     std::vector<char*> argv;
     std::string prog = program;
@@ -62,9 +62,17 @@ int runProgram(const std::string& program, const std::vector<std::string>& args,
         ::close(errFds[1]);
         char buf[4096];
         ssize_t n;
+        size_t lineStart = 0;
         while ((n = ::read(errFds[0], buf, sizeof(buf))) > 0) {
             errors->append(buf, (size_t)n);
             ::write(STDERR_FILENO, buf, (size_t)n);   // passed through as well as kept
+            if (onErrorLine) {
+                size_t end;
+                while ((end = errors->find('\n', lineStart)) != std::string::npos) {
+                    onErrorLine(errors->substr(lineStart, end - lineStart));
+                    lineStart = end + 1;
+                }
+            }
         }
         ::close(errFds[0]);
     }

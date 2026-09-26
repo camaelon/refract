@@ -776,6 +776,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fps", type=float, default=30.0, help="movie frame rate (default 30)")
     ap.add_argument("--dwell", type=float, default=4.0,
                     help="seconds a slide with no narration stays up in the movie (default 4)")
+    ap.add_argument("--captions", action="store_true",
+                    help="with --video: a caption line under the slides, from the transcripts")
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
     ap.add_argument("--force", action="store_true",
@@ -1218,6 +1220,8 @@ def run_once(args) -> int:
         cmd = [viewer, out_dir, "--video", video, "--from", str(args.video_from),
                "--to", str(args.video_to), "--fps", str(args.fps), "--dwell", str(args.dwell),
                str(width), str(height)]
+        if args.captions:
+            cmd.append("--captions")
         if subprocess.run(cmd).returncode != 0:
             return 1
         print(f"exported {video}")

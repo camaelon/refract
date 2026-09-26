@@ -6,6 +6,7 @@
 //
 // Returns 0 on success, 1 on any failed assertion.
 
+#include "Progress.h"
 #include "Transcriber.h"
 
 #include <cmath>
@@ -45,7 +46,18 @@ static void testNotProgress() {
     CHECK(none.fraction() < 0.0f && none.label().empty(), "nothing reported yet: no bar, no text");
 }
 
+static void testGenericLine() {
+    refract::Progress p;
+    CHECK(refract::parseProgressLine("progress: 120/1760 slide 2/23 05_between.rc", &p), "an export's line");
+    CHECK(p.done == 120 && p.total == 1760 && p.text == "slide 2/23 05_between.rc", "count and text");
+    CHECK(std::fabs(p.fraction() - 120.0f / 1760.0f) < 1e-6 && p.known(), "a fraction when the total is known");
+    CHECK(refract::parseProgressLine("progress: 0/0 assembling the soundtrack\r\n", &p), "no total yet");
+    CHECK(!p.known() && p.fraction() < 0.0f && p.text == "assembling the soundtrack", "then no fraction, and the text trimmed");
+    CHECK(!refract::parseProgressLine("Done: 176 frames", &p), "a result line is not progress");
+}
+
 int main() {
+    testGenericLine();
     testSteps();
     testNotProgress();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }

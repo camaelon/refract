@@ -1,5 +1,6 @@
 #include "Transcriber.h"
 
+#include "Progress.h"
 #include "Tools.h"
 
 #include <algorithm>
@@ -32,14 +33,11 @@ std::string TranscribeProgress::label() const {
 }
 
 bool parseTranscribeProgress(const std::string& line, TranscribeProgress* progress) {
-    // "progress: 3/23 aligning 07"
-    static const std::string prefix = "progress: ";
-    if (line.compare(0, prefix.size(), prefix) != 0) return false;
-    int done = 0, total = 0, consumed = 0;
-    if (std::sscanf(line.c_str() + prefix.size(), "%d/%d%n", &done, &total, &consumed) != 2) return false;
-    std::string rest = line.substr(prefix.size() + consumed);
-    while (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
-    while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\r')) rest.pop_back();
+    // "progress: 3/23 aligning 07": the common shape, then the recording split off the end.
+    Progress base;
+    if (!parseProgressLine(line, &base)) return false;
+    const int done = static_cast<int>(base.done), total = static_cast<int>(base.total);
+    std::string rest = base.text;
     // The stem is the last word only when the phase is a one-word verb ("aligning 07");
     // the loading phases are several words and name no recording.
     std::string phase = rest, stem;

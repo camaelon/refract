@@ -8,7 +8,10 @@
 // `refract.py --video`, and the window never notices.
 #pragma once
 
+#include "Progress.h"
 #include "Worker.h"
+
+#include <mutex>
 
 #include <string>
 #include <vector>
@@ -19,6 +22,7 @@ struct PdfExportState {
     bool running = false;
     bool ran = false;          // finished at least once since the player started
     bool ok = false;
+    std::string kind;          // "PDF" or "video"
     std::string path;          // the file asked for
     std::string error;         // last line of what the export said, when it failed
 };
@@ -28,7 +32,8 @@ struct PdfExportState {
 std::vector<std::string> pdfExportArgs(const std::string& deck, const std::string& pdf,
                                        int width, int height, double delay);
 std::vector<std::string> videoExportArgs(const std::string& deck, const std::string& mp4,
-                                         int from, int to, double fps, int width, int height);
+                                         int from, int to, double fps, int width, int height,
+                                         bool captions = false);
 
 class PdfExporter : public Worker<PdfExportState> {
 public:
@@ -40,10 +45,15 @@ public:
     // The same, for a movie: slides `from`..`to` (1-based, inclusive) at `fps`, with the
     // narration as its soundtrack — the player's --video, on a worker.
     bool startVideo(const std::string& deck, const std::string& mp4, int from, int to,
-                    double fps, int width, int height);
+                    double fps, int width, int height, bool captions = false);
+
+    // Where the running export has got to, from the progress lines the child prints.
+    Progress progress() const;
 
 private:
-    bool launch(const std::vector<std::string>& args, const std::string& target);
+    bool launch(const std::vector<std::string>& args, const std::string& target, const std::string& kind);
+    mutable std::mutex mProgressMutex;
+    Progress mProgress;
 };
 
 }  // namespace refract

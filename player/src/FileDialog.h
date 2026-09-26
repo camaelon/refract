@@ -29,6 +29,7 @@ struct VideoChoice {
     std::string path;
     int from = 1, to = 0;
     double fps = 30.0;
+    bool captions = false;     // a caption line under the slides, from the transcripts
 };
 bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out);
 

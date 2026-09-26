@@ -76,6 +76,12 @@ bool chooseVideo(const std::string& dir, const std::string& name, int slideCount
         NSTextField* toField = field([NSString stringWithFormat:@"%d", slideCount], 148, 52);
         label(@"fps", 220, 40);
         NSTextField* fpsField = field(@"30", 266, 52);
+        // A caption line under the slides, from the transcripts (--transcribe): off unless
+        // asked, since it makes the picture taller.
+        NSButton* captionsBox = [NSButton checkboxWithTitle:@"captions" target:nil action:nil];
+        captionsBox.frame = NSMakeRect(330, 6, 90, 20);
+        captionsBox.state = NSControlStateValueOff;
+        [box addSubview:captionsBox];
         panel.accessoryView = box;
 
         if ([panel runModal] != NSModalResponseOK) return false;
@@ -86,6 +92,7 @@ bool chooseVideo(const std::string& dir, const std::string& name, int slideCount
         out->to = toField.intValue > 0 ? std::min(slideCount, toField.intValue) : slideCount;
         if (out->to < out->from) out->to = out->from;
         out->fps = fpsField.doubleValue > 0 ? fpsField.doubleValue : 30.0;
+        out->captions = captionsBox.state == NSControlStateValueOn;
         return true;
     }
 }

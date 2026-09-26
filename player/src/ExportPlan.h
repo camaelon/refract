@@ -6,6 +6,8 @@
 // against a command line and a list of durations rather than a two-minute render.
 #pragma once
 
+#include "Captions.h"
+
 #include <string>
 #include <vector>
 
@@ -35,5 +37,20 @@ struct SoundtrackPiece {
 // The ffmpeg command line that concatenates `pieces` into `audio` (a wav): every piece
 // resampled alike and cut or padded to its duration, so the sound lines up with the frames.
 std::string soundtrackCommand(const std::vector<SoundtrackPiece>& pieces, const std::string& audio);
+
+// One line of caption for the movie: the words spoken from `start` to `end`.
+struct CaptionCue {
+    double start = 0.0;
+    double end = 0.0;
+    std::string text;
+    std::vector<CaptionWord> words;   // the line's words with their timings, for lighting them
+};
+
+// Word timings folded into lines for a one-line caption band. A line breaks when the next
+// word would take it past `maxChars`, after a word that ends a sentence, or across a pause
+// longer than `maxGap` seconds. Each line stays up until the next begins, so the band is
+// never blank mid-speech; the last holds a moment past its final word.
+std::vector<CaptionCue> captionCues(const std::vector<CaptionWord>& words, size_t maxChars = 64,
+                                    double maxGap = 1.5);
 
 }  // namespace refract

@@ -129,6 +129,13 @@ itself: **keep** takes the place the button had, so a repeated click there keeps
 question follows; the red **delete** is at the far end of the row and stays dead for the
 first moment. The question goes away on its own if the slide changes.
 
+**The processing window** (Window ▸ Processing, `cmd`+`8`) opens by itself when a background
+task starts — an export, a transcription — and shows one card per task: what it is doing
+("slide 12/47 …", "aligning 07"), a bar that fills as the tool reports, and the outcome when
+it lands, until the window is closed. The tools report on stderr, one line per step
+(`progress: <done>/<total> <what>`), which the player reads as they arrive; the terminal
+gets the same lines.
+
 **Autoplay narration**, a checkbox at the foot of the presenter beside the record button:
 with it ticked, a slide that has a narration wav advances on its own when the wav ends, so
 a recorded talk plays itself, and a slide without one waits for you as usual. It is
@@ -208,6 +215,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `I` | `cmd`+`7` | assets |
 | | `cmd`+`E` | File ▸ Export PDF… |
 | | `shift`+`cmd`+`E` | File ▸ Export Video… |
+| | `cmd`+`8` | Window ▸ Processing — the background tasks and how far they are |
 | | | File ▸ Transcribe Narration |
 
 The panels are the useful half of this program and every one of them used to be a single
@@ -1170,6 +1178,7 @@ what `--pdf` would write — and opens the PDF when it lands. The talk keeps pla
 ```sh
 prebuilt/refractplayer mytalk/out --video mytalk.mp4 --from 3 --to 12
 python3 refract.py mytalk --video --from 3 --to 12        # the same, from the build tool
+python3 refract.py mytalk --video --captions             # with a caption line under the slides
 ```
 
 Each slide stays up for as long as its narration wav lasts, or `--dwell` seconds (default 4)
@@ -1179,7 +1188,11 @@ the player itself and go straight down a pipe into `ffmpeg`, which encodes H.264
 nothing but the finished file touches the disk. `--from` and `--to` are 1-based slide numbers
 as the presenter shows them, inclusive, and default to the whole deck. Needs `ffmpeg` and
 `ffprobe` on the path. A film that persists across slides carries on through the movie
-exactly as it does on screen. From inside the player, **File ▸ Export Video…**
+exactly as it does on screen. **`--captions`** adds a band under the picture — the movie is a
+tenth taller, the slide untouched above it — carrying one line of the narration's transcript
+at a time, from the word timings `--transcribe` wrote, with the word being spoken lit as the
+caption window lights it: a line breaks at a sentence end, at a pause, or when it would run
+long, and holds until the next begins. From inside the player, **File ▸ Export Video…**
 (`shift`+`cmd`+`E`) asks where to put the file, which slides and at what rate, renders in
 the background and opens the movie when it lands.
 
@@ -1328,7 +1341,7 @@ ctest --test-dir player/build --output-on-failure
 | `plan` | the talk's planned length, and where in the deck it says you should be |
 | `wave_shape` | the presenter's waveform, read from a wav in every sample layout the recorder or anything else writes |
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
-| `transcribe_progress` | the progress lines `captions.py` prints, as the presenter reads and words them |
+| `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 

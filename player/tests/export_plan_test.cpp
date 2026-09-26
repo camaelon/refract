@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 static int failures = 0;
 
@@ -83,11 +84,41 @@ static void testSoundtrack() {
     CHECK(filterAt != std::string::npos && mapAt != std::string::npos && filterAt < mapAt, "filter before map");
 }
 
+static refract::CaptionWord word(const char* text, double start, double end) {
+    refract::CaptionWord w;
+    w.text = text; w.start = start; w.end = end;
+    return w;
+}
+
+static void testCues() {
+    std::vector<refract::CaptionWord> words = {
+        word("A", 0.0, 0.2), word("remote", 0.2, 0.6), word("surface.", 0.6, 1.0),
+        word("Then", 1.2, 1.4), word("a", 1.4, 1.5), word("pause", 1.5, 1.9),
+        word("here", 4.0, 4.3), word("and", 4.3, 4.5), word("a", 4.5, 4.6),
+        word("very", 4.6, 4.9), word("long", 4.9, 5.2), word("line", 5.2, 5.5)};
+    // Twenty characters a line: "A remote surface." is 17, "here and a very long" exactly 20.
+    std::vector<refract::CaptionCue> cues = refract::captionCues(words, 20, 1.5);
+    CHECK(cues.size() == 4, "a sentence end, a pause and a width each break a line");
+    CHECK(cues[0].text == "A remote surface." && cues[0].start == 0.0, "the first line is the first sentence");
+    CHECK(cues[1].text == "Then a pause", "the second stops at the pause");
+    CHECK(cues[2].text == "here and a very long", "the third fills to the width exactly");
+    CHECK(cues[3].text == "line", "and the rest follows");
+    CHECK(cues[0].words.size() == 3 && cues[0].words[2].text == "surface." && cues[0].words[2].start == 0.6,
+          "a line keeps its words and their timings");
+    CHECK(cues[0].end == 1.2 && cues[1].end == 4.0 && cues[2].end == 5.2, "each line holds until the next begins");
+    CHECK(std::fabs(cues[3].end - 6.5) < 1e-9, "the last holds a second past its final word");
+    CHECK(refract::captionCues({}).empty(), "no words, no cues");
+    std::vector<refract::CaptionWord> one = {word("Hi", 2.0, 2.5)};
+    cues = refract::captionCues(one);
+    CHECK(cues.size() == 1 && cues[0].start == 2.0 && cues[0].text == "Hi", "one word is one line");
+}
+
 int main() {
     testTarget();
     testRange();
     testSnap();
     testSoundtrack();
+    testCues();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::printf("export_plan: all passed\n");
     return 0;

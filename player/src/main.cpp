@@ -22,6 +22,7 @@
 #include "FileDialog.h"
 #include "ExportPlan.h"
 #include "PdfExporter.h"
+#include "ProcessingWindow.h"
 #include "Transcriber.h"
 #include "WaveShape.h"
 #include "Captions.h"
@@ -99,6 +100,7 @@ bool voiceHeld = false;                        // it has a wav, but the talk is 
 bool overlapNextVoice = false;
 
 std::unique_ptr<refract::CaptionWindow> captionWindow;
+std::unique_ptr<refract::ProcessingWindow> processingWindow;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
 
@@ -150,7 +152,7 @@ void stopSlideRecording(bool keep);
 // and opening or closing a GLFW window from there means creating and destroying an NSWindow
 // while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
 enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets,
-                       ExportPdf, ExportVideo, Transcribe };
+                       Processing, ExportPdf, ExportVideo, Transcribe };
 MenuPanel menuRequest = MenuPanel::None;
 
 void toggleDeckView();
@@ -691,6 +693,24 @@ const refract::WaveShape* waveShapeFor(const fs::path& wav) {
     return it->second.shape.envelope.empty() ? nullptr : &it->second.shape;
 }
 
+// ── The processing window ────────────────────────────────────────────
+//
+// Opened by itself when a background task starts, so an export or a transcription is never
+// minutes of nothing visible; left up with the outcome until closed (Window ▸ Processing).
+void openProcessing() {
+    if (processingWindow) return;
+    processingWindow = refract::ProcessingWindow::Create(460, 260);
+    if (!processingWindow) return;
+    glfwSetKeyCallback(processingWindow->window(), playerKeyCallback);
+}
+
+void toggleProcessing() {
+    if (processingWindow) processingWindow.reset();
+    else openProcessing();
+}
+
+std::vector<refract::TaskView> backgroundTasks();
+
 // ── Transcribing ─────────────────────────────────────────────────────
 //
 // File ▸ Transcribe Narration… does every recording; the presenter's button does the slide
@@ -725,6 +745,7 @@ void transcribe(bool onlyThisSlide) {
     if (transcriber.start(voiceDir.string(), stems, "base", "en", what)) {
         transcribeReported = false;
         std::cerr << "refractplayer: transcribing " << what << " ...\n";
+        openProcessing();
     }
 }
 
@@ -774,6 +795,7 @@ void exportPdf() {
     if (pdfExporter.start(deckInput, pdf, exportW, exportH, exportDelay)) {
         exportReported = false;
         std::cerr << "refractplayer: exporting " << pdf << " ...\n";
+        openProcessing();
     } else {
         std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
     }
@@ -794,10 +816,12 @@ void exportVideo() {
     if (refract::canChooseFiles()
         && !refract::chooseVideo(target.dir, target.name + ".mp4", app.deck.size(), &choice)) return;
     if (getExt(choice.path) != ".mp4") choice.path += ".mp4";
-    if (pdfExporter.startVideo(deckInput, choice.path, choice.from, choice.to, choice.fps, exportW, exportH)) {
+    if (pdfExporter.startVideo(deckInput, choice.path, choice.from, choice.to, choice.fps, exportW, exportH,
+                               choice.captions)) {
         exportReported = false;
         std::cerr << "refractplayer: exporting " << choice.path << " (slides " << choice.from
-                  << "-" << choice.to << ") ...\n";
+                  << "-" << choice.to << (choice.captions ? ", with captions" : "") << ") ...\n";
+        openProcessing();
     } else {
         std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
     }
@@ -818,6 +842,55 @@ void collectPdfExport() {
     } else {
         std::cerr << "refractplayer: PDF export failed: " << state.error << "\n";
     }
+}
+
+// What the processing window shows: every worker that has run since the player started,
+// running or with its outcome — the exports, the transcription, and a rebuild in progress.
+std::vector<refract::TaskView> backgroundTasks() {
+    std::vector<refract::TaskView> tasks;
+    {
+        const refract::PdfExportState state = pdfExporter.state();
+        if (state.running || state.ran) {
+            refract::TaskView t;
+            t.name = "Export " + state.kind + "  " + fs::path(state.path).filename().string();
+            t.running = state.running;
+            if (state.running) {
+                const refract::Progress p = pdfExporter.progress();
+                t.status = p.text.empty() ? "starting" : p.text;
+                if (p.known()) t.status = std::to_string(p.done) + " / " + std::to_string(p.total) + "  " + p.text;
+                t.fraction = p.fraction();
+            } else {
+                t.failed = !state.ok;
+                t.status = state.ok ? "done: " + state.path : "failed: " + state.error;
+            }
+            tasks.push_back(t);
+        }
+    }
+    {
+        const refract::TranscribeState state = transcriber.state();
+        if (state.running || state.ran) {
+            refract::TaskView t;
+            t.name = "Transcribe " + state.what;
+            t.running = state.running;
+            if (state.running) {
+                const refract::TranscribeProgress p = transcriber.progress();
+                t.status = p.label().empty() ? "starting" : p.label();
+                t.fraction = p.fraction();
+            } else {
+                t.failed = !state.ok;
+                t.status = state.ok ? "done" : "failed: " + state.error;
+            }
+            tasks.push_back(t);
+        }
+    }
+    if (builder.running()) {
+        refract::TaskView t;
+        t.name = "Rebuild the deck";
+        t.status = "refract is running";
+        t.running = true;
+        tasks.push_back(t);
+    }
+    return tasks;
 }
 
 void openDeckView() {
@@ -1375,7 +1448,24 @@ int main(int argc, char* argv[]) {
                 else duration = options.videoDwell;
             }
             duration = refract::snapToFrames(duration, fps);
-            slides.push_back({app.deck.at(i).entry, duration});
+            rcplayer::VideoSlide slide;
+            slide.entry = app.deck.at(i).entry;
+            slide.duration = duration;
+            // With --captions, the slide's transcript as lines for the band under it. The
+            // words are timed from the wav's start, which is where the slide starts.
+            if (options.captions && !wavPath.empty()) {
+                refract::Captions words;
+                words.loadForVoice(wav);
+                for (const refract::CaptionCue& cue : refract::captionCues(words.words())) {
+                    rcplayer::VideoCue out;
+                    out.start = cue.start;
+                    out.end = cue.end;
+                    out.text = cue.text;
+                    for (const refract::CaptionWord& w : cue.words) out.words.push_back({w.start, w.end, w.text});
+                    slide.cues.push_back(std::move(out));
+                }
+            }
+            slides.push_back(std::move(slide));
             pieces.push_back({wavPath, duration});
         }
 
@@ -1384,11 +1474,16 @@ int main(int argc, char* argv[]) {
         const std::string audio = options.video + ".audio.wav";
         const std::string cmd = refract::soundtrackCommand(pieces, audio);
         std::cerr << "refractplayer: slides " << from << "-" << to << ", assembling the soundtrack\n";
+        std::cerr << "progress: 0/0 assembling the soundtrack\n" << std::flush;   // for the processing window
         if (std::system(cmd.c_str()) != 0) {
             std::cerr << "refractplayer: ffmpeg could not build the soundtrack\n";
             return 1;
         }
-        auto result = rcplayer::exportDeckToVideo(slides, audio, options.video, initW, initH, fps);
+        // The band: a tenth of the picture, under it, so nothing of the slide is covered.
+        rcplayer::VideoCaptionBand band;
+        if (options.captions) band.height = std::max(40, initH / 10);
+        auto result = rcplayer::exportDeckToVideo(slides, audio, options.video, initW, initH, fps,
+                                                  "ffmpeg", band);
         std::error_code ec;
         fs::remove(audio, ec);
         return result.ok ? 0 : 1;
@@ -1670,6 +1765,8 @@ int main(int argc, char* argv[]) {
                               [] { return assetWindow != nullptr; }},
         {"Navigator",    "6", [] { menuRequest = MenuPanel::Navigator; },
                               [] { return app.navOpen; }},
+        {"Processing",   "8", [] { menuRequest = MenuPanel::Processing; },
+                              [] { return processingWindow != nullptr; }},
     });
 
     refreshVoicePresence();
@@ -1692,6 +1789,7 @@ int main(int argc, char* argv[]) {
     int lastCapturedSlide = -1;
     double lastPresenterDraw = -1.0;
     double lastCaptionDraw = -1.0;
+    double lastProcessingDraw = 0.0;
     double lastDeckViewDraw = -1.0;
     double lastBuildDraw = -1.0;
     // Watching the deck's sources. Sampled on a timer rather than every frame: it is a walk
@@ -1734,6 +1832,7 @@ int main(int argc, char* argv[]) {
                 case MenuPanel::Captions:  toggleCaptions(); break;
                 case MenuPanel::Navigator: app.navOpen = !app.navOpen; break;
                 case MenuPanel::Assets:    toggleAssetWindow(); break;
+                case MenuPanel::Processing: toggleProcessing(); break;
                 case MenuPanel::ExportPdf: exportPdf(); break;
                 case MenuPanel::ExportVideo: exportVideo(); break;
                 case MenuPanel::Transcribe: transcribe(false); break;
@@ -1979,6 +2078,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (processingWindow) {
+            if (processingWindow->shouldClose()) {
+                processingWindow.reset();
+            } else if (elapsed - lastProcessingDraw >= kPresenterInterval) {
+                processingWindow->render(backgroundTasks());
+                lastProcessingDraw = elapsed;
+            }
+        }
+
         if (captionWindow) {
             if (captionWindow->shouldClose()) {
                 captionWindow.reset();
@@ -2016,6 +2124,7 @@ int main(int argc, char* argv[]) {
     session.save(deckInput);
 
     captionWindow.reset();
+    processingWindow.reset();
     assetWindow.reset();
     deckView.reset();
     buildPanel.reset();

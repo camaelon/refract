@@ -70,4 +70,40 @@ std::string soundtrackCommand(const std::vector<SoundtrackPiece>& pieces, const 
     return cmd;
 }
 
+std::vector<CaptionCue> captionCues(const std::vector<CaptionWord>& words, size_t maxChars,
+                                    double maxGap) {
+    std::vector<CaptionCue> cues;
+    CaptionCue line;
+    auto endsSentence = [](const std::string& w) {
+        return !w.empty() && (w.back() == '.' || w.back() == '?' || w.back() == '!');
+    };
+    auto flush = [&]() {
+        if (!line.text.empty()) cues.push_back(line);
+        line = CaptionCue();
+    };
+    for (const CaptionWord& w : words) {
+        if (w.text.empty()) continue;
+        if (!line.text.empty()) {
+            const bool tooLong = line.text.size() + 1 + w.text.size() > maxChars;
+            const bool pause = w.start - line.end > maxGap;
+            if (tooLong || pause) flush();
+        }
+        if (line.text.empty()) {
+            line.start = w.start;
+            line.text = w.text;
+        } else {
+            line.text += " " + w.text;
+        }
+        line.words.push_back(w);
+        line.end = w.end;
+        if (endsSentence(w.text)) flush();
+    }
+    flush();
+    // Each line holds until the next begins; the last a moment past its final word.
+    for (size_t i = 0; i < cues.size(); i++) {
+        cues[i].end = i + 1 < cues.size() ? cues[i + 1].start : cues[i].end + 1.0;
+    }
+    return cues;
+}
+
 }  // namespace refract
