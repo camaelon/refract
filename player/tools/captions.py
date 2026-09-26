@@ -81,14 +81,21 @@ def _load_aligner(language: str, device: str):
 
 
 def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = "en",
-                      device: str = "cpu", force: bool = False) -> int:
-    """Transcribe and align every recorded slide in `voice_dir`. Returns an exit code."""
+                      device: str = "cpu", force: bool = False,
+                      only: list[str] | None = None) -> int:
+    """Transcribe and align every recorded slide in `voice_dir` — or just the stems in
+    `only` (e.g. ["07"]) when the player asks for one slide. Returns an exit code."""
     if not os.path.isdir(voice_dir) or not _wavs(voice_dir):
         print(f"captions: no recorded narration in {voice_dir} — record one with "
               "`refractplayer <deck>/out --record-audio`", file=sys.stderr)
         return 1
 
     wavs = _wavs(voice_dir)
+    if only:
+        wavs = [w for w in wavs if os.path.splitext(w)[0] in only]
+        if not wavs:
+            print(f"captions: no recording named {', '.join(only)} in {voice_dir}", file=sys.stderr)
+            return 1
     print(f"captions: {len(wavs)} recorded slide(s) in {voice_dir}")
 
     # Only pay for a model if something actually needs it.
@@ -186,9 +193,12 @@ def main() -> int:
                          "is flaky on Apple silicon's mps)")
     ap.add_argument("--force", action="store_true",
                     help="redo slides whose captions are already up to date")
+    ap.add_argument("--only", default=None,
+                    help="only these recordings, by stem, comma-separated (e.g. 07,08)")
     args = ap.parse_args()
+    only = [s.strip() for s in args.only.split(",") if s.strip()] if args.only else None
     return process_voice_dir(args.voice_dir, args.model, args.language, args.device,
-                             args.force)
+                             args.force, only)
 
 
 if __name__ == "__main__":

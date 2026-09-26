@@ -2,6 +2,8 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <algorithm>
+
 namespace refract {
 
 bool canChooseFiles() { return true; }
@@ -36,6 +38,55 @@ std::string choosePdf(const std::string& dir, const std::string& name) {
         if ([panel runModal] != NSModalResponseOK) return {};
         NSURL* url = panel.URL;
         return url ? std::string(url.fileSystemRepresentation) : std::string();
+    }
+}
+
+bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out) {
+    @autoreleasepool {
+        NSSavePanel* panel = [NSSavePanel savePanel];
+        panel.title = @"Export Video";
+        panel.message = @"The slides played with their narration, H.264 in an .mp4.";
+        panel.prompt = @"Export";
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:name.c_str()];
+        panel.allowedFileTypes = @[@"mp4"];
+        panel.allowsOtherFileTypes = NO;
+        if (!dir.empty()) {
+            panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()]];
+        }
+
+        // Under the name: which slides, and how many frames a second. Plain fields — the
+        // whole deck is prefilled, so the common case is to type nothing.
+        NSView* box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 32)];
+        auto label = ^(NSString* text, CGFloat x, CGFloat w) {
+            NSTextField* l = [NSTextField labelWithString:text];
+            l.frame = NSMakeRect(x, 7, w, 18);
+            l.alignment = NSTextAlignmentRight;
+            [box addSubview:l];
+        };
+        auto field = ^NSTextField*(NSString* value, CGFloat x, CGFloat w) {
+            NSTextField* f = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 4, w, 24)];
+            f.stringValue = value;
+            f.alignment = NSTextAlignmentRight;
+            [box addSubview:f];
+            return f;
+        };
+        label(@"slides", 10, 50);
+        NSTextField* fromField = field([NSString stringWithFormat:@"%d", 1], 66, 52);
+        label(@"to", 122, 22);
+        NSTextField* toField = field([NSString stringWithFormat:@"%d", slideCount], 148, 52);
+        label(@"fps", 220, 40);
+        NSTextField* fpsField = field(@"30", 266, 52);
+        panel.accessoryView = box;
+
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL* url = panel.URL;
+        if (!url) return false;
+        out->path = url.fileSystemRepresentation;
+        out->from = std::max(1, fromField.intValue);
+        out->to = toField.intValue > 0 ? std::min(slideCount, toField.intValue) : slideCount;
+        if (out->to < out->from) out->to = out->from;
+        out->fps = fpsField.doubleValue > 0 ? fpsField.doubleValue : 30.0;
+        return true;
     }
 }
 

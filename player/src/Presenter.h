@@ -13,6 +13,8 @@
 
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -39,6 +41,22 @@ public:
     // The "autoplay narration" checkbox, when the deck has any narration to play. The
     // window only draws the state (app.autoplayVoice) and reports the click.
     void setOnToggleAutoplay(std::function<void()> toggle);
+
+    // The "transcribe slide N" button, shown when the slide has a recording. `busy` says a
+    // transcription is already running, so the button reads as such and does nothing.
+    void setOnTranscribeSlide(std::function<void()> transcribe);
+    void setTranscribing(bool busy);
+
+    // The slide's narration, for the strip above the buttons: its name, its envelope (peak
+    // per bin, 0..1, left to right), its length, and where playback is. Null envelope: no
+    // recording, no strip. The envelope is the caller's and must outlive the frame.
+    struct Narration {
+        std::string label;
+        const std::vector<float>* envelope = nullptr;
+        double duration = 0.0;
+        double position = -1.0;    // seconds into it, or negative when not playing
+    };
+    void setNarration(const Narration& narration);
 
     // Feed the current microphone level (0..1) for the recording meter, or -1 when not
     // recording. Sampled by the caller because the recorder is the app's, not the window's.

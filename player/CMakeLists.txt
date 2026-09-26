@@ -92,6 +92,9 @@ set(REFRACTPLAYER_SOURCES
     src/Windowing.cpp
     src/BuildRunner.cpp
     src/PdfExporter.cpp
+    src/Transcriber.cpp
+    src/ExportPlan.cpp
+    src/WaveShape.cpp
     src/Completion.cpp
     src/Scrolling.cpp
     src/Plan.cpp

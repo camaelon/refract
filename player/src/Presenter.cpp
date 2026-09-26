@@ -37,6 +37,10 @@ struct PresenterWindow::Impl {
     std::function<void()> onDiscardTake;
     std::function<void()> onToggleAutoplay;
     SkRect autoplayBox = SkRect::MakeEmpty();
+    std::function<void()> onTranscribeSlide;
+    SkRect transcribeButton = SkRect::MakeEmpty();
+    bool transcribing = false;
+    PresenterWindow::Narration narration;
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
     SkRect recordButton = SkRect::MakeEmpty();
     SkRect discardButton = SkRect::MakeEmpty();
@@ -93,6 +97,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         else if (impl.over(impl.recordButton) && impl.onRecordSlide) impl.onRecordSlide();
         else if (impl.over(impl.discardButton) && impl.onDiscardTake) impl.onDiscardTake();
         else if (impl.over(impl.autoplayBox) && impl.onToggleAutoplay) impl.onToggleAutoplay();
+        else if (impl.over(impl.transcribeButton) && impl.onTranscribeSlide && !impl.transcribing) impl.onTranscribeSlide();
     });
 
     glfwMakeContextCurrent(window);
@@ -121,6 +126,14 @@ void PresenterWindow::setOnRecordSlide(std::function<void()> record,
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
     mImpl->onToggleAutoplay = std::move(toggle);
 }
+
+void PresenterWindow::setOnTranscribeSlide(std::function<void()> transcribe) {
+    mImpl->onTranscribeSlide = std::move(transcribe);
+}
+
+void PresenterWindow::setTranscribing(bool busy) { mImpl->transcribing = busy; }
+
+void PresenterWindow::setNarration(const Narration& narration) { mImpl->narration = narration; }
 
 void PresenterWindow::pushAudioLevel(float average, float peak) {
     mImpl->peak = peak;
@@ -472,8 +485,13 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     const float levelsH = showLevels ? 34.0f : 0.0f;
     // Room for the record button under the notes, and for the meter when it is up.
     const bool showRecord = !app.timing.recording();
+    // The slide's narration, when it has one and the microphone is not on it: the shape of
+    // what was said, its name and length, and where playback has got to.
+    const bool showWave = mImpl->narration.envelope && !mImpl->narration.envelope->empty()
+                          && !showLevels && !app.reRecording;
+    const float waveH = showWave ? 46.0f : 0.0f;
     const float notesBottom = h - pad - progressH - 18 - (showLevels ? levelsH + 10 : 0.0f)
-                              - (showRecord ? 34.0f : 0.0f);
+                              - (showRecord ? 34.0f : 0.0f) - (showWave ? waveH + 8 : 0.0f);
     SkRect notesBox = SkRect::MakeLTRB(pad, notesTop, w - pad, notesBottom);
     if (notesBox.height() > 40) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
@@ -507,6 +525,42 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
             SkFont font = uiFont(10, true);
             drawTextRight(canvas, "CLIPPING", box.right() - 8,
                           box.top() + 12, font, ui::kOver);
+        }
+    }
+
+    // ── Narration ────────────────────────────────────────────────────
+    if (showWave) {
+        const Narration& n = mImpl->narration;
+        const float top = notesBottom + 6;
+        SkRect box = SkRect::MakeXYWH(pad, top, fw, waveH);
+        fillRoundRect(canvas, box, 6, ui::kPanel);
+        // Name and length in the corner; the wave takes the rest of the strip.
+        SkFont label = uiFont(11, true);
+        std::string caption = n.label;
+        if (n.duration > 0.0) caption += "  ·  " + formatDuration(n.duration);
+        drawText(canvas, caption, box.left() + 10, box.top() + 14, label, ui::kDim);
+        const float waveTop = box.top() + 19, waveBottom = box.bottom() - 5;
+        const float mid = (waveTop + waveBottom) * 0.5f, half = (waveBottom - waveTop) * 0.5f;
+        const float left = box.left() + 10, width = box.width() - 20;
+        const size_t bins = n.envelope->size();
+        const float played = (n.position >= 0.0 && n.duration > 0.0)
+            ? static_cast<float>(std::min(1.0, n.position / n.duration)) : -1.0f;
+        SkPaint bar;
+        bar.setAntiAlias(false);
+        for (size_t i = 0; i < bins; i++) {
+            const float x0 = left + width * i / bins, x1 = left + width * (i + 1) / bins;
+            const float a = std::max(0.02f, (*n.envelope)[i]) * half;
+            const float f = static_cast<float>(i + 1) / bins;
+            bar.setColor(played >= 0.0f && f <= played ? ui::kText : ui::kLine);
+            canvas->drawRect(SkRect::MakeLTRB(x0, mid - a, std::max(x0 + 1.0f, x1 - 1.0f), mid + a), bar);
+        }
+        if (played >= 0.0f) {
+            SkPaint head;
+            head.setAntiAlias(true);
+            head.setColor(ui::kWarn);
+            head.setStrokeWidth(2.0f);
+            const float x = left + width * played;
+            canvas->drawLine(x, waveTop - 2, x, waveBottom + 2, head);
         }
     }
 
@@ -577,6 +631,19 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
         drawText(canvas, text, mImpl->recordButton.left() + 30,
                  mImpl->recordButton.centerY() + 4, label, tone);
 
+        if (!app.reRecording && mImpl->onTranscribeSlide && showWave) {
+            const std::string ttext = mImpl->transcribing ? "transcribing\u2026"
+                                                          : "transcribe slide " + std::to_string(app.current() + 1);
+            const float tw = textWidth(label, ttext) + 24;
+            mImpl->transcribeButton = SkRect::MakeXYWH(mImpl->recordButton.right() + 8, by, tw, 26);
+            const bool thot = mImpl->over(mImpl->transcribeButton) && !mImpl->transcribing;
+            fillRoundRect(canvas, mImpl->transcribeButton, 13, ui::kPanel);
+            strokeRoundRect(canvas, mImpl->transcribeButton, 13, thot ? ui::kDim : ui::kLine, 1.0f);
+            drawTextCentred(canvas, ttext, mImpl->transcribeButton, label,
+                            mImpl->transcribing ? ui::kDim : (thot ? ui::kText : ui::kDim));
+        } else {
+            mImpl->transcribeButton = SkRect::MakeEmpty();
+        }
         if (app.reRecording) {
             const float dw = textWidth(label, "discard") + 24;
             mImpl->discardButton =

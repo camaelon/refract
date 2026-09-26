@@ -20,7 +20,10 @@
 #include "BuildPanel.h"
 #include "BuildRunner.h"
 #include "FileDialog.h"
+#include "ExportPlan.h"
 #include "PdfExporter.h"
+#include "Transcriber.h"
+#include "WaveShape.h"
 #include "Captions.h"
 #include "DeckView.h"
 #include "DeckSource.h"
@@ -67,6 +70,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <unistd.h>
+#include <cstring>
+#include <map>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -131,6 +137,7 @@ void toggleTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 void captureSession();
+void transcribe(bool onlyThisSlide);
 void saveSessionIfChanged();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
@@ -141,7 +148,7 @@ void stopSlideRecording(bool keep);
 // and opening or closing a GLFW window from there means creating and destroying an NSWindow
 // while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
 enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets,
-                       ExportPdf };
+                       ExportPdf, ExportVideo, Transcribe };
 MenuPanel menuRequest = MenuPanel::None;
 
 void toggleDeckView();
@@ -424,6 +431,7 @@ void openPresenter() {
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
     session.restore("presenter", presenter->window());
+    presenter->setOnTranscribeSlide([] { transcribe(true); });
     presenter->setOnToggleAutoplay([] {
         app.autoplayVoice = !app.autoplayVoice;
         saveSessionIfChanged();
@@ -536,6 +544,75 @@ bool reloadDeck() {
 refract::DeckSource source;
 refract::BuildRunner builder;
 
+// ── Narration on the presenter ───────────────────────────────────────
+//
+// The shape of a slide's recording, read once from its wav and kept by path, so the
+// presenter can draw it and mark where playback is. A wav that cannot be read is remembered
+// as empty rather than tried again every frame.
+std::map<std::string, refract::WaveShape> waveShapes;
+
+const refract::WaveShape* waveShapeFor(const fs::path& wav) {
+    if (wav.empty()) return nullptr;
+    auto it = waveShapes.find(wav.string());
+    if (it == waveShapes.end()) {
+        refract::WaveShape shape;
+        refract::readWaveShape(wav.string(), 240, &shape);
+        it = waveShapes.emplace(wav.string(), std::move(shape)).first;
+    }
+    return it->second.envelope.empty() ? nullptr : &it->second;
+}
+
+// ── Transcribing ─────────────────────────────────────────────────────
+//
+// File ▸ Transcribe Narration… does every recording; the presenter's button does the slide
+// on screen. Both run captions.py on a worker and, when it lands, reload the captions of the
+// slide being shown so a corrected transcript is on screen straight away.
+refract::Transcriber transcriber;
+bool transcribeReported = true;
+
+void transcribe(bool onlyThisSlide) {
+    // Where the recordings live: beside the slides as out/voice, or the deck's own voice
+    // dir when it has one — the same answer playback uses.
+    const fs::path anyWav = app.deck.empty() ? fs::path() : voiceFileFor(0);
+    const fs::path voiceDir = anyWav.empty() ? fs::path() : anyWav.parent_path();
+    if (voiceDir.empty() || !fs::is_directory(voiceDir)) {
+        std::cerr << "refractplayer: this deck has no recorded narration to transcribe\n";
+        return;
+    }
+    if (transcriber.running()) {
+        std::cerr << "refractplayer: a transcription is already running\n";
+        return;
+    }
+    std::vector<std::string> stems;
+    std::string what = "all slides";
+    if (onlyThisSlide) {
+        const fs::path wav = voiceFileFor(g.currentIndex);
+        if (wav.empty() || !fs::exists(wav)) {
+            std::cerr << "refractplayer: slide " << (g.currentIndex + 1) << " has no recording\n";
+            return;
+        }
+        stems.push_back(wav.stem().string());
+        what = "slide " + std::to_string(g.currentIndex + 1);
+    }
+    if (transcriber.start(voiceDir.string(), stems, "base", "en", what)) {
+        transcribeReported = false;
+        std::cerr << "refractplayer: transcribing " << what << " ...\n";
+    }
+}
+
+void collectTranscription() {
+    if (transcribeReported) return;
+    const refract::TranscribeState state = transcriber.state();
+    if (state.running || !state.ran) return;
+    transcribeReported = true;
+    if (state.ok) {
+        std::cerr << "refractplayer: transcribed " << state.what << "\n";
+        if (!app.deck.empty()) captions.loadForVoice(voiceFileFor(g.currentIndex));
+    } else {
+        std::cerr << "refractplayer: transcription of " << state.what << " failed: " << state.error << "\n";
+    }
+}
+
 // ── Exporting to PDF ─────────────────────────────────────────────────
 //
 // File ▸ Export PDF… runs this binary again, headless, over the deck on screen — the same
@@ -553,23 +630,40 @@ void exportPdf() {
         std::cerr << "refractplayer: a PDF export is already running\n";
         return;
     }
-    // Beside the deck, named after it: <deck>/<deck>.pdf, as refract.py defaults to
-    // <deck>/out/deck.pdf — but next to the sources is where somebody will look for it.
-    fs::path deckDir = fs::path(deckInput);
-    if (deckDir.filename() == "out") deckDir = deckDir.parent_path();
-    std::string name = deckDir.filename().string();
-    if (name.empty() || getExt(deckInput) == ".zip") name = fs::path(deckInput).stem().string();
-    if (name.empty()) name = "deck";
-    std::string startDir = deckDir.string();
-    if (getExt(deckInput) == ".zip") startDir = fs::path(deckInput).parent_path().string();
-
-    std::string pdf = refract::canChooseFiles() ? refract::choosePdf(startDir, name + ".pdf")
-                                                : (fs::path(startDir) / (name + ".pdf")).string();
+    // Beside the deck, named after it: <deck>/<deck>.pdf, next to the sources where somebody
+    // will look for it.
+    const refract::ExportTarget target = refract::exportTarget(deckInput);
+    std::string pdf = refract::canChooseFiles() ? refract::choosePdf(target.dir, target.name + ".pdf")
+                                                : (fs::path(target.dir) / (target.name + ".pdf")).string();
     if (pdf.empty()) return;
     if (getExt(pdf) != ".pdf") pdf += ".pdf";
     if (pdfExporter.start(deckInput, pdf, exportW, exportH, exportDelay)) {
         exportReported = false;
         std::cerr << "refractplayer: exporting " << pdf << " ...\n";
+    } else {
+        std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
+    }
+}
+
+// File ▸ Export Video…: the slides played with their narration into an .mp4, on a worker,
+// through the player's own --video. The panel asks which slides and at what rate.
+void exportVideo() {
+    if (deckInput.empty() || app.deck.empty()) return;
+    if (pdfExporter.running()) {
+        std::cerr << "refractplayer: an export is already running\n";
+        return;
+    }
+    const refract::ExportTarget target = refract::exportTarget(deckInput);
+    refract::VideoChoice choice;
+    choice.path = (fs::path(target.dir) / (target.name + ".mp4")).string();
+    choice.to = app.deck.size();
+    if (refract::canChooseFiles()
+        && !refract::chooseVideo(target.dir, target.name + ".mp4", app.deck.size(), &choice)) return;
+    if (getExt(choice.path) != ".mp4") choice.path += ".mp4";
+    if (pdfExporter.startVideo(deckInput, choice.path, choice.from, choice.to, choice.fps, exportW, exportH)) {
+        exportReported = false;
+        std::cerr << "refractplayer: exporting " << choice.path << " (slides " << choice.from
+                  << "-" << choice.to << ") ...\n";
     } else {
         std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
     }
@@ -1119,10 +1213,8 @@ int main(int argc, char* argv[]) {
         app.deck.build(entries, input);
         if (!g.voiceDirOverride.empty()) voiceIndex.load(g.voiceDirOverride);
 
-        const int n = app.deck.size();
-        int from = std::max(1, options.videoFrom);
-        int to = options.videoTo > 0 ? std::min(options.videoTo, n) : n;
-        if (from > to) {
+        int from = 0, to = 0;
+        if (!refract::videoRange(app.deck.size(), options.videoFrom, options.videoTo, &from, &to)) {
             std::cerr << "refractplayer: --from " << from << " is past --to " << to << "\n";
             return 1;
         }
@@ -1131,7 +1223,7 @@ int main(int argc, char* argv[]) {
         // Each slide's stay: its narration's length, else the dwell. Snapped to whole
         // frames, and the audio cut to the same length, so the two never drift apart.
         std::vector<rcplayer::VideoSlide> slides;
-        std::vector<std::string> wavs;
+        std::vector<refract::SoundtrackPiece> pieces;
         for (int i = from - 1; i < to; i++) {
             const fs::path wav = voiceFileFor(i);
             double duration = options.videoDwell;
@@ -1147,27 +1239,15 @@ int main(int argc, char* argv[]) {
                 if (duration > 0.0) wavPath = wav.string();
                 else duration = options.videoDwell;
             }
-            duration = std::max(1.0, std::lround(duration * fps) / fps);
+            duration = refract::snapToFrames(duration, fps);
             slides.push_back({app.deck.at(i).entry, duration});
-            wavs.push_back(wavPath);
+            pieces.push_back({wavPath, duration});
         }
 
         // The soundtrack: every slide's wav (or silence), each cut or padded to the slide's
         // stay, resampled alike, and joined in order.
         const std::string audio = options.video + ".audio.wav";
-        std::string cmd = "ffmpeg -y -loglevel error";
-        std::string filter;
-        for (size_t k = 0; k < slides.size(); k++) {
-            char d[32];
-            std::snprintf(d, sizeof(d), "%.3f", slides[k].duration);
-            if (!wavs[k].empty()) cmd += " -i '" + wavs[k] + "'";
-            else cmd += std::string(" -f lavfi -t ") + d + " -i anullsrc=r=48000:cl=stereo";
-            filter += "[" + std::to_string(k) + ":a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo,atrim=0:"
-                      + d + ",apad=whole_dur=" + d + "[a" + std::to_string(k) + "];";
-        }
-        for (size_t k = 0; k < slides.size(); k++) filter += "[a" + std::to_string(k) + "]";
-        filter += "concat=n=" + std::to_string(slides.size()) + ":v=0:a=1[out]";
-        cmd += " -filter_complex '" + filter + "' -map '[out]' -ar 48000 -ac 2 '" + audio + "'";
+        const std::string cmd = refract::soundtrackCommand(pieces, audio);
         std::cerr << "refractplayer: slides " << from << "-" << to << ", assembling the soundtrack\n";
         if (std::system(cmd.c_str()) != 0) {
             std::cerr << "refractplayer: ffmpeg could not build the soundtrack\n";
@@ -1436,6 +1516,8 @@ int main(int argc, char* argv[]) {
     // and the loop opens the window a moment later where every other window is opened.
     refract::installFileMenu({
         {"Export PDF\u2026", "e", [] { menuRequest = MenuPanel::ExportPdf; }, nullptr},
+        {"Export Video\u2026", "E", [] { menuRequest = MenuPanel::ExportVideo; }, nullptr},
+        {"Transcribe Narration", "", [] { menuRequest = MenuPanel::Transcribe; }, nullptr},
     });
     refract::installWindowMenu({
         {"Presenter",    "1", [] { menuRequest = MenuPanel::Presenter; },
@@ -1510,12 +1592,15 @@ int main(int argc, char* argv[]) {
                 case MenuPanel::Navigator: app.navOpen = !app.navOpen; break;
                 case MenuPanel::Assets:    toggleAssetWindow(); break;
                 case MenuPanel::ExportPdf: exportPdf(); break;
+                case MenuPanel::ExportVideo: exportVideo(); break;
+                case MenuPanel::Transcribe: transcribe(false); break;
                 case MenuPanel::None:      break;
             }
         }
 
         source.collect();
         collectPdfExport();
+        collectTranscription();
 
         if (deckReloadPending) {
             deckReloadPending = false;
@@ -1653,6 +1738,18 @@ int main(int argc, char* argv[]) {
                     presenter->pushAudioLevel(recorder->averageLevel(), recorder->peakLevel());
                 } else {
                     presenter->pushAudioLevel(-1.0f, -1.0f);
+                }
+                {
+                    refract::PresenterWindow::Narration narration;
+                    const fs::path wav = app.deck.empty() ? fs::path() : voiceFileFor(g.currentIndex);
+                    if (const refract::WaveShape* shape = waveShapeFor(wav)) {
+                        narration.label = wav.filename().string();
+                        narration.envelope = &shape->envelope;
+                        narration.duration = shape->duration;
+                        narration.position = (voicePlaying && voice && voice->isPlaying()) ? voice->currentTime() : -1.0;
+                    }
+                    presenter->setNarration(narration);
+                    presenter->setTranscribing(transcriber.running());
                 }
                 presenter->render(app, liveFrame);
                 lastPresenterDraw = elapsed;

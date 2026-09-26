@@ -106,6 +106,13 @@ would have made a slide that *is* animating cache as settled; the opcode tables 
 `std::call_once`; the Java-compatible RNG is per thread; and `StillHosts`' label font no longer
 hands out a reference to a static it reassigns on the next call.
 
+**The narration strip.** When the slide on screen has a recording, a strip above the buttons
+shows its waveform, its file name and its length, with a playhead running along it while it
+plays. Beside the re-record button, **transcribe slide N** runs `captions.py` on that one
+recording in the background (redoing it even if it looks up to date) and reloads the
+captions when it lands; **File ▸ Transcribe Narration** does the whole voice directory the
+same way. Both are the `--transcribe` path, without leaving the talk.
+
 **Autoplay narration**, a checkbox at the foot of the presenter beside the record button:
 with it ticked, a slide that has a narration wav advances on its own when the wav ends, so
 a recorded talk plays itself, and a slide without one waits for you as usual. It is
@@ -184,6 +191,8 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `C` | `cmd`+`5` | captions |
 | `I` | `cmd`+`7` | assets |
 | | `cmd`+`E` | File ▸ Export PDF… |
+| | `shift`+`cmd`+`E` | File ▸ Export Video… |
+| | | File ▸ Transcribe Narration |
 
 The panels are the useful half of this program and every one of them used to be a single
 letter — fine once you know, invisible until you do. They are at the top of the Window menu,
@@ -1144,7 +1153,9 @@ the player itself and go straight down a pipe into `ffmpeg`, which encodes H.264
 nothing but the finished file touches the disk. `--from` and `--to` are 1-based slide numbers
 as the presenter shows them, inclusive, and default to the whole deck. Needs `ffmpeg` and
 `ffprobe` on the path. A film that persists across slides carries on through the movie
-exactly as it does on screen.
+exactly as it does on screen. From inside the player, **File ▸ Export Video…**
+(`shift`+`cmd`+`E`) asks where to put the file, which slides and at what rate, renders in
+the background and opens the movie when it lands.
 
 **`--pdf`** writes one page per slide. `.rc` slides go through Skia's PDF backend, so text
 and shapes stay vector and selectable rather than being rasterised. Videos contribute a
@@ -1261,7 +1272,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Thirteen C++ suites, none of which needs a window or a GPU. Ten of them need nothing but their
+Fifteen C++ suites, none of which needs a window or a GPU. Twelve of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1270,7 +1281,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All thirteen, alongside the player:
+All fifteen, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1289,6 +1300,8 @@ ctest --test-dir player/build --output-on-failure
 | `utf8` | that no string the chrome trims or cuts can come out invalid |
 | `scrolling` | how far a wheel notch and a trackpad swipe each move a view |
 | `plan` | the talk's planned length, and where in the deck it says you should be |
+| `wave_shape` | the presenter's waveform, read from a wav in every sample layout the recorder or anything else writes |
+| `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
 | `thumb_document` | that an `.rc` include, one written as JSON, and a clip preview as a picture |
 | `deck_source` | reading a deck's markdown and assets through the tools, and what happens when that fails |
 

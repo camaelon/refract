@@ -8,5 +8,6 @@ bool canChooseFiles() { return false; }
 std::string chooseDeck() { return {}; }
 std::string chooseNewDeck() { return {}; }
 std::string choosePdf(const std::string&, const std::string&) { return {}; }
+bool chooseVideo(const std::string&, const std::string&, int, VideoChoice*) { return false; }
 
 }  // namespace refract

@@ -21,7 +21,8 @@ set(PLAYER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 foreach(suite deck_order:DeckOrder text_buffer:TextBuffer view_geometry:ViewGeometry,Utf8
               options:Options completion:Completion utf8:Utf8 scrolling:Scrolling
               plan:Plan
-              slide_recorder:SlideRecorder deck_library:DeckLibrary)
+              slide_recorder:SlideRecorder deck_library:DeckLibrary
+              wave_shape:WaveShape export_plan:ExportPlan)
     string(REPLACE ":" ";" parts ${suite})
     list(GET parts 0 name)
     list(GET parts 1 units)

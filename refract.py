@@ -752,7 +752,8 @@ def watch_mtime(deck_dir: str) -> float:
     return latest
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line. On its own so the flags can be checked without building a deck."""
     ap = argparse.ArgumentParser(description="markdown deck -> RemoteCompose .rc slides")
     ap.add_argument("deck", nargs="?", default=".", help="deck directory containing slides.md")
     ap.add_argument("--width", type=int, default=None, help="slide width (default 1600 or settings.toml)")
@@ -783,7 +784,11 @@ def main() -> int:
     ap.add_argument("--json2rc", default=None, help="path to the json2rc launcher (default: auto-detect)")
     ap.add_argument("--check", action="store_true",
                     help="report what this machine has and what it is missing, then exit")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     if args.check:
         repo_root = os.path.dirname(os.path.abspath(__file__))

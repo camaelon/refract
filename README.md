@@ -146,8 +146,8 @@ All seven are in the **Window** menu too (`cmd`+`1`…`7`), with a tick beside w
 
 The middle three write back to `slides.md` and re-run refract, so a deck can be rearranged
 and rewritten without leaving the player. It also records and replays a rehearsal, transcribes
-the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`) or a
-self-contained web page (`--web dir/`). See **[player/README.md](player/README.md)**.
+the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`), a movie with
+the narration as its soundtrack (`--video talk.mp4`) or a self-contained web page (`--web dir/`). See **[player/README.md](player/README.md)**.
 
 `rcviewer` is the plain RemoteCompose viewer; it shares the same playback and export code,
 and adds `--screenshot` / `--frames` for single-file headless capture.
@@ -670,6 +670,10 @@ python3 refract.py <deck> [options]
   --watch                regenerate on slides.md / settings / includes changes
   --pdf [PATH]           export the deck to a PDF (default <deck>/out/deck.pdf)
   --images [DIR]         export each slide to a PNG (default <deck>/out/images/)
+  --video [PATH]         play the slides into a movie with their narration (default <deck>/out/deck.mp4)
+  --from N / --to N      the movie's first and last slide, 1-based (default: the whole deck)
+  --fps F                movie frame rate (default 30)
+  --dwell S              seconds a slide with no narration stays up in the movie (default 4)
   --json                 keep the intermediate JSON in out/json/ (default: discard)
   --force                rebuild every slide, ignoring the incremental build cache
   --json-only            emit JSON only; do not run json2rc

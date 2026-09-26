@@ -22,4 +22,14 @@ std::string chooseNewDeck();
 // cancelled. The panel adds .pdf when the person leaves it off.
 std::string choosePdf(const std::string& dir, const std::string& name);
 
+// Where to write a movie of the deck, and which slides go in it. The panel carries the
+// range and the frame rate as fields under the file name; `from`/`to` are 1-based and
+// inclusive, and arrive prefilled with the whole deck. False when cancelled.
+struct VideoChoice {
+    std::string path;
+    int from = 1, to = 0;
+    double fps = 30.0;
+};
+bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out);
+
 }  // namespace refract
