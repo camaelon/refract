@@ -300,6 +300,43 @@ fs::path voiceFileFor(int slide, const char* extension) {
 // Which slides have narration, for the deck view to show. Done once per deck rather than per
 // frame: it is a look at the disk for every slide, and the answer only changes when the deck
 // is rebuilt or something is recorded.
+// Where a deck's narration belongs: <deck>/voice, beside slides.md, for a refract deck
+// opened through its out/ directory. Narration is part of the deck — hours of someone's
+// voice — and out/ is a build product people clear without a thought, so it must not live
+// there. A directory that is not a refract deck keeps the player's own rule (out/voice),
+// and so does a zip, which is read-only anyway.
+fs::path deckVoiceDir(const fs::path& input) {
+    std::error_code ec;
+    if (!fs::is_directory(input, ec)) return {};
+    const fs::path deckDir = fs::absolute(input).lexically_normal().parent_path();
+    if (fs::exists(deckDir / "slides.md", ec) || fs::is_directory(deckDir / "voice", ec)) return deckDir / "voice";
+    return {};
+}
+
+// Recordings made before the player kept narration in <deck>/voice sit in out/voice. Moved
+// up once, whole, the first time such a deck is opened — so they stop being one `rm -rf out`
+// from gone — and said so. Left alone when the deck already has a voice directory: two
+// sets of takes are not something to merge quietly.
+void adoptVoiceDir(const fs::path& input, const fs::path& target) {
+    if (target.empty()) return;
+    std::error_code ec;
+    const fs::path old = fs::path(input) / "voice";
+    if (!fs::is_directory(old, ec) || fs::exists(target, ec)) return;
+    bool anyWav = false;
+    for (const auto& entry : fs::directory_iterator(old, ec)) {
+        if (entry.path().extension() == ".wav") { anyWav = true; break; }
+    }
+    if (!anyWav) return;
+    fs::rename(old, target, ec);
+    if (ec) {
+        std::cerr << "refractplayer: could not move " << old.string() << " to " << target.string()
+                  << " (" << ec.message() << "); leaving it where it is\n";
+        return;
+    }
+    std::cerr << "refractplayer: moved the narration out of out/: " << old.string() << " -> "
+              << target.string() << "\n";
+}
+
 // Where this deck's narration lives: <deck>/voice when there is one, else the player's
 // default beside the slides (out/voice) — the same answer voicePathFor gives, asked once.
 fs::path voiceDir() {
@@ -345,7 +382,11 @@ void toggleSlideRecording() {
 
     slideRecorder.configure(
         [](int slide) { return voiceFileFor(slide); },
-        [](const std::string& path) { if (recorder) recorder->start(path); },
+        [](const std::string& path) {
+            std::error_code ec;
+            fs::create_directories(fs::path(path).parent_path(), ec);
+            if (recorder) recorder->start(path);
+        },
         [] { if (recorder) recorder->stop(); },
         [](int slide, const std::string& stem) {
             if (slide < 0 || slide >= app.deck.size()) return;
@@ -659,8 +700,7 @@ refract::Transcriber transcriber;
 bool transcribeReported = true;
 
 void transcribe(bool onlyThisSlide) {
-    // Where the recordings live: beside the slides as out/voice, or the deck's own voice
-    // dir when it has one — the same answer playback uses.
+    // Where the recordings live: the deck's voice dir — the same answer playback uses.
     const fs::path anyWav = app.deck.empty() ? fs::path() : voiceFileFor(0);
     const fs::path voiceDir = anyWav.empty() ? fs::path() : anyWav.parent_path();
     if (voiceDir.empty() || !fs::is_directory(voiceDir)) {
@@ -1302,9 +1342,9 @@ int main(int argc, char* argv[]) {
             std::cerr << "refractplayer: no playable slides in " << input << "\n";
             return 1;
         }
-        fs::path deckDir = fs::is_directory(input) ? fs::path(input).parent_path()
-                                                   : fs::path(input).parent_path().parent_path();
-        if (fs::is_directory(deckDir / "voice")) g.voiceDirOverride = deckDir / "voice";
+        const fs::path voice = deckVoiceDir(input);
+        adoptVoiceDir(input, voice);
+        if (!voice.empty()) g.voiceDirOverride = voice;
         app.deck.build(entries, input);
         if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
@@ -1392,9 +1432,10 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         // Voice-overs live in <deck>/voice, beside the out/ directory holding the slides.
-        fs::path deckDir = fs::is_directory(path) ? path.parent_path()
-                                                  : path.parent_path().parent_path();
-        if (fs::is_directory(deckDir / "voice")) g.voiceDirOverride = deckDir / "voice";
+        // Set even before anything is recorded, so the first recording lands there too.
+        const fs::path voice = deckVoiceDir(path);
+        adoptVoiceDir(path, voice);
+        if (!voice.empty()) g.voiceDirOverride = voice;
         g.files = collectRcFiles(input);
     }
     if (g.files.empty()) {
@@ -1637,6 +1678,7 @@ int main(int argc, char* argv[]) {
         for (int v : app.voice) narrated += v;
         if (narrated) std::cerr << "refractplayer: " << narrated << " slides have narration in "
                                 << voiceDir().string() << "\n";
+        else if (!voiceDir().empty()) std::cerr << "refractplayer: narration goes to " << voiceDir().string() << "\n";
     }
     loadCurrentFile();
     app.slideEnteredAt = 0.0;

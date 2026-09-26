@@ -886,7 +886,11 @@ the sections.
 
 `--record-audio` also captures the microphone, writing one wav per slide straight into the
 deck's voice directory (`<deck>/voice/NN.wav`), which is exactly where voice-over playback
-looks.
+looks. That is beside `slides.md`, not inside `out/`: the narration is part of the deck —
+hours of someone's voice — and `out/` is a build product people clear without a thought.
+A deck recorded by an earlier player, with its wavs in `out/voice`, is moved up once, whole,
+the first time it is opened, and the terminal says so; a deck that already has a `voice/`
+is left alone.
 
 Capture is **continuous**: the microphone is opened once and only the destination file
 changes at a slide boundary. Stopping and restarting a recorder per slide — the obvious
