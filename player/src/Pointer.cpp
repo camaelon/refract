@@ -30,6 +30,9 @@ void Pointer::entered() { mInside = true; }
 void Pointer::setLaser(bool on) {
     mLaser = on;
     mSamples.clear();      // a fresh trail either way: the old one belongs to the arrow
+    // Turning the laser off is not a reason to see the arrow: it stays gone until the
+    // mouse is actually moved, as if it had been resting all along.
+    if (!on) mLastMove = -1e9;
 }
 
 std::vector<Pointer::Sample> Pointer::trail(double now, double fade) const {

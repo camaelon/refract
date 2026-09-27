@@ -46,6 +46,9 @@ static void testLaserTrail() {
     CHECK(p.head(&head), "and back when it returns");
     p.setLaser(false);
     CHECK(!p.head(&head), "off is off");
+    CHECK(p.idle(1.6, 3.0), "and the arrow stays hidden: turning the laser off is not a move");
+    p.moved(31, 10, 1.7);
+    CHECK(!p.idle(1.8, 3.0), "until the mouse moves");
 }
 
 int main() {

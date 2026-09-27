@@ -31,6 +31,7 @@ public:
     // No motion for `after` seconds — time to hide the arrow.
     bool idle(double now, double after) const { return now - mLastMove >= after; }
 
+    // Off leaves the arrow hidden until the next move.
     void setLaser(bool on);
     bool laser() const { return mLaser; }
 
