@@ -59,6 +59,36 @@ def voice_dir_for(out_dir: str) -> str | None:
     return None
 
 
+def parse_slides(spec: str, count: int) -> list[int]:
+    """The 0-based slides `spec` names — "3-12, 20", 1-based as the presenter shows them,
+    "7-" to the end, empty or "all" for every slide — the same rule the player's --slides
+    reads. Raises ValueError for a spec it cannot read or that names no slide."""
+    spec = (spec or "").strip()
+    if count <= 0:
+        return []
+    if not spec or spec == "all":
+        return list(range(count))
+    chosen = set()
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            lo, hi = (t.strip() for t in tok.split("-", 1))
+            if not lo.isdigit() or (hi and not hi.isdigit()):
+                raise ValueError(f"not a slide range: {tok}")
+            a, b = int(lo), (int(hi) if hi else count)
+        elif tok.isdigit():
+            a = b = int(tok)
+        else:
+            raise ValueError(f"not a slide number: {tok}")
+        for i in range(max(1, a), min(count, b) + 1):
+            chosen.add(i - 1)
+    if not chosen:
+        raise ValueError(f"no slides in {spec}")
+    return sorted(chosen)
+
+
 def slide_number(filename: str) -> str:
     """The leading digits of a slide's filename — "07_a_graph.rc" -> "07"."""
     stem = os.path.basename(filename)
@@ -108,12 +138,19 @@ def voice_stems(deck: dict, voice_dir: str | None) -> dict:
 
 
 def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
-          inline: bool = False) -> int:
+          inline: bool = False, slides_spec: str = "") -> int:
     slides = sorted(f for f in os.listdir(out_dir)
                     if os.path.splitext(f)[1].lower() in SLIDE_EXTS
                     and os.path.isfile(os.path.join(out_dir, f)))
     if not slides:
         print(f"web: no slides in {out_dir}", file=sys.stderr)
+        return 1
+    # A selection (--slides) takes those slides, in deck order; the page plays what it is
+    # given, so a site of slides 3 to 12 is a deck of ten.
+    try:
+        slides = [slides[i] for i in parse_slides(slides_spec, len(slides))]
+    except ValueError as e:
+        print(f"web: --slides: {e}", file=sys.stderr)
         return 1
 
     os.makedirs(web_dir, exist_ok=True)
@@ -644,6 +681,8 @@ def main() -> int:
                     help="ship the narration as recorded instead of compressing it")
     ap.add_argument("--inline", action="store_true",
                     help="put the slides inside the page, so it opens off the disk (one big file)")
+    ap.add_argument("--slides", default="",
+                    help='the slides to take, 1-based: "3-12, 20", "7-" to the end (default: all)')
     args = ap.parse_args()
 
     bundle = find_bundle(args.bundle)
@@ -654,7 +693,7 @@ def main() -> int:
               "or pass --bundle <path to bundle.js>", file=sys.stderr)
         return 2
     return build(os.path.abspath(args.out_dir), os.path.abspath(args.web_dir), bundle,
-                 args.keep_wav, args.inline)
+                 args.keep_wav, args.inline, args.slides)
 
 
 if __name__ == "__main__":

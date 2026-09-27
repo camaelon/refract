@@ -63,6 +63,7 @@ Options parseOptions(int argc, char* argv[]) {
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
         else if (arg == "--video") o.video = next("--video");
+        else if (arg == "--slides") o.slides = next("--slides");
         else if (arg == "--from") o.videoFrom = std::atoi(next("--from").c_str());
         else if (arg == "--to") o.videoTo = std::atoi(next("--to").c_str());
         else if (arg == "--fps") o.videoFps = std::atof(next("--fps").c_str());
@@ -166,7 +167,10 @@ std::string usageText() {
         "                     in is not caught blank\n"
         "  --video <out.mp4>  play the slides into a movie, with the narration wavs as\n"
         "                     its soundtrack, and exit (needs ffmpeg and ffprobe)\n"
-        "  --from <n> --to <m>  the slides to include, 1-based, inclusive (default: all)\n"
+        "  --slides <spec>    the slides an export takes — \"3-12, 20\", 1-based as the\n"
+        "                     presenter shows them, \"7-\" to the end (default: all);\n"
+        "                     for --pdf, --images, --video and --web alike\n"
+        "  --from <n> --to <m>  the movie's slides as a range, 1-based, inclusive (default: all)\n"
         "  --fps <n>          frames per second (default 30)\n"
         "  --dwell <s>        how long a slide with no narration stays up (default 4)\n"
         "\n"        "  --help, -h         this text\n"

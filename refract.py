@@ -714,7 +714,7 @@ def wants_freeze(meta: dict) -> bool:
 
 
 def export_deck(viewer: str, out_dir: str, width: int, height: int,
-                pdf: str | None, images: str | None) -> None:
+                pdf: str | None, images: str | None, slides: str = "") -> None:
     """Export the generated deck to a PDF and/or a directory of PNGs via the player.
 
     The two players take the same work in different argument shapes: refractplayer reads the
@@ -725,12 +725,16 @@ def export_deck(viewer: str, out_dir: str, width: int, height: int,
     if pdf:
         cmd = ([viewer, out_dir, "--pdf", pdf] + size if refractplayer
                else [viewer, "--pdf", out_dir, pdf] + size)
+        if slides and refractplayer:
+            cmd += ["--slides", slides]
         subprocess.run(cmd)
         print(f"exported {pdf}")
     if images:
         os.makedirs(images, exist_ok=True)
         cmd = ([viewer, out_dir, "--images", images] + size if refractplayer
                else [viewer, "--screenshot-dir", out_dir, images] + size)
+        if slides and refractplayer:
+            cmd += ["--slides", slides]
         subprocess.run(cmd)
         print(f"exported images to {images}")
 
@@ -780,6 +784,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --video: a caption line under the slides, from the transcripts")
     ap.add_argument("--web", nargs="?", const="", default=None,
                     help="write a self-contained web site that plays the deck (default <deck>/web)")
+    ap.add_argument("--slides", default="",
+                    help='the slides an export takes, 1-based: "3-12, 20", "7-" to the end (default: all)')
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
     ap.add_argument("--force", action="store_true",
@@ -1224,6 +1230,8 @@ def run_once(args) -> int:
                str(width), str(height)]
         if args.captions:
             cmd.append("--captions")
+        if args.slides:
+            cmd += ["--slides", args.slides]
         if subprocess.run(cmd).returncode != 0:
             return 1
         print(f"exported {video}")
@@ -1237,7 +1245,10 @@ def run_once(args) -> int:
                   file=sys.stderr)
             return 1
         web_dir = args.web or os.path.join(deck_dir, "web")
-        if subprocess.run([viewer, out_dir, "--web", web_dir]).returncode != 0:
+        cmd = [viewer, out_dir, "--web", web_dir]
+        if args.slides:
+            cmd += ["--slides", args.slides]
+        if subprocess.run(cmd).returncode != 0:
             return 1
         print(f"exported {web_dir}")
 
@@ -1254,7 +1265,7 @@ def run_once(args) -> int:
             images = None
             if args.images is not None:
                 images = args.images or os.path.join(out_dir, "images")
-            export_deck(viewer, out_dir, width, height, pdf, images)
+            export_deck(viewer, out_dir, width, height, pdf, images, args.slides)
 
     return rc
 

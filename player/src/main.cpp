@@ -37,6 +37,7 @@
 #include "Pointer.h"
 #include "Presenter.h"
 #include "Session.h"
+#include "SlideSelection.h"
 #include "DeckLibrary.h"
 #include "StartWindow.h"
 #include "SlideRecorder.h"
@@ -752,6 +753,12 @@ void collectTranscription() {
 
 // ── Exporting to PDF ─────────────────────────────────────────────────
 //
+// What an export panel opens with in its slides field: the deck view's selection when it
+// has one, else empty — every slide.
+std::string exportSlidesDefault() {
+    return deckView ? refract::formatSlideSelection(deckView->selectedSlides()) : std::string();
+}
+
 // File ▸ Export PDF… runs this binary again, headless, over the deck on screen — the same
 // export as `refract.py --pdf` — and opens the result when it lands. The page size is the
 // one the window opened with (the deck's design size unless --width/--height said otherwise),
@@ -770,11 +777,15 @@ void exportPdf() {
     // Beside the deck, named after it: <deck>/<deck>.pdf, next to the sources where somebody
     // will look for it.
     const refract::ExportTarget target = refract::exportTarget(deckInput);
-    std::string pdf = refract::canChooseFiles() ? refract::choosePdf(target.dir, target.name + ".pdf")
-                                                : (fs::path(target.dir) / (target.name + ".pdf")).string();
+    refract::PdfChoice choice;
+    choice.path = (fs::path(target.dir) / (target.name + ".pdf")).string();
+    choice.slides = exportSlidesDefault();
+    if (refract::canChooseFiles()
+        && !refract::choosePdf(target.dir, target.name + ".pdf", choice.slides, &choice)) return;
+    std::string pdf = choice.path;
     if (pdf.empty()) return;
     if (getExt(pdf) != ".pdf") pdf += ".pdf";
-    if (pdfExporter.start(deckInput, pdf, exportW, exportH, exportDelay)) {
+    if (pdfExporter.start(deckInput, pdf, exportW, exportH, exportDelay, choice.slides)) {
         exportReported = false;
         std::cerr << "refractplayer: exporting " << pdf << " ...\n";
         openProcessing();
@@ -794,15 +805,16 @@ void exportVideo() {
     const refract::ExportTarget target = refract::exportTarget(deckInput);
     refract::VideoChoice choice;
     choice.path = (fs::path(target.dir) / (target.name + ".mp4")).string();
-    choice.to = app.deck.size();
+    choice.slides = exportSlidesDefault();
     if (refract::canChooseFiles()
-        && !refract::chooseVideo(target.dir, target.name + ".mp4", app.deck.size(), &choice)) return;
+        && !refract::chooseVideo(target.dir, target.name + ".mp4", choice.slides, &choice)) return;
     if (getExt(choice.path) != ".mp4") choice.path += ".mp4";
-    if (pdfExporter.startVideo(deckInput, choice.path, choice.from, choice.to, choice.fps, exportW, exportH,
+    if (pdfExporter.startVideo(deckInput, choice.path, choice.slides, choice.fps, exportW, exportH,
                                choice.captions)) {
         exportReported = false;
-        std::cerr << "refractplayer: exporting " << choice.path << " (slides " << choice.from
-                  << "-" << choice.to << (choice.captions ? ", with captions" : "") << ") ...\n";
+        std::cerr << "refractplayer: exporting " << choice.path << " (slides "
+                  << (choice.slides.empty() ? "all" : choice.slides)
+                  << (choice.captions ? ", with captions" : "") << ") ...\n";
         openProcessing();
     } else {
         std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
@@ -819,12 +831,16 @@ void exportWeb() {
         return;
     }
     const refract::ExportTarget target = refract::exportTarget(deckInput);
-    std::string dir = refract::canChooseFiles() ? refract::chooseWebDir(target.dir, "web")
-                                                : (fs::path(target.dir) / "web").string();
+    refract::WebChoice choice;
+    choice.dir = (fs::path(target.dir) / "web").string();
+    choice.slides = exportSlidesDefault();
+    if (refract::canChooseFiles() && !refract::chooseWebDir(target.dir, "web", choice.slides, &choice)) return;
+    const std::string dir = choice.dir;
     if (dir.empty()) return;
-    if (pdfExporter.startWeb(deckInput, dir)) {
+    if (pdfExporter.startWeb(deckInput, dir, choice.slides)) {
         exportReported = false;
-        std::cerr << "refractplayer: exporting a web site into " << dir << " ...\n";
+        std::cerr << "refractplayer: exporting a web site into " << dir
+                  << (choice.slides.empty() ? "" : " (slides " + choice.slides + ")") << " ...\n";
         openProcessing();
     } else {
         std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
@@ -1392,18 +1408,31 @@ int main(int argc, char* argv[]) {
         app.deck.build(entries, input);
         if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
-        int from = 0, to = 0;
-        if (!refract::videoRange(app.deck.size(), options.videoFrom, options.videoTo, &from, &to)) {
-            std::cerr << "refractplayer: --from " << from << " is past --to " << to << "\n";
-            return 1;
+        // Which slides: --slides when given, else the --from/--to range, else all.
+        std::vector<int> chosen;
+        if (!options.slides.empty()) {
+            std::string error;
+            chosen = refract::parseSlideSelection(options.slides, app.deck.size(), &error);
+            if (chosen.empty()) {
+                std::cerr << "refractplayer: --slides: " << error << "\n";
+                return 1;
+            }
+        } else {
+            int from = 0, to = 0;
+            if (!refract::videoRange(app.deck.size(), options.videoFrom, options.videoTo, &from, &to)) {
+                std::cerr << "refractplayer: --from " << from << " is past --to " << to << "\n";
+                return 1;
+            }
+            for (int i = from - 1; i < to; i++) chosen.push_back(i);
         }
+        const int from = chosen.front() + 1, to = chosen.back() + 1;
         const double fps = options.videoFps > 0 ? options.videoFps : 30.0;
 
         // Each slide's stay: its narration's length, else the dwell. Snapped to whole
         // frames, and the audio cut to the same length, so the two never drift apart.
         std::vector<rcplayer::VideoSlide> slides;
         std::vector<refract::SoundtrackPiece> pieces;
-        for (int i = from - 1; i < to; i++) {
+        for (int i : chosen) {
             const fs::path wav = voiceFileFor(i);
             double duration = options.videoDwell;
             std::string wavPath;
@@ -1444,7 +1473,8 @@ int main(int argc, char* argv[]) {
         // stay, resampled alike, and joined in order.
         const std::string audio = options.video + ".audio.wav";
         const std::string cmd = refract::soundtrackCommand(pieces, audio);
-        std::cerr << "refractplayer: slides " << from << "-" << to << ", assembling the soundtrack\n";
+        std::cerr << "refractplayer: " << chosen.size() << " slides (" << from << "-" << to
+                  << "), assembling the soundtrack\n";
         std::cerr << "progress: 0/0 assembling the soundtrack\n" << std::flush;   // for the processing window
         if (std::system(cmd.c_str()) != 0) {
             std::cerr << "refractplayer: ffmpeg could not build the soundtrack\n";
@@ -1465,13 +1495,27 @@ int main(int argc, char* argv[]) {
     // Size follows the window size, which defaults to the deck's design size; a PDF page
     // takes an .rc slide's own size over it, so there it only matters for media pages.
     if (!options.pdf.empty() || !options.images.empty()) {
+        // The slides asked for (--slides), in deck order, or every one.
+        std::vector<std::string> entries = collectDeckEntries(input);
+        if (!options.slides.empty()) {
+            std::string error;
+            const std::vector<int> chosen = refract::parseSlideSelection(
+                options.slides, static_cast<int>(entries.size()), &error);
+            if (chosen.empty()) {
+                std::cerr << "refractplayer: --slides: " << error << "\n";
+                return 1;
+            }
+            std::vector<std::string> picked;
+            for (int i : chosen) picked.push_back(entries[i]);
+            entries = std::move(picked);
+        }
         int failures = 0;
         if (!options.pdf.empty()) {
-            auto result = exportDeckToPdf(input, options.pdf, initW, initH, options.exportDelay);
+            auto result = exportEntriesToPdf(entries, options.pdf, initW, initH, options.exportDelay);
             if (result.pages == 0) failures++;
         }
         if (!options.images.empty()) {
-            auto result = exportDeckToImages(input, options.images, initW, initH, options.exportDelay);
+            auto result = exportEntriesToImages(entries, options.images, initW, initH, options.exportDelay);
             if (result.images == 0 || result.failures > 0) failures++;
         }
         return failures > 0 ? 1 : 0;
@@ -1517,7 +1561,9 @@ int main(int argc, char* argv[]) {
         const fs::path slidesDir = fs::is_directory(input)
                                        ? fs::path(input)
                                        : fs::path(g.files.front()).parent_path();
-        return refract::runTool("web.py", {slidesDir.string(), options.web});
+        std::vector<std::string> args{slidesDir.string(), options.web};
+        if (!options.slides.empty()) { args.push_back("--slides"); args.push_back(options.slides); }
+        return refract::runTool("web.py", args);
     }
 
     // ── Transcription ────────────────────────────────────────────────

@@ -6,35 +6,50 @@
 
 namespace refract {
 
+namespace {
+void withSlides(std::vector<std::string>& args, const std::string& slides) {
+    if (!slides.empty()) { args.push_back("--slides"); args.push_back(slides); }
+}
+}  // namespace
+
 std::vector<std::string> pdfExportArgs(const std::string& deck, const std::string& pdf,
-                                       int width, int height, double delay) {
-    return {deck, "--pdf", pdf, std::to_string(width), std::to_string(height),
-            "--export-delay", std::to_string(delay)};
+                                       int width, int height, double delay, const std::string& slides) {
+    std::vector<std::string> args{deck, "--pdf", pdf, std::to_string(width), std::to_string(height),
+                                  "--export-delay", std::to_string(delay)};
+    withSlides(args, slides);
+    return args;
 }
 
 std::vector<std::string> videoExportArgs(const std::string& deck, const std::string& mp4,
-                                         int from, int to, double fps, int width, int height,
+                                         const std::string& slides, double fps, int width, int height,
                                          bool captions) {
-    std::vector<std::string> args{deck, "--video", mp4, "--from", std::to_string(from),
-                                  "--to", std::to_string(to), "--fps", std::to_string(fps),
+    std::vector<std::string> args{deck, "--video", mp4, "--fps", std::to_string(fps),
                                   std::to_string(width), std::to_string(height)};
+    withSlides(args, slides);
     if (captions) args.push_back("--captions");
     return args;
 }
 
+std::vector<std::string> webExportArgs(const std::string& deck, const std::string& dir,
+                                       const std::string& slides) {
+    std::vector<std::string> args{deck, "--web", dir};
+    withSlides(args, slides);
+    return args;
+}
+
 bool PdfExporter::start(const std::string& deck, const std::string& pdf, int width, int height,
-                        double delay) {
-    return launch(pdfExportArgs(deck, pdf, width, height, delay), pdf, "PDF");
+                        double delay, const std::string& slides) {
+    return launch(pdfExportArgs(deck, pdf, width, height, delay, slides), pdf, "PDF");
 }
 
-bool PdfExporter::startVideo(const std::string& deck, const std::string& mp4, int from, int to,
+bool PdfExporter::startVideo(const std::string& deck, const std::string& mp4, const std::string& slides,
                              double fps, int width, int height, bool captions) {
-    return launch(videoExportArgs(deck, mp4, from, to, fps, width, height, captions), mp4, "video");
+    return launch(videoExportArgs(deck, mp4, slides, fps, width, height, captions), mp4, "video");
 }
 
-bool PdfExporter::startWeb(const std::string& deck, const std::string& dir) {
+bool PdfExporter::startWeb(const std::string& deck, const std::string& dir, const std::string& slides) {
     const std::string page = (std::filesystem::path(dir) / "index.html").string();
-    return launch({deck, "--web", dir}, page, "web");
+    return launch(webExportArgs(deck, dir, slides), page, "web");
 }
 
 bool PdfExporter::launch(const std::vector<std::string>& args, const std::string& target,

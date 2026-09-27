@@ -114,6 +114,22 @@ struct DeckViewWindow::Impl {
     bool   dropAfter = false;       // ...and which side of it
     double lastClickAt = -1.0;
     int    lastClickCell = -1;
+    // The selection: slides, so it survives a fold or a reorder as what it meant. `anchor`
+    // is the cell a shift+click extends from.
+    std::set<int> selected;
+    int    anchor = -1;
+    void selectCell(int cell) {
+        if (cell < 0 || cell >= static_cast<int>(cells.size())) return;
+        for (int sl = cells[cell].firstSlide; sl <= cells[cell].lastSlide; sl++) selected.insert(sl);
+    }
+    void deselectCell(int cell) {
+        if (cell < 0 || cell >= static_cast<int>(cells.size())) return;
+        for (int sl = cells[cell].firstSlide; sl <= cells[cell].lastSlide; sl++) selected.erase(sl);
+    }
+    bool cellSelected(int cell) const {
+        if (cell < 0 || cell >= static_cast<int>(cells.size())) return false;
+        return selected.count(cells[cell].firstSlide) > 0;
+    }
 
     std::string status;
     bool        statusError = false;
@@ -325,9 +341,35 @@ std::unique_ptr<DeckViewWindow> DeckViewWindow::Create(int width, int height) {
         }
         if (cell < 0) return;
 
-        // A plain click selects; a second one on the same card opens the slide — or unfolds
-        // it, when the card stands for a folded run. Opening on a single click would make
-        // browsing the deck change what the room is looking at.
+        // A plain click selects the card, on its own; shift+click extends the selection
+        // from the last plain click; cmd+click adds or removes the card. The selection is
+        // what an export offers to take.
+        {
+            const bool shiftDown = glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                                   || glfwGetKey(w, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+#if defined(__APPLE__)
+            const bool cmdDown = glfwGetKey(w, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS
+                                 || glfwGetKey(w, GLFW_KEY_RIGHT_SUPER) == GLFW_PRESS;
+#else
+            const bool cmdDown = glfwGetKey(w, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
+                                 || glfwGetKey(w, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+#endif
+            if (shiftDown && impl.anchor >= 0) {
+                const int a = std::min(impl.anchor, cell), b = std::max(impl.anchor, cell);
+                for (int c = a; c <= b; c++) impl.selectCell(c);
+            } else if (cmdDown) {
+                if (impl.cellSelected(cell)) impl.deselectCell(cell); else impl.selectCell(cell);
+                impl.anchor = cell;
+            } else {
+                impl.selected.clear();
+                impl.selectCell(cell);
+                impl.anchor = cell;
+            }
+        }
+
+        // A second click on the same card opens the slide — or unfolds it, when the card
+        // stands for a folded run. Opening on a single click would make browsing the deck
+        // change what the room is looking at.
         const double now = glfwGetTime();
         const bool doubleClick = impl.lastClickCell == cell
                                  && now - impl.lastClickAt < kDoubleClickSec;
@@ -392,6 +434,17 @@ void DeckViewWindow::setOnDeleteSlide(std::function<bool(int, std::string*)> act
 
 void DeckViewWindow::setOnUndo(std::function<bool(bool, std::string*)> action) {
     mImpl->onUndo = std::move(action);
+}
+
+std::vector<int> DeckViewWindow::selectedSlides() const {
+    if (!mImpl) return {};
+    return std::vector<int>(mImpl->selected.begin(), mImpl->selected.end());
+}
+
+void DeckViewWindow::clearSelection() {
+    if (!mImpl) return;
+    mImpl->selected.clear();
+    mImpl->anchor = -1;
 }
 
 std::vector<std::string> DeckViewWindow::foldedRuns() const {
@@ -707,10 +760,15 @@ bool DeckViewWindow::handleKey(int key, int action, int mods) {
             return true;
         }
         case GLFW_KEY_ESCAPE:
-            // A filter left showing is cleared first; Esc closes the window only once there
-            // is nothing else to back out of.
+            // A filter left showing is cleared first, then a selection; Esc closes the
+            // window only once there is nothing else to back out of.
             if (!impl.filter.empty()) { impl.filter.clear(); return true; }
+            if (!impl.selected.empty()) { impl.selected.clear(); impl.anchor = -1; return true; }
             glfwSetWindowShouldClose(mWindow, GLFW_TRUE);
+            return true;
+        case GLFW_KEY_A:
+            if (!cmd) return false;
+            for (int c = 0; c < static_cast<int>(impl.cells.size()); c++) impl.selectCell(c);
             return true;
         default:
             return false;   // everything else is the player's
@@ -857,6 +915,11 @@ void DeckViewWindow::render(App& app) {
     if (!impl.status.empty()) {
         drawTextRight(canvas, ellipsize(impl.status, smallFont, w * 0.5f), w - pad, 54,
                       smallFont, impl.statusError ? ui::kOver : ui::kAhead);
+    } else if (!impl.selected.empty()) {
+        const std::string count = std::to_string(impl.selected.size())
+                                  + (impl.selected.size() == 1 ? " slide selected" : " slides selected")
+                                  + "  ~  exports offer them  ~  Esc clears";
+        drawTextRight(canvas, count, w - pad, 54, smallFont, ui::kAccent);
     }
     }
     fillRect(canvas, SkRect::MakeXYWH(0, headerH - 1, w, 1), ui::kLine);
@@ -1026,11 +1089,16 @@ void DeckViewWindow::render(App& app) {
             requestThumb(slide.entry, kThumbW, kThumbH);
         }
 
+        // Selected: a wash of the accent over the still and a thicker accent edge — it has
+        // to read from across the room, since it is what the next export will take.
+        const bool isSelected = impl.cellSelected(ci);
+        if (isSelected) fillRoundRect(canvas, thumb, 6, withAlpha(ui::kAccent, 0x38));
         SkColor border = dimmed ? ui::kLine : (cell.folded() ? foldTone : ui::kLine);
         float borderWidth = cell.folded() ? 1.5f : 1.0f;
         if (isCurrent) { border = ui::kAhead; borderWidth = 2.0f; }
-        if (isCursor)  { border = ui::kAccent; borderWidth = 2.0f; }
-        else if (ci == impl.hover) border = ui::kDim;
+        if (isSelected) { border = ui::kAccent; borderWidth = 2.5f; }
+        if (isCursor)  { border = ui::kAccent; borderWidth = isSelected ? 3.0f : 2.0f; }
+        else if (ci == impl.hover && !isSelected) border = ui::kDim;
         strokeRoundRect(canvas, thumb, 6, border, borderWidth);
 
         // How many slides went into the fold, so a folded run is not mistaken for a slide.

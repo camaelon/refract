@@ -9,11 +9,22 @@ namespace refract {
 bool canChooseFiles() { return false; }
 std::string chooseDeck() { return {}; }
 std::string chooseNewDeck() { return {}; }
-std::string choosePdf(const std::string&, const std::string&) { return {}; }
-bool chooseVideo(const std::string&, const std::string&, int, VideoChoice*) { return false; }
+bool choosePdf(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+               PdfChoice* out) {
+    out->path = (std::filesystem::path(dir) / name).string();
+    out->slides = slidesDefault;
+    return true;
+}
+bool chooseVideo(const std::string&, const std::string&, const std::string& slidesDefault, VideoChoice* out) {
+    out->slides = slidesDefault;
+    return false;
+}
 
-std::string chooseWebDir(const std::string& dir, const std::string& name) {
-    return (std::filesystem::path(dir) / name).string();
+bool chooseWebDir(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+                  WebChoice* out) {
+    out->dir = (std::filesystem::path(dir) / name).string();
+    out->slides = slidesDefault;
+    return true;
 }
 
 bool trashIsAvailable() { return false; }

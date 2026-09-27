@@ -27,27 +27,31 @@ struct PdfExportState {
 
 // The command lines the two exports run this binary with. The page size is positional, as
 // on the command line: <deck> [width height].
+// `slides` is a selection as --slides takes it ("3-12, 20"), or empty for the whole deck.
 std::vector<std::string> pdfExportArgs(const std::string& deck, const std::string& pdf,
-                                       int width, int height, double delay);
+                                       int width, int height, double delay,
+                                       const std::string& slides = std::string());
 std::vector<std::string> videoExportArgs(const std::string& deck, const std::string& mp4,
-                                         int from, int to, double fps, int width, int height,
+                                         const std::string& slides, double fps, int width, int height,
                                          bool captions = false);
+std::vector<std::string> webExportArgs(const std::string& deck, const std::string& dir,
+                                       const std::string& slides = std::string());
 
 class PdfExporter : public Worker<PdfExportState> {
 public:
     // Start writing `deck` (the out/ directory or zip the player was given) to `pdf` at the
     // page size the window opened with. False when one is already running.
     bool start(const std::string& deck, const std::string& pdf, int width, int height,
-               double delay);
+               double delay, const std::string& slides = std::string());
 
-    // The same, for a movie: slides `from`..`to` (1-based, inclusive) at `fps`, with the
+    // The same, for a movie: the `slides` selected (empty: all) at `fps`, with the
     // narration as its soundtrack — the player's --video, on a worker.
-    bool startVideo(const std::string& deck, const std::string& mp4, int from, int to,
+    bool startVideo(const std::string& deck, const std::string& mp4, const std::string& slides,
                     double fps, int width, int height, bool captions = false);
 
     // The same, for a web site in `dir` — the player's --web, on a worker. The outcome's
     // path is the page, dir/index.html.
-    bool startWeb(const std::string& deck, const std::string& dir);
+    bool startWeb(const std::string& deck, const std::string& dir, const std::string& slides = std::string());
 
     // Where the running export has got to, from the progress lines the child prints.
     Progress progress() const { return mProgress.get(); }

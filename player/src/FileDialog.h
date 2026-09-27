@@ -20,22 +20,34 @@ std::string chooseNewDeck();
 
 // Where to write a PDF of the deck, starting from `dir` with `name` filled in. Empty when
 // cancelled. The panel adds .pdf when the person leaves it off.
-std::string choosePdf(const std::string& dir, const std::string& name);
+// Every export panel has a "slides" field — "3-12, 20", 1-based, empty for all — opened
+// with `slidesDefault`, which is what the deck view has selected when it has a selection.
+struct PdfChoice {
+    std::string path;
+    std::string slides;
+};
+bool choosePdf(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+               PdfChoice* out);
 
 // Where to write a movie of the deck, and which slides go in it. The panel carries the
 // range and the frame rate as fields under the file name; `from`/`to` are 1-based and
 // inclusive, and arrive prefilled with the whole deck. False when cancelled.
 struct VideoChoice {
     std::string path;
-    int from = 1, to = 0;
+    std::string slides;
     double fps = 30.0;
     bool captions = false;     // a caption line under the slides, from the transcripts
 };
-bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out);
+bool chooseVideo(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+                 VideoChoice* out);
 
 // A folder for the web export, offered as `name` inside `dir`; created by the caller.
-// Empty when cancelled.
-std::string chooseWebDir(const std::string& dir, const std::string& name);
+struct WebChoice {
+    std::string dir;
+    std::string slides;
+};
+bool chooseWebDir(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+                  WebChoice* out);
 
 // Move a file to the Trash rather than deleting it, so a wrong click can be undone from the
 // Finder. False when it could not be moved (the file stays). Elsewhere than macOS the file is

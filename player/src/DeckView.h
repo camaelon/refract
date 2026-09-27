@@ -76,6 +76,12 @@ public:
     // Keys the view claims. False for anything it does not want, so the caller can fall
     // through to the player's bindings and drive the talk from this window too.
     // Which runs are folded away, by the key that survives a rebuild. Remembered between runs.
+    // The slides selected in the grid, 0-based, in deck order — what an export offers to
+    // take. A click selects a card, shift+click extends to it, cmd+click adds or removes
+    // it, cmd+A takes every slide, Esc lets go. A folded run selects as its slides.
+    std::vector<int> selectedSlides() const;
+    void clearSelection();
+
     std::vector<std::string> foldedRuns() const;
     void setFoldedRuns(const std::vector<std::string>& keys);
 

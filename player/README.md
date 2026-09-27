@@ -429,6 +429,12 @@ An undo refuses if the markdown has changed outside the player since that edit. 
 edited in a terminal while the player was open is an ordinary thing to have happened, and undo
 must not throw it away to make room for its own idea of the past.
 
+**Selecting slides.** A click selects a card, shift+click extends the selection to another,
+cmd+click adds or removes one, cmd+A takes every slide and Esc lets go; a folded run selects
+as the slides behind it. Selected cards carry a wash of the accent colour, and the header
+says how many. The selection is what the export panels offer to take, so exporting a
+section of the talk is selecting it here and choosing File ▸ Export.
+
 A card shows a small **waveform** in its corner when narration has been recorded for that
 slide — so a rehearsal's coverage is visible at a glance. A folded run shows it if any slide
 behind it has one.
@@ -1197,6 +1203,13 @@ Both are headless — no window opens — and both take `--export-delay`, which 
 its animation each slide is taken before capture. The default of 2 seconds is enough that a
 slide which animates in is not caught mid-entrance.
 
+**Which slides.** Every export — PDF, images, video, web — takes `--slides`: `"3-12, 20"`,
+1-based as the presenter shows them, `"7-"` to the end, nothing for the whole deck. The
+export panels have the same field, and it opens with whatever the **deck view** has
+selected: click a card to select it, shift+click to extend to another, cmd+click to add or
+remove one, cmd+A for everything, Esc to let go; a folded run selects as its slides. So
+exporting a section is selecting it in the grid and choosing the export.
+
 From inside the player, **File ▸ Export PDF…** (`cmd`+`E`) does the same: it asks where to
 put the file (beside the deck, named after it, by default), runs the export in the
 background — the player itself, headless, over the deck on screen, so the pages are exactly
@@ -1340,7 +1353,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Nineteen C++ suites, none of which needs a window or a GPU. Sixteen of them need nothing but their
+Twenty C++ suites, none of which needs a window or a GPU. Seventeen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1349,7 +1362,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All nineteen, alongside the player:
+All twenty, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1371,6 +1384,7 @@ ctest --test-dir player/build --output-on-failure
 | `wave_shape` | the presenter's waveform, read from a wav in every sample layout the recorder or anything else writes |
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
 | `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
+| `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

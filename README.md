@@ -676,6 +676,7 @@ python3 refract.py <deck> [options]
   --dwell S              seconds a slide with no narration stays up in the movie (default 4)
   --captions             with --video: a caption line under the slides, from the transcripts
   --web [DIR]            write a self-contained web site that plays the deck (default <deck>/web)
+  --slides SPEC          the slides an export takes, 1-based: "3-12, 20", "7-" to the end (default: all)
   --json                 keep the intermediate JSON in out/json/ (default: discard)
   --force                rebuild every slide, ignoring the incremental build cache
   --json-only            emit JSON only; do not run json2rc

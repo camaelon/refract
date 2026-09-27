@@ -23,7 +23,45 @@ std::string chooseDeck() {
     }
 }
 
-std::string choosePdf(const std::string& dir, const std::string& name) {
+namespace {
+
+// The accessory strip under a panel's name field. `slides` is the field every export has:
+// which slides to take, opened with what the deck view has selected, or "all".
+struct Accessory {
+    NSView* box;
+    CGFloat x = 10;
+    void label(NSString* text, CGFloat w) {
+        NSTextField* l = [NSTextField labelWithString:text];
+        l.frame = NSMakeRect(x, 7, w, 18);
+        l.alignment = NSTextAlignmentRight;
+        [box addSubview:l];
+        x += w + 6;
+    }
+    NSTextField* field(NSString* value, CGFloat w) {
+        NSTextField* f = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 4, w, 24)];
+        f.stringValue = value;
+        [box addSubview:f];
+        x += w + 10;
+        return f;
+    }
+};
+
+NSTextField* slidesField(Accessory& a, const std::string& slidesDefault) {
+    a.label(@"slides", 44);
+    NSTextField* f = a.field(slidesDefault.empty() ? @"all" : [NSString stringWithUTF8String:slidesDefault.c_str()], 150);
+    f.placeholderString = @"all, or 3-12, 20";
+    return f;
+}
+
+std::string slidesValue(NSTextField* f) {
+    std::string v = f.stringValue.UTF8String ?: "";
+    return v == "all" ? std::string() : v;
+}
+
+}  // namespace
+
+bool choosePdf(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+               PdfChoice* out) {
     @autoreleasepool {
         NSSavePanel* panel = [NSSavePanel savePanel];
         panel.title = @"Export PDF";
@@ -35,13 +73,20 @@ std::string choosePdf(const std::string& dir, const std::string& name) {
         if (!dir.empty()) {
             panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()]];
         }
-        if ([panel runModal] != NSModalResponseOK) return {};
+        Accessory a{[[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 32)]};
+        NSTextField* slides = slidesField(a, slidesDefault);
+        panel.accessoryView = a.box;
+        if ([panel runModal] != NSModalResponseOK) return false;
         NSURL* url = panel.URL;
-        return url ? std::string(url.fileSystemRepresentation) : std::string();
+        if (!url) return false;
+        out->path = url.fileSystemRepresentation;
+        out->slides = slidesValue(slides);
+        return true;
     }
 }
 
-bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out) {
+bool chooseVideo(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+                 VideoChoice* out) {
     @autoreleasepool {
         NSSavePanel* panel = [NSSavePanel savePanel];
         panel.title = @"Export Video";
@@ -55,42 +100,26 @@ bool chooseVideo(const std::string& dir, const std::string& name, int slideCount
         }
 
         // Under the name: which slides, and how many frames a second. Plain fields — the
-        // whole deck is prefilled, so the common case is to type nothing.
-        NSView* box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 32)];
-        auto label = ^(NSString* text, CGFloat x, CGFloat w) {
-            NSTextField* l = [NSTextField labelWithString:text];
-            l.frame = NSMakeRect(x, 7, w, 18);
-            l.alignment = NSTextAlignmentRight;
-            [box addSubview:l];
-        };
-        auto field = ^NSTextField*(NSString* value, CGFloat x, CGFloat w) {
-            NSTextField* f = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 4, w, 24)];
-            f.stringValue = value;
-            f.alignment = NSTextAlignmentRight;
-            [box addSubview:f];
-            return f;
-        };
-        label(@"slides", 10, 50);
-        NSTextField* fromField = field([NSString stringWithFormat:@"%d", 1], 66, 52);
-        label(@"to", 122, 22);
-        NSTextField* toField = field([NSString stringWithFormat:@"%d", slideCount], 148, 52);
-        label(@"fps", 220, 40);
-        NSTextField* fpsField = field(@"30", 266, 52);
+        // whole deck (or the deck view's selection) is prefilled, so the common case is to
+        // type nothing.
+        Accessory a{[[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 32)]};
+        NSTextField* slides = slidesField(a, slidesDefault);
+        a.label(@"fps", 30);
+        NSTextField* fpsField = a.field(@"30", 52);
+        fpsField.alignment = NSTextAlignmentRight;
         // A caption line under the slides, from the transcripts (--transcribe): off unless
         // asked, since it makes the picture taller.
         NSButton* captionsBox = [NSButton checkboxWithTitle:@"captions" target:nil action:nil];
-        captionsBox.frame = NSMakeRect(330, 6, 90, 20);
+        captionsBox.frame = NSMakeRect(a.x, 6, 90, 20);
         captionsBox.state = NSControlStateValueOff;
-        [box addSubview:captionsBox];
-        panel.accessoryView = box;
+        [a.box addSubview:captionsBox];
+        panel.accessoryView = a.box;
 
         if ([panel runModal] != NSModalResponseOK) return false;
         NSURL* url = panel.URL;
         if (!url) return false;
         out->path = url.fileSystemRepresentation;
-        out->from = std::max(1, fromField.intValue);
-        out->to = toField.intValue > 0 ? std::min(slideCount, toField.intValue) : slideCount;
-        if (out->to < out->from) out->to = out->from;
+        out->slides = slidesValue(slides);
         out->fps = fpsField.doubleValue > 0 ? fpsField.doubleValue : 30.0;
         out->captions = captionsBox.state == NSControlStateValueOn;
         return true;
@@ -112,7 +141,8 @@ std::string chooseNewDeck() {
     }
 }
 
-std::string chooseWebDir(const std::string& dir, const std::string& name) {
+bool chooseWebDir(const std::string& dir, const std::string& name, const std::string& slidesDefault,
+                  WebChoice* out) {
     @autoreleasepool {
         NSSavePanel* panel = [NSSavePanel savePanel];
         panel.title = @"Export Web";
@@ -123,9 +153,15 @@ std::string chooseWebDir(const std::string& dir, const std::string& name) {
         if (!dir.empty()) {
             panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()]];
         }
-        if ([panel runModal] != NSModalResponseOK) return {};
+        Accessory a{[[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 32)]};
+        NSTextField* slides = slidesField(a, slidesDefault);
+        panel.accessoryView = a.box;
+        if ([panel runModal] != NSModalResponseOK) return false;
         NSURL* url = panel.URL;
-        return url ? std::string(url.fileSystemRepresentation) : std::string();
+        if (!url) return false;
+        out->dir = url.fileSystemRepresentation;
+        out->slides = slidesValue(slides);
+        return true;
     }
 }
 

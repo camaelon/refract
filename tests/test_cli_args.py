@@ -41,6 +41,10 @@ class CliArgs(unittest.TestCase):
         self.assertFalse(self.parse("--video").captions, "off unless asked: it makes the picture taller")
         self.assertTrue(self.parse("--video", "--captions").captions)
 
+    def test_slides(self):
+        self.assertEqual(self.parse().slides, "", "empty: every slide")
+        self.assertEqual(self.parse("--pdf", "--slides", "3-12, 20").slides, "3-12, 20")
+
     def test_web(self):
         self.assertIsNone(self.parse().web)
         self.assertEqual(self.parse("--web").web, "", "asked for, folder left to the default")
@@ -54,7 +58,7 @@ class CliArgs(unittest.TestCase):
 
     def test_every_flag_is_in_the_help(self):
         text = refract.build_parser().format_help()
-        for flag in ("--pdf", "--images", "--video", "--from", "--to", "--fps", "--dwell", "--captions", "--web",
+        for flag in ("--pdf", "--images", "--video", "--from", "--to", "--fps", "--dwell", "--captions", "--web", "--slides",
                      "--watch", "--force", "--json-only", "--json2rc", "--check", "--transitions"):
             self.assertIn(flag, text, flag)
 

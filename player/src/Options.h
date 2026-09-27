@@ -40,6 +40,7 @@ struct Options {
     double exportDelay = 2.0;
     std::string video;              // --video <out.mp4>: slides and narration as a movie
     int videoFrom = 1, videoTo = 0; // 1-based, inclusive; 0 = the last slide
+    std::string slides;             // --slides "3-12, 20": the slides an export takes (all four)
     double videoFps = 30.0;
     double videoDwell = 4.0;        // a slide with no narration stays up this long
     std::string web;
