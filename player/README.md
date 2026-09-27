@@ -263,7 +263,9 @@ above Minimize, because opening one is what that menu is mostly for here.
 back on the first move: an arrow parked on a projected slide is the one thing the room
 notices. `L` turns it into a **laser pointer** — a large red dot with a trail that fades out
 behind it — drawn on the slide itself, so the presenter's "now" pane shows where the room
-is being pointed. `L` again brings the arrow back.
+is being pointed. `L` again brings the arrow back. Both work whichever window has focus —
+the pointer is polled rather than taken from events, which macOS only sends to the focused
+window, and in a talk that is the presenter window, not the projector's.
 
 The presenter window has a **play/pause button** beside the clock, doing the same thing as
 `T` — which is also what starts an armed recording, so a rehearsal can be driven without the

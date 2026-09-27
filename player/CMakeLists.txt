@@ -131,10 +131,10 @@ set(REFRACTPLAYER_SOURCES
 
 if(APPLE)
     list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
-                                      src/FileDialog.mm)
+                                      src/FileDialog.mm src/Cursor.mm)
 else()
     list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp
-                                      src/AppMenuStub.cpp src/FileDialogStub.cpp)
+                                      src/AppMenuStub.cpp src/FileDialogStub.cpp src/CursorStub.cpp)
 endif()
 
 add_executable(refractplayer ${REFRACTPLAYER_SOURCES})

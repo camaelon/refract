@@ -17,6 +17,7 @@
 #include "AssetWindow.h"
 #include "AudioPlayer.h"
 #include "CaptionWindow.h"
+#include "Cursor.h"
 #include "BuildPanel.h"
 #include "BuildRunner.h"
 #include "FileDialog.h"
@@ -1682,17 +1683,6 @@ int main(int argc, char* argv[]) {
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
     glfwSetKeyCallback(window, playerKeyCallback);
-    // The pointer is watched on its way to the viewer's handler: when it last moved (to
-    // hide it), and where it has been (for the laser's trail).
-    glfwSetCursorPosCallback(window, [](GLFWwindow* w, double x, double y) {
-        pointer.moved(x, y, glfwGetTime());
-        if (pointer.laser()) g.needsRedraw = true;
-        rcplayer::cursorCallback(w, x, y);
-    });
-    glfwSetCursorEnterCallback(window, [](GLFWwindow*, int entered) {
-        if (entered) pointer.entered(); else pointer.left();
-        if (pointer.laser()) g.needsRedraw = true;
-    });
     // The only text this window takes: a name typed at the navigator.
     glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {
         if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
@@ -1839,16 +1829,37 @@ int main(int argc, char* argv[]) {
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - startTime).count();
 
+        // The pointer over the slide, polled: macOS reports mouse motion only to the
+        // focused window, and in a talk the slide window on the projector is rarely that —
+        // the presenter window on the laptop is where the clicks go. Polling sees the
+        // pointer wherever it is, whichever window has focus.
+        //
         // The arrow: gone while the laser is on, and after a few seconds without moving —
         // an arrow parked on a projected slide is the one thing the room notices. Back on
-        // the first move. The laser's trail fades on its own clock, so it keeps redrawing
+        // the first move. Hidden at the system level as well as through GLFW, for the same
+        // focus reason. The laser's trail fades on its own clock, so it keeps redrawing
         // until it is gone.
         {
             const double t = glfwGetTime();
-            const bool hide = pointer.laser() || pointer.idle(t, kHideCursorAfterSec);
+            double cx = 0.0, cy = 0.0;
+            glfwGetCursorPos(window, &cx, &cy);
+            const bool hovered = glfwGetWindowAttrib(window, GLFW_HOVERED) != 0;
+            static double lastCx = -1e9, lastCy = -1e9;
+            if (hovered && (cx != lastCx || cy != lastCy)) {
+                pointer.moved(cx, cy, t);
+                if (pointer.laser()) g.needsRedraw = true;
+            }
+            lastCx = cx;
+            lastCy = cy;
+            if (hovered != pointer.inside()) {
+                if (hovered) pointer.entered(); else pointer.left();
+                if (pointer.laser()) g.needsRedraw = true;
+            }
+            const bool hide = hovered && (pointer.laser() || pointer.idle(t, kHideCursorAfterSec));
             static bool hidden = false;
             if (hide != hidden) {
                 glfwSetInputMode(window, GLFW_CURSOR, hide ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+                refract::setSystemCursorHidden(hide);
                 hidden = hide;
             }
             if (pointer.laser() && !pointer.trail(t, 0.5).empty()) g.needsRedraw = true;
