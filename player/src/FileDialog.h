@@ -33,6 +33,10 @@ struct VideoChoice {
 };
 bool chooseVideo(const std::string& dir, const std::string& name, int slideCount, VideoChoice* out);
 
+// A folder for the web export, offered as `name` inside `dir`; created by the caller.
+// Empty when cancelled.
+std::string chooseWebDir(const std::string& dir, const std::string& name);
+
 // Move a file to the Trash rather than deleting it, so a wrong click can be undone from the
 // Finder. False when it could not be moved (the file stays). Elsewhere than macOS the file is
 // removed outright, and the caller's wording should say so.

@@ -112,6 +112,23 @@ std::string chooseNewDeck() {
     }
 }
 
+std::string chooseWebDir(const std::string& dir, const std::string& name) {
+    @autoreleasepool {
+        NSSavePanel* panel = [NSSavePanel savePanel];
+        panel.title = @"Export Web";
+        panel.message = @"A folder for the site: the page, the slides, the narration and the player.";
+        panel.prompt = @"Export";
+        panel.canCreateDirectories = YES;
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:name.c_str()];
+        if (!dir.empty()) {
+            panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()]];
+        }
+        if ([panel runModal] != NSModalResponseOK) return {};
+        NSURL* url = panel.URL;
+        return url ? std::string(url.fileSystemRepresentation) : std::string();
+    }
+}
+
 bool trashIsAvailable() { return true; }
 
 bool moveToTrash(const std::string& path) {

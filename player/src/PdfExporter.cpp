@@ -32,6 +32,11 @@ bool PdfExporter::startVideo(const std::string& deck, const std::string& mp4, in
     return launch(videoExportArgs(deck, mp4, from, to, fps, width, height, captions), mp4, "video");
 }
 
+bool PdfExporter::startWeb(const std::string& deck, const std::string& dir) {
+    const std::string page = (std::filesystem::path(dir) / "index.html").string();
+    return launch({deck, "--web", dir}, page, "web");
+}
+
 bool PdfExporter::launch(const std::vector<std::string>& args, const std::string& target,
                          const std::string& kind) {
     if (running()) return false;

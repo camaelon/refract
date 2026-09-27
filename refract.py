@@ -778,6 +778,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="seconds a slide with no narration stays up in the movie (default 4)")
     ap.add_argument("--captions", action="store_true",
                     help="with --video: a caption line under the slides, from the transcripts")
+    ap.add_argument("--web", nargs="?", const="", default=None,
+                    help="write a self-contained web site that plays the deck (default <deck>/web)")
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
     ap.add_argument("--force", action="store_true",
@@ -1225,6 +1227,19 @@ def run_once(args) -> int:
         if subprocess.run(cmd).returncode != 0:
             return 1
         print(f"exported {video}")
+
+    # Optional web site via refractplayer: the slides played by the RemoteCompose TypeScript
+    # player in a browser, with the narration and the captions.
+    if args.web is not None:
+        viewer = find_viewer(repo_root)
+        if not viewer or os.path.basename(viewer) != "refractplayer":
+            print("--web needs prebuilt/refractplayer (build it with player/build.sh).",
+                  file=sys.stderr)
+            return 1
+        web_dir = args.web or os.path.join(deck_dir, "web")
+        if subprocess.run([viewer, out_dir, "--web", web_dir]).returncode != 0:
+            return 1
+        print(f"exported {web_dir}")
 
     # Optional export to PDF / images via the viewer.
     if args.pdf is not None or args.images is not None:

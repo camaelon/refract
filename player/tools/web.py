@@ -8,9 +8,13 @@ narration ends, captions light word by word, and a slide with no audio holds for
 the rehearsal recorded.
 
 The slides are the real `.rc` documents rendered by the TypeScript player — the same
-documents the desktop player shows, animations and all — not pictures of them.
+documents the desktop player shows, animations and all — not pictures of them. They are
+written one file each under slides/ and fetched as the deck is played, so the page opens at
+once however big the deck; that needs the folder served (any static server will do).
+`--inline` puts everything inside the page instead, for a deck that must open by
+double-clicking index.html off the disk — at the cost of one file the size of the deck.
 
-    python3 player/tools/web.py <deck-out-dir> <output-dir> [--bundle path/to/bundle.js]
+    python3 player/tools/web.py <deck-out-dir> <output-dir> [--bundle path/to/bundle.js] [--inline]
 
 The bundle is built once from the players/cpp sibling checkout:
 
@@ -103,7 +107,8 @@ def voice_stems(deck: dict, voice_dir: str | None) -> dict:
     return stems
 
 
-def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> int:
+def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
+          inline: bool = False) -> int:
     slides = sorted(f for f in os.listdir(out_dir)
                     if os.path.splitext(f)[1].lower() in SLIDE_EXTS
                     and os.path.isfile(os.path.join(out_dir, f)))
@@ -122,6 +127,23 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
     media_src = os.path.join(out_dir, "media")
     if os.path.isdir(media_src):
         shutil.copytree(media_src, os.path.join(web_dir, "media"), dirs_exist_ok=True)
+
+    # Embedded documents — a film that runs under a whole run of slides, an include drawn
+    # live inside a box — are RemoteCompose files the slides name by path (media/film.rc).
+    # They travel inside the page like the slides themselves, for the same reason: a page
+    # opened off the disk cannot fetch them. The player asks for them by path and the page
+    # hands the bytes over.
+    # Inline: they travel inside the page; otherwise the copies under media/ are fetched by
+    # that same path.
+    files = {}
+    if inline and os.path.isdir(media_src):
+        for name in sorted(os.listdir(media_src)):
+            if os.path.splitext(name)[1].lower() in (".rc", ".rcd"):
+                with open(os.path.join(media_src, name), "rb") as f:
+                    files["media/" + name] = base64.b64encode(f.read()).decode("ascii")
+    slides_dir = os.path.join(web_dir, "slides")
+    if not inline:
+        os.makedirs(slides_dir, exist_ok=True)
 
     # Titles and sections, when the deck was built with a manifest.
     titles, sections = {}, {}
@@ -161,20 +183,31 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
     # everywhere and plays in everything.
     encode = shutil.which("ffmpeg") is not None and not keep_wav
     audio_ext = ".mp3" if encode else ".wav"
-    for name in slides:
+
+    def progress(done: int, what: str) -> None:
+        # One line per step on stderr, the shape the player's processing window reads.
+        print(f"progress: {done}/{len(slides)} {what}", file=sys.stderr, flush=True)
+
+    for done, name in enumerate(slides):
+        progress(done, f"slide {done + 1}/{len(slides)} {name}")
         entry = {"file": name,
                  "title": titles.get(name, ""),
                  "section": sections.get(name, 0),
                  "duration": durations.get(name, 0)}
 
-        # The .rc bytes travel inside the page rather than beside it. The player loads a
-        # document by URL with fetch(), and a browser refuses to fetch a local file — so a
-        # page opened straight off the disk would show the controls and play the audio (a
-        # media element is not a fetch) and never draw a slide. Embedding removes the fetch,
-        # and the deck opens by double-clicking index.html.
+        # The .rc bytes: one file per slide under slides/, fetched as the deck is played,
+        # so the page opens at once however big the deck. Or, inline, inside the page: a
+        # browser refuses to fetch a local file, so a page opened straight off the disk would
+        # show the controls and play the audio (a media element is not a fetch) and never
+        # draw a slide; embedding removes the fetch, and the deck opens by double-clicking
+        # index.html — as one file the size of the deck.
         if os.path.splitext(name)[1].lower() not in MEDIA_EXTS:
-            with open(os.path.join(out_dir, name), "rb") as f:
-                entry["data"] = base64.b64encode(f.read()).decode("ascii")
+            if inline:
+                with open(os.path.join(out_dir, name), "rb") as f:
+                    entry["data"] = base64.b64encode(f.read()).decode("ascii")
+            else:
+                shutil.copyfile(os.path.join(out_dir, name), os.path.join(slides_dir, name))
+                entry["src"] = "slides/" + name
         number = stems.get(name) or slide_number(name)
         if voice_dir and number:
             wav = os.path.join(voice_dir, number + ".wav")
@@ -197,7 +230,8 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
                                   for w in payload.get("words", [])]
         entries.append(entry)
 
-    deck = {"slides": entries}
+    progress(len(slides), "writing the page")
+    deck = {"slides": entries, "files": files, "inline": inline}
     with open(os.path.join(web_dir, "deck.js"), "w") as f:
         # A .js rather than a .json so the page opens from the filesystem too: a fetch of
         # a local file is blocked by the browser, a script tag is not.
@@ -208,9 +242,13 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False) -> in
 
     size = sum(os.path.getsize(os.path.join(dp, f))
                for dp, _, fs in os.walk(web_dir) for f in fs)
+    progress(len(slides), "done")
     print(f"web: {len(entries)} slides, {have_audio} with narration, "
-          f"{size / 1e6:.0f} MB -> {web_dir}")
-    print("     opens straight off the disk (double-click index.html), or serve it:")
+          f"{size / 1e6:.0f} MB -> {web_dir}" + (" (inline: one page holds it all)" if inline else ""))
+    if inline:
+        print("     opens straight off the disk (double-click index.html), or serve it:")
+    else:
+        print("     serve the folder (the slides are fetched as they are played):")
     print(f"     (cd {web_dir} && python3 -m http.server 8000)")
     return 0
 
@@ -307,6 +345,21 @@ PAGE = r"""<!doctype html>
 <script>
 (function () {
   const slides = (window.DECK && window.DECK.slides) || [];
+  const files = (window.DECK && window.DECK.files) || {};
+
+  // Slide bytes: inside the page (inline), or fetched by path as the deck is played — the
+  // slide on screen, then the next one ahead of its turn, so a slide change never waits on
+  // the network. A page opened off the disk cannot fetch; it says so instead of staying blank.
+  const bytesCache = new Map();
+  function bytesFor(slide) {
+    if (slide.data) return Promise.resolve(RC.base64ToArrayBuffer(slide.data));
+    if (!slide.src) return Promise.resolve(null);
+    if (!bytesCache.has(slide.src)) {
+      bytesCache.set(slide.src, fetch(slide.src).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null));
+      if (bytesCache.size > 6) bytesCache.delete(bytesCache.keys().next().value);
+    }
+    return bytesCache.get(slide.src);
+  }
   const stage = document.getElementById('slide');
   const capsEl = document.getElementById('captions');
   const bar = document.getElementById('bar');
@@ -367,11 +420,26 @@ PAGE = r"""<!doctype html>
       if (!handle || !stage.querySelector('canvas')) {
         stage.innerHTML = '';
         handle = RC.createPlayer(stage, { theme: 'dark', background: '#000' });
+        // Embedded documents (a film under a run of slides, an include drawn live) come
+        // from inside the page when they are there, else by path, as the slides do.
+        handle.player.setEmbedResolver(path => {
+          if (files[path]) return Promise.resolve(RC.base64ToArrayBuffer(files[path]));
+          return fetch(path).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+        });
       }
-      // From the embedded bytes, not by URL: fetch() is refused for a local file, and this
-      // page is meant to open off the disk as readily as off a server.
-      const doc = slide.data ? await handle.loadFromBase64(slide.data)
-                             : await handle.loadFromUrl(slide.file);
+      const bytes = await bytesFor(slide);
+      if (index !== Math.max(0, Math.min(i, slides.length - 1))) return;   // moved on meanwhile
+      if (!bytes) {
+        stage.innerHTML = '<div style="color:#99a0ad;font-size:15px;text-align:center;padding:2em">' +
+          (location.protocol === 'file:'
+             ? 'This page fetches its slides, which a browser refuses to do from a file. Serve the folder ' +
+               '(<code>python3 -m http.server</code>) or export with <code>--inline</code>.'
+             : 'cannot load ' + slide.file) + '</div>';
+        handle = null;
+        buildCaptions(slide);
+        return;
+      }
+      const doc = await handle.loadFromArrayBuffer(bytes);
       if (doc && doc.width && doc.height) { docW = doc.width; docH = doc.height; }
       // The canvas is the document's own size, and nothing else. The player sizes the
       // document to whatever the canvas is — "the content fills the context space
@@ -407,7 +475,9 @@ PAGE = r"""<!doctype html>
 
   function preloadNext() {
     const next = slides[index + 1];
-    if (next && next.audio) { ahead.src = next.audio; ahead.load(); }
+    if (!next) return;
+    if (next.audio) { ahead.src = next.audio; ahead.load(); }
+    if (next.src) bytesFor(next);
   }
 
   // Slides with no narration are held for as long as the rehearsal spent on them, so a deck
@@ -555,6 +625,9 @@ PAGE = r"""<!doctype html>
     track.appendChild(tick);
   });
 
+  // For a console, and for anything that wants to drive the page: the player, the deck,
+  // and a way to a slide.
+  window.refract = { get handle() { return handle; }, slides, showSlide, setPlaying };
   showSlide(0);
 })();
 </script>
@@ -569,6 +642,8 @@ def main() -> int:
                     help="path to the TypeScript player's bundle.js")
     ap.add_argument("--keep-wav", action="store_true",
                     help="ship the narration as recorded instead of compressing it")
+    ap.add_argument("--inline", action="store_true",
+                    help="put the slides inside the page, so it opens off the disk (one big file)")
     args = ap.parse_args()
 
     bundle = find_bundle(args.bundle)
@@ -579,7 +654,7 @@ def main() -> int:
               "or pass --bundle <path to bundle.js>", file=sys.stderr)
         return 2
     return build(os.path.abspath(args.out_dir), os.path.abspath(args.web_dir), bundle,
-                 args.keep_wav)
+                 args.keep_wav, args.inline)
 
 
 if __name__ == "__main__":

@@ -158,7 +158,7 @@ void stopSlideRecording(bool keep);
 // and opening or closing a GLFW window from there means creating and destroying an NSWindow
 // while AppKit is part-way through a menu. The loop does it instead, at the top of a frame.
 enum class MenuPanel { None, Presenter, DeckView, Editor, Build, Captions, Navigator, Assets,
-                       Processing, ExportPdf, ExportVideo, Transcribe };
+                       Processing, ExportPdf, ExportVideo, ExportWeb, Transcribe };
 MenuPanel menuRequest = MenuPanel::None;
 
 void toggleDeckView();
@@ -808,6 +808,28 @@ void exportVideo() {
     }
 }
 
+// File ▸ Export Web…: the deck as a site the browser plays — the slides through the
+// RemoteCompose TypeScript player, the narration, the captions — through the player's own
+// --web on a worker. The panel asks for a folder; the page opens when it lands.
+void exportWeb() {
+    if (deckInput.empty() || app.deck.empty()) return;
+    if (pdfExporter.running()) {
+        std::cerr << "refractplayer: an export is already running\n";
+        return;
+    }
+    const refract::ExportTarget target = refract::exportTarget(deckInput);
+    std::string dir = refract::canChooseFiles() ? refract::chooseWebDir(target.dir, "web")
+                                                : (fs::path(target.dir) / "web").string();
+    if (dir.empty()) return;
+    if (pdfExporter.startWeb(deckInput, dir)) {
+        exportReported = false;
+        std::cerr << "refractplayer: exporting a web site into " << dir << " ...\n";
+        openProcessing();
+    } else {
+        std::cerr << "refractplayer: " << pdfExporter.state().error << "\n";
+    }
+}
+
 // Once the export has landed: say so, and put the PDF on screen — the point of exporting is
 // to look at it, and a file that quietly appeared beside the deck is easy to miss.
 void collectPdfExport() {
@@ -821,7 +843,7 @@ void collectPdfExport() {
         refract::runProgram("/usr/bin/open", {state.path});
 #endif
     } else {
-        std::cerr << "refractplayer: PDF export failed: " << state.error << "\n";
+        std::cerr << "refractplayer: " << state.kind << " export failed: " << state.error << "\n";
     }
 }
 
@@ -1705,6 +1727,7 @@ int main(int argc, char* argv[]) {
     refract::installFileMenu({
         {"Export PDF\u2026", "e", [] { menuRequest = MenuPanel::ExportPdf; }, nullptr},
         {"Export Video\u2026", "E", [] { menuRequest = MenuPanel::ExportVideo; }, nullptr},
+        {"Export Web\u2026", "", [] { menuRequest = MenuPanel::ExportWeb; }, nullptr},
         {"Transcribe Narration", "", [] { menuRequest = MenuPanel::Transcribe; }, nullptr},
     });
     refract::installWindowMenu({
@@ -1792,6 +1815,7 @@ int main(int argc, char* argv[]) {
                 case MenuPanel::Processing: toggleProcessing(); break;
                 case MenuPanel::ExportPdf: exportPdf(); break;
                 case MenuPanel::ExportVideo: exportVideo(); break;
+                case MenuPanel::ExportWeb: exportWeb(); break;
                 case MenuPanel::Transcribe: transcribe(false); break;
                 case MenuPanel::None:      break;
             }

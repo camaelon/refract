@@ -20,7 +20,7 @@ struct PdfExportState {
     bool running = false;
     bool ran = false;          // finished at least once since the player started
     bool ok = false;
-    std::string kind;          // "PDF" or "video"
+    std::string kind;          // "PDF", "video" or "web"
     std::string path;          // the file asked for
     std::string error;         // last line of what the export said, when it failed
 };
@@ -44,6 +44,10 @@ public:
     // narration as its soundtrack — the player's --video, on a worker.
     bool startVideo(const std::string& deck, const std::string& mp4, int from, int to,
                     double fps, int width, int height, bool captions = false);
+
+    // The same, for a web site in `dir` — the player's --web, on a worker. The outcome's
+    // path is the page, dir/index.html.
+    bool startWeb(const std::string& deck, const std::string& dir);
 
     // Where the running export has got to, from the progress lines the child prints.
     Progress progress() const { return mProgress.get(); }

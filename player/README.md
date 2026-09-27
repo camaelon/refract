@@ -216,6 +216,7 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `I` | `cmd`+`7` | assets |
 | | `cmd`+`E` | File ▸ Export PDF… |
 | | `shift`+`cmd`+`E` | File ▸ Export Video… |
+| | | File ▸ Export Web… |
 | | `cmd`+`8` | Window ▸ Processing — the background tasks and how far they are |
 | | | File ▸ Transcribe Narration |
 
@@ -1125,10 +1126,14 @@ them. On top of that it plays the recorded narration, lights the captions word b
 the audio clock, and advances when a slide's narration ends. A slide with no audio holds for
 the time the rehearsal recorded, so a partly-recorded deck still plays end to end.
 
-**It opens off the disk.** Double-clicking `index.html` works — the slide bytes travel inside
-the page rather than beside it, because a browser refuses to `fetch()` a local file and the
-player loads documents by URL. Without that a `file://` deck shows its controls and plays its
-audio (a media element is not a fetch) and never draws a slide.
+**One file per slide, fetched as the deck is played.** The slides sit under `slides/` and
+the page holds only the deck's shape — titles, timings, captions, a few tens of kilobytes —
+so it opens at once however big the deck, and each slide is fetched when it is about to be
+shown (the next one is fetched ahead of its turn). That needs the folder served, which any
+static server does. `tools/web.py --inline` is the other shape: every slide inside the page,
+so `index.html` opens by double-clicking it off the disk — a browser refuses to `fetch()` a
+local file — at the cost of one file the size of the deck. A split page opened off the disk
+says so rather than staying blank.
 
 **Slides are laid out at their design size and scaled to fit**, exactly as the desktop player
 does. The web player would otherwise size the document to the canvas — right for a document
@@ -1152,9 +1157,8 @@ Controls: space / arrows to move, `C` for captions, `F` for fullscreen, `P` to p
 scrubbable progress bar with a tick per section. Browsers refuse to play sound until the page
 has been clicked, so it opens behind a start screen rather than silently failing to begin.
 
-The output directory is self-contained — the slides are inside `deck.js`, alongside `media/`,
-`audio/`, `bundle.js` and `index.html` — so it can be opened directly or served from
-anywhere. It needs the TypeScript player bundle,
+The output directory is self-contained — `slides/`, `media/`, `audio/`, `deck.js`,
+`bundle.js` and `index.html` — so it can be served from anywhere. It needs the TypeScript player bundle,
 built once from the sibling RemoteCompose checkout:
 
 ```sh
@@ -1162,6 +1166,22 @@ built once from the sibling RemoteCompose checkout:
 ```
 
 `--web` finds it there automatically; `tools/web.py --bundle <path>` takes it explicitly.
+
+**Embedded documents play.** A slide that embeds another `.rc` document — an include drawn
+live in a box, or a film that runs under a whole run of slides (`persist step=N stepid=…
+timeid=…`) — plays on the web exactly as on the desktop: the TypeScript player has the same
+custom-component host as the C++ one (`WebCustomHost`), keeping a persistent document across
+slides on its own clock and feeding it the slide number and the slide's time. The embedded
+files are fetched by path like the slides (inside the page, with `--inline`). An embedded
+video plays muted in its box; an embedded web page becomes the labelled frame the exports
+show. An animated GIF plays, frame by frame on the document's clock, where the browser has
+WebCodecs' image decoder (Chrome and Edge; elsewhere its first frame). This needs the bundle
+rebuilt from a checkout with that host (`npm run bundle`, as above).
+
+From inside the player, **File ▸ Export Web…** asks for a folder (beside the deck, named
+`web`, by default), runs the export in the background — the processing window follows it
+slide by slide — and opens the page in the browser when it lands. `python3 refract.py mytalk
+--web` does the same from the build tool.
 
 ## Exporting
 

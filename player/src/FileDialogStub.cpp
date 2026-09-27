@@ -12,6 +12,10 @@ std::string chooseNewDeck() { return {}; }
 std::string choosePdf(const std::string&, const std::string&) { return {}; }
 bool chooseVideo(const std::string&, const std::string&, int, VideoChoice*) { return false; }
 
+std::string chooseWebDir(const std::string& dir, const std::string& name) {
+    return (std::filesystem::path(dir) / name).string();
+}
+
 bool trashIsAvailable() { return false; }
 
 bool moveToTrash(const std::string& path) {
