@@ -32,6 +32,6 @@ void navMoveSection(App& app, int direction);
 // slide itself, before the presenter takes its copy, so the presenter sees where the room
 // is being pointed.
 class Pointer;
-void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now);
+void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now, unsigned color = 0xFFFF3B30);
 
 }  // namespace refract

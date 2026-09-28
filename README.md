@@ -149,8 +149,8 @@ and rewritten without leaving the player. It also records and replays a rehearsa
 the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`), a movie with
 the narration as its soundtrack (`--video talk.mp4`) or a self-contained web page (`--web dir/`). See **[player/README.md](player/README.md)**.
 
-Two players on two machines can be kept on the same slide through a small sync server
-(`python3 player/tools/sync.py`, then `--sync host` on each), either of them driving.
+Two players on two machines can be kept on the same slide, blank screen and laser dot:
+one hosts with `--sync-serve`, the others join with `--sync host`, either of them driving.
 
 `rcviewer` is the plain RemoteCompose viewer; it shares the same playback and export code,
 and adds `--screenshot` / `--frames` for single-file headless capture.

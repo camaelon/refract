@@ -32,6 +32,7 @@ struct Options {
     bool sound = true;              // --no-sound clears it
     std::string sync;               // --sync host[:port]: follow and drive the slide with other players
     std::string syncName;           // --sync-name: this player, as the others see it
+    bool syncServe = false;         // --sync-serve: host the sync point in this player
 
     bool record = false;
     bool recordAudio = false;       // implies record

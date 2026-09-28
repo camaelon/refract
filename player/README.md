@@ -259,22 +259,32 @@ above Minimize, because opening one is what that menu is mostly for here.
 | `E` | correct the transcript |
 | `Esc` | leave edit mode |
 
-**Two players in step.** Start the sync point on any machine the others can reach, then
-every player with `--sync`:
+**Two players in step.** One player hosts the sync point with `--sync-serve`; the others
+join it with `--sync`:
 
 ```sh
-python3 player/tools/sync.py                                  # on machine A, port 7333
-prebuilt/refractplayer mytalk/out --presenter --sync a.local  # on A, and the same on B
+prebuilt/refractplayer mytalk/out --presenter --sync-serve    # on machine A, port 7333
+prebuilt/refractplayer mytalk/out --presenter --sync a.local  # on B, and on C
 ```
 
-Each player follows the slide the server holds and may change it: advance on A and B
+Each player follows the slide the host holds and may change it: advance on A and B
 follows; jump on B and A follows. Whoever moved last is where everybody is, and a player
-that joins late is sent there. The presenter says `sync · 2 players` beside the counter,
-amber while it is still connecting. The protocol is lines of text over one TCP connection
-(`hello`, `slide n`, `ping` up; `slide n seq by`, `peers k`, `pong` down), so `nc host 7333`
-shows the traffic and anything that can open a socket can drive the deck. A move made while
-the link is down is not replayed: by the time it is back, the server's slide is the truer
-one. `--sync-name` names the player to the others; the machine's name is the default.
+that joins late is sent there. The black and white screens (`B`, `W`) travel the same way,
+and so does the laser: a dot pointed on A shows on B in amber, trail and all, where A is
+pointing. The presenter says `sync · 2 players` beside the counter, amber while it is still
+connecting. `--sync-name` names the player to the others; the machine's name is the default.
+`--sync :7444` picks another port; `--sync-serve --sync :7444` hosts on it.
+
+The sync point can also live on a box that is neither player: `python3 player/tools/sync.py`
+is the same server in Python. The protocol is lines of text over one TCP connection
+(`hello name`, `slide n`, `blank n`, `laser x y`, `laser off`, `ping` up; `slide n seq by`,
+`blank n seq by`, `laser x y by`, `laser off by`, `peers k`, `pong` down), so `nc host 7333`
+shows the traffic and anything that can open a socket can drive the deck. It is quiet: a
+slide or a blank is one short line when it changes, a ping every five seconds keeps the link
+known, and the laser is sent only while it moves, thirty times a second at most, about
+twenty bytes a line — under a kilobyte a second while pointing, nothing while the dot rests.
+A move made while the link is down is not replayed: by the time it is back, the host's
+slide is the truer one.
 
 **The mouse over the slide.** The arrow hides after three seconds without moving and comes
 back on the first move: an arrow parked on a projected slide is the one thing the room
@@ -379,7 +389,7 @@ Each of them moves the narration index and the rehearsal trace along with the bl
 in the same write and as one undoable edit — see the note on recordings under
 [Rehearsing](#rehearsing).
 | `tools/captions.py` | transcribe the narration and align it into per-word timings |
-| `tools/sync.py` | the sync point that keeps players on different machines on the same slide |
+| `tools/sync.py` | the sync point in Python, for a machine that is not a player (`--sync-serve` hosts it in the player) |
 | `tools/web.py` | assemble the deck, its audio and its captions into a web page |
 
 ## The deck view
@@ -1414,7 +1424,7 @@ ctest --test-dir player/build --output-on-failure
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
 | `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
 | `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
-| `sync` | the lines two players in step exchange, and how a server address is read |
+| `sync` | the lines two players in step exchange (slide, blank, laser), and how a server address is read |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

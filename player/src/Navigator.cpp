@@ -281,10 +281,10 @@ void drawOverlays(SkCanvas* canvas, App& app, int width, int height) {
 
 // ── Laser pointer ────────────────────────────────────────────────────
 
-void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now) {
+void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now, unsigned color) {
     constexpr double kFade = 0.45;     // how long the trail lingers
     constexpr float kRadius = 9.0f;
-    const SkColor red = 0xFFFF3B30;
+    const SkColor red = color;
     SkPaint paint;
     paint.setAntiAlias(true);
     // The trail, oldest first: smaller and fainter the older it is, so it reads as motion.

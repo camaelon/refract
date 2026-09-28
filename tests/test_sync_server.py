@@ -54,9 +54,21 @@ class SyncServer(unittest.TestCase):
         c = Client(self.port, "C")
         self.assertEqual(c.hear(), "slide 9 2 B", "a late joiner is sent where everybody is")
         self.assertEqual(c.hear(), "peers 3")
+        a.hear(); b.hear()   # peers 3
         c.say("ping")
         self.assertEqual(c.hear(), "pong")
-        for x in (a, b, c):
+        a.say("blank 1")
+        self.assertEqual(b.hear(), "blank 1 3 A", "a blanking travels like a move")
+        a.say("laser 0.25 0.5")
+        self.assertEqual(b.hear(), "laser 0.25 0.5 A", "a laser dot is relayed to the others")
+        self.assertEqual(c.hear(), "blank 1 3 A")
+        self.assertEqual(c.hear(), "laser 0.25 0.5 A")
+        a.say("laser off")
+        self.assertEqual(b.hear(), "laser off A")
+        d = Client(self.port, "D")
+        self.assertEqual(d.hear(), "slide 9 2 B", "a late joiner is sent the slide")
+        self.assertEqual(d.hear(), "blank 1 3 A", "and the screen")
+        for x in (a, b, c, d):
             x.close()
 
     def test_nonsense_is_ignored(self):

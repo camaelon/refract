@@ -7,7 +7,7 @@ namespace refract {
 
 const std::vector<std::string>& optionFlags() {
     static const std::vector<std::string> flags = {
-        "--presenter", "--deck-view", "--build", "--editor", "--assets", "--captions",
+        "--presenter", "--deck-view", "--build", "--editor", "--assets", "--captions", "--sync-serve",
         "--fullscreen", "-f", "--display", "--duration", "--cpu", "--metal",
         "--auto", "--auto-voice", "--no-sound",
         "--record", "--record-audio",
@@ -62,6 +62,7 @@ Options parseOptions(int argc, char* argv[]) {
         else if (arg == "--no-sound") o.sound = false;
         else if (arg == "--sync") o.sync = next("--sync");
         else if (arg == "--sync-name") o.syncName = next("--sync-name");
+        else if (arg == "--sync-serve") o.syncServe = true;
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
         else if (arg == "--video") o.video = next("--video");
@@ -140,9 +141,12 @@ std::string usageText() {
         "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
         "                     wavs a --record-audio run captured)\n"
         "  --no-sound         never play a slide's voice-over, even where one exists\n"
-        "  --sync <host[:port]>  keep the slide in step with other players through the\n"
-        "                     sync server (tools/sync.py) at host — any of them may move\n"
+        "  --sync <host[:port]>  keep the slide, blank screen and laser in step with other\n"
+        "                     players through the sync point at host (a player started\n"
+        "                     with --sync-serve, or tools/sync.py) — any of them may move\n"
         "  --sync-name <name> this player's name to the others (default: the machine's)\n"
+        "  --sync-serve       host the sync point in this player (port from --sync,\n"
+        "                     default 7333), so the other machines need only --sync\n"
         "  --captions         open the close-caption window (needs timings from\n"
         "                     --transcribe); with --video, burn the captions into\n"
         "                     the movie as a line under the slides\n"

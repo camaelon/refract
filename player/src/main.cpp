@@ -113,7 +113,12 @@ refract::Pointer pointer;
 // A move here is announced; a move there arrives through takeRemote and is applied as if
 // made here, without being announced back.
 refract::Sync slideSync;
+refract::SyncServer syncServer;     // --sync-serve: the sync point, hosted here
 bool applyingRemoteSlide = false;
+// Another player's laser, drawn on this slide where they are pointing: their dot, in a
+// second colour so the room can tell whose is whose.
+refract::Pointer remotePointer;
+constexpr unsigned kRemoteLaserColor = 0xFFFF9F0A;
 constexpr double kHideCursorAfterSec = 3.0;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
@@ -1271,8 +1276,8 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             break;
 
         // ── Screen ───────────────────────────────────────────────────
-        case GLFW_KEY_B: app.blank = (app.blank == 1) ? 0 : 1; break;
-        case GLFW_KEY_W: app.blank = (app.blank == 2) ? 0 : 2; break;
+        case GLFW_KEY_B: app.blank = (app.blank == 1) ? 0 : 1; slideSync.announceBlank(app.blank); break;
+        case GLFW_KEY_W: app.blank = (app.blank == 2) ? 0 : 2; slideSync.announceBlank(app.blank); break;
         case GLFW_KEY_F: refract::setFullscreen(window, glfwGetWindowMonitor(window) == nullptr); break;
         case GLFW_KEY_P: togglePresenter(); break;
         case GLFW_KEY_C: toggleCaptions(); break;
@@ -1300,6 +1305,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             break;
         case GLFW_KEY_L:
             pointer.setLaser(!pointer.laser());
+            if (!pointer.laser()) slideSync.announceLaserOff();
             g.needsRedraw = true;
             break;
         case GLFW_KEY_S:
@@ -1316,7 +1322,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             if (app.reRecording) { stopSlideRecording(/*keep=*/false); break; }
             if (app.showHelp) app.showHelp = false;
             else if (!app.jumpDigits.empty()) app.jumpDigits.clear();
-            else if (app.blank) app.blank = 0;
+            else if (app.blank) { app.blank = 0; slideSync.announceBlank(0); }
             else if (glfwGetWindowMonitor(window) != nullptr) refract::setFullscreen(window, false);
             break;
         case GLFW_KEY_Q:
@@ -1792,11 +1798,13 @@ int main(int argc, char* argv[]) {
                               [] { return processingWindow != nullptr; }},
     });
 
-    if (!options.sync.empty()) {
+    // Serving is joining too: the host of the sync point runs a client to itself.
+    const std::string syncAddress = (options.syncServe && options.sync.empty()) ? std::string(":7333") : options.sync;
+    if (!syncAddress.empty()) {
         std::string host;
         int port = 0;
-        if (!refract::parseSyncAddress(options.sync, &host, &port)) {
-            std::cerr << "refractplayer: --sync wants host[:port], not " << options.sync << "\n";
+        if (!refract::parseSyncAddress(syncAddress, &host, &port)) {
+            std::cerr << "refractplayer: --sync wants host[:port], not " << syncAddress << "\n";
             return 1;
         }
         char machine[256] = {0};
@@ -1804,6 +1812,15 @@ int main(int argc, char* argv[]) {
         std::string name = options.syncName.empty() ? std::string(machine) : options.syncName;
         const size_t dot = name.find('.');
         if (options.syncName.empty() && dot != std::string::npos) name.resize(dot);   // "mac.local" -> "mac"
+        if (options.syncServe) {
+            if (!syncServer.start(port)) {
+                std::cerr << "refractplayer: --sync-serve: cannot listen on port " << port << "\n";
+                return 1;
+            }
+            std::cerr << "refractplayer: sync point on port " << port << " — the other machines start with --sync "
+                      << machine << ":" << port << "\n";
+            host = "localhost";
+        }
         slideSync.start(host, port, name);
     }
 
@@ -1915,7 +1932,18 @@ int main(int argc, char* argv[]) {
             static double lastCx = -1e9, lastCy = -1e9;
             if (hovered && (cx != lastCx || cy != lastCy)) {
                 pointer.moved(cx, cy, t);
-                if (pointer.laser()) g.needsRedraw = true;
+                if (pointer.laser()) {
+                    g.needsRedraw = true;
+                    // The dot to the other players, as fractions of the slide, thirty times a
+                    // second at most: a line of twenty bytes, only while it moves.
+                    static double lastSent = 0.0;
+                    if (t - lastSent >= 1.0 / 30.0) {
+                        lastSent = t;
+                        int ww = 0, wh = 0;
+                        glfwGetWindowSize(window, &ww, &wh);
+                        if (ww > 0 && wh > 0) slideSync.announceLaser(static_cast<float>(cx / ww), static_cast<float>(cy / wh));
+                    }
+                }
             }
             lastCx = cx;
             lastCy = cy;
@@ -2009,8 +2037,11 @@ int main(int argc, char* argv[]) {
             glfwGetWindowSize(window, &winW, &winH);
             ensureSurface(winW, winH);
             renderFrame(dt);
-            if (pointer.laser()) {
-                if (SkCanvas* canvas = g.backend->canvas()) refract::drawLaser(canvas, pointer, glfwGetTime());
+            if (pointer.laser() || remotePointer.laser()) {
+                if (SkCanvas* canvas = g.backend->canvas()) {
+                    if (remotePointer.laser()) refract::drawLaser(canvas, remotePointer, glfwGetTime(), kRemoteLaserColor);
+                    if (pointer.laser()) refract::drawLaser(canvas, pointer, glfwGetTime());
+                }
             }
 
             // Grab the frame for the presenter *before* blanking. Blanking is for the room;
@@ -2046,7 +2077,8 @@ int main(int argc, char* argv[]) {
             glfwSetWindowTitle(window, title);
         }
 
-        // A move made on another machine: applied as if made here, and not announced back.
+        // A move, a blanking or a laser on another machine: applied as if made here, and
+        // not announced back.
         {
             int remote = -1;
             if (slideSync.takeRemote(&remote) && remote >= 0 && remote < app.deck.size()
@@ -2055,6 +2087,22 @@ int main(int argc, char* argv[]) {
                 goToSlide(remote);
                 applyingRemoteSlide = false;
             }
+            int blank = -1;
+            if (slideSync.takeRemoteBlank(&blank) && blank != app.blank) { app.blank = blank; g.needsRedraw = true; }
+            bool laserOn = false;
+            float lx = 0.0f, ly = 0.0f;
+            if (slideSync.takeRemoteLaser(&laserOn, &lx, &ly)) {
+                int ww = 0, wh = 0;
+                glfwGetWindowSize(window, &ww, &wh);
+                if (laserOn) {
+                    if (!remotePointer.laser()) { remotePointer.setLaser(true); remotePointer.entered(); }
+                    remotePointer.moved(lx * ww, ly * wh, glfwGetTime());
+                } else {
+                    remotePointer.setLaser(false);
+                }
+                g.needsRedraw = true;
+            }
+            if (remotePointer.laser() && !remotePointer.trail(glfwGetTime(), 0.5).empty()) g.needsRedraw = true;
         }
 
         if (presenter) {
@@ -2085,7 +2133,7 @@ int main(int argc, char* argv[]) {
                     {
                         const refract::TranscribeProgress progress = transcriber.progress();
                         presenter->setTranscribing(transcriber.running(), progress.label(), progress.fraction());
-                        presenter->setSyncStatus(options.sync.empty() ? std::string() : slideSync.status());
+                        presenter->setSyncStatus(syncAddress.empty() ? std::string() : slideSync.status());
                     }
                     // The captions tab follows the audio clock, as the caption window does.
                     presenter->setCaptions(&captions, voice ? voice->currentTime() : 0.0,
