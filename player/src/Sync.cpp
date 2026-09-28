@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <sstream>
 #include <algorithm>
@@ -41,6 +42,9 @@ bool parseSyncLine(const std::string& line, SyncMessage* out) {
         in >> out->by;
     } else if (kind == "peers") {
         if (!(in >> out->peers) || out->peers < 0) return false;
+    } else if (kind == "bye") {
+        in >> out->by;
+        if (out->by.empty()) return false;
     } else if (kind != "pong") {
         return false;
     }
@@ -48,7 +52,9 @@ bool parseSyncLine(const std::string& line, SyncMessage* out) {
     return true;
 }
 
-std::string syncHelloLine(const std::string& name) { return "hello " + syncNameFrom(name) + "\n"; }
+std::string syncHelloLine(const std::string& name, const std::string& key) {
+    return "hello " + syncNameFrom(name) + (key.empty() ? std::string() : " " + syncNameFrom(key)) + "\n";
+}
 std::string syncSlideLine(int slide) { return "slide " + std::to_string(slide) + "\n"; }
 std::string syncBlankLine(int blank) { return "blank " + std::to_string(blank) + "\n"; }
 std::string syncLaserLine(float x, float y) {
@@ -88,11 +94,12 @@ bool parseSyncAddress(const std::string& spec, std::string* host, int* port) {
 
 Sync::~Sync() { stop(); }
 
-void Sync::start(const std::string& host, int port, const std::string& name) {
+void Sync::start(const std::string& host, int port, const std::string& name, const std::string& key) {
     stop();
     mHost = host;
     mPort = port;
     mName = syncNameFrom(name);
+    mKey = key.empty() ? std::string() : syncNameFrom(key);
     mRunning = true;
     mThread = std::thread([this] { run(); });
 }
@@ -158,7 +165,13 @@ bool Sync::takeRemoteLaser(bool* on, float* x, float* y) {
     return true;
 }
 
+std::string Sync::refused() const {
+    std::lock_guard<std::mutex> lock(mMutex);
+    return mRefused;
+}
+
 std::string Sync::status() const {
+    if (!refused().empty()) return "sync · refused";
     if (!mConnected) return "sync · connecting…";
     const int n = mPeers;
     return "sync · " + std::to_string(n) + (n == 1 ? " player" : " players");
@@ -182,6 +195,13 @@ void Sync::handleLine(const std::string& line) {
         mLaserY = m.laserY;
     } else if (m.kind == "peers") {
         mPeers = m.peers;
+    } else if (m.kind == "bye") {
+        // Not wanted back: say why, once, and stop trying.
+        std::lock_guard<std::mutex> lock(mMutex);
+        mRefused = m.by;
+        std::cerr << "sync: " << mHost << " refused this player: "
+                  << (m.by == "key" ? "wrong --sync-key" : m.by == "full" ? "no room" : m.by) << "\n";
+        mRunning = false;
     }
 }
 
@@ -214,7 +234,7 @@ void Sync::run() {
         mConnected = true;
         said = false;
         std::cerr << "sync: connected to " << mHost << ":" << mPort << " as " << mName << "\n";
-        sendLine(syncHelloLine(mName));
+        sendLine(syncHelloLine(mName, mKey));
 
         std::string buffer;
         double sincePing = 0.0;
@@ -235,6 +255,7 @@ void Sync::run() {
                     handleLine(buffer.substr(0, end));
                     buffer.erase(0, end + 1);
                 }
+                if (buffer.size() > kSyncMaxLine) break;    // not the protocol: drop the link
             }
             sincePing += 0.25;
             if (sincePing >= 5.0) { sincePing = 0.0; if (!sendLine("ping\n")) break; }
@@ -242,7 +263,11 @@ void Sync::run() {
         mConnected = false;
         const int had = mSocket.exchange(-1);
         if (had >= 0) ::close(had);
-        if (mRunning) std::cerr << "sync: link to " << mHost << " lost, reconnecting\n";
+        if (mRunning) {
+            // A moment before trying again, so a host that hangs up on us is not hammered.
+            std::cerr << "sync: link to " << mHost << " lost, reconnecting\n";
+            for (int i = 0; i < 20 && mRunning; i++) ::usleep(100000);
+        }
     }
 }
 
@@ -252,23 +277,50 @@ struct SyncServer::Client {
     int fd = -1;
     std::string name = "player";
     std::string buffer;
+    bool admitted = false;        // said hello (with the key, when there is one)
     bool gone = false;
+    // The laser rate: lines in the current second.
+    time_t laserSecond = 0;
+    int laserLines = 0;
 };
+
+// The comparison takes as long whatever the difference, so timing says nothing.
+static bool sameKey(const std::string& a, const std::string& b) {
+    unsigned diff = static_cast<unsigned>(a.size() ^ b.size());
+    for (size_t i = 0; i < a.size() && i < b.size(); i++) diff |= static_cast<unsigned>(a[i] ^ b[i]);
+    return diff == 0;
+}
 
 SyncServer::SyncServer() = default;
 SyncServer::~SyncServer() { stop(); }
 
-bool SyncServer::start(int port) {
+bool SyncServer::start(int port, const std::string& bind, const std::string& key) {
     stop();
-    const int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    int listenFd = fd;
-    bool v6 = fd >= 0;
-    if (!v6) listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFd < 0) return false;
-    int one = 1;
-    ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    mKey = key.empty() ? std::string() : syncNameFrom(key);
+    int listenFd = -1;
     bool bound = false;
+    int one = 1;
+    if (!bind.empty()) {
+        // One address, as given: v4 or v6, whichever it names.
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
+        addrinfo* res = nullptr;
+        if (::getaddrinfo(bind.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) return false;
+        for (addrinfo* a = res; a && !bound; a = a->ai_next) {
+            listenFd = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (listenFd < 0) continue;
+            ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+            bound = ::bind(listenFd, a->ai_addr, a->ai_addrlen) == 0;
+            if (!bound) ::close(listenFd);
+        }
+        ::freeaddrinfo(res);
+        if (!bound) return false;
+    }
+    const bool v6 = !bound && (listenFd = ::socket(AF_INET6, SOCK_STREAM, 0)) >= 0;
     if (v6) {
+        ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         int off = 0;
         ::setsockopt(listenFd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));   // v4 too
         sockaddr_in6 addr{};
@@ -289,6 +341,16 @@ bool SyncServer::start(int port) {
         bound = ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
     }
     if (!bound || ::listen(listenFd, 16) != 0) { ::close(listenFd); return false; }
+    {
+        sockaddr_storage got{};
+        socklen_t len = sizeof(got);
+        if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&got), &len) == 0) {
+            mPort = ntohs(got.ss_family == AF_INET6 ? reinterpret_cast<sockaddr_in6*>(&got)->sin6_port
+                                                    : reinterpret_cast<sockaddr_in*>(&got)->sin_port);
+        } else {
+            mPort = port;
+        }
+    }
     mListen = listenFd;
     mRunning = true;
     mThread = std::thread([this] { run(); });
@@ -316,9 +378,17 @@ void SyncServer::handleLine(Client& from, const std::string& line) {
     std::string kind;
     if (!(in >> kind)) return;
     if (kind == "hello") {
-        std::string name;
-        in >> name;
+        std::string name, key;
+        in >> name >> key;
+        if (!mKey.empty() && !sameKey(syncNameFrom(key), mKey)) {
+            std::cerr << "sync: " << syncNameFrom(name) << " refused: wrong key\n";
+            const std::string l = "bye key\n";
+            ::send(from.fd, l.data(), l.size(), 0);
+            from.gone = true;
+            return;
+        }
         from.name = syncNameFrom(name);
+        from.admitted = true;
         if (mSlide >= 0) {
             const std::string l = "slide " + std::to_string(mSlide) + " " + std::to_string(mSlideSeq) + " " + mSlideBy + "\n";
             ::send(from.fd, l.data(), l.size(), 0);
@@ -329,6 +399,9 @@ void SyncServer::handleLine(Client& from, const std::string& line) {
         }
         broadcast("peers " + std::to_string(mClients.size()) + "\n");
         std::cerr << "sync: " << from.name << " joined\n";
+    } else if (!from.admitted) {
+        // Nothing counts before a hello; with a key, the connection is already over.
+        if (!mKey.empty()) from.gone = true;
     } else if (kind == "slide" || kind == "blank") {
         int value = -1;
         if (!(in >> value) || value < 0 || (kind == "blank" && value > 2)) return;
@@ -339,7 +412,14 @@ void SyncServer::handleLine(Client& from, const std::string& line) {
         broadcast(l);
         if (kind == "slide") std::cerr << "sync: slide " << value + 1 << " (" << from.name << ")\n";
     } else if (kind == "laser") {
-        // Relayed to the others as it came, with who it is from; not kept.
+        // Relayed to the others as it came, with who it is from; not kept. A flood ends it.
+        const time_t now = ::time(nullptr);
+        if (now != from.laserSecond) { from.laserSecond = now; from.laserLines = 0; }
+        if (++from.laserLines > kSyncMaxLaserPerSec) {
+            std::cerr << "sync: " << from.name << " dropped: laser flood\n";
+            from.gone = true;
+            return;
+        }
         std::string rest;
         std::getline(in, rest);
         while (!rest.empty() && rest.back() == '\r') rest.pop_back();
@@ -365,7 +445,12 @@ void SyncServer::run() {
         if (ready == 0) continue;
         if (FD_ISSET(listenFd, &set)) {
             const int fd = ::accept(listenFd, nullptr, nullptr);
-            if (fd >= 0) {
+            if (fd >= 0 && mClients.size() >= kSyncMaxClients) {
+                std::cerr << "sync: a player turned away: " << kSyncMaxClients << " already here\n";
+                const std::string l = "bye full\n";
+                ::send(fd, l.data(), l.size(), 0);
+                ::close(fd);
+            } else if (fd >= 0) {
                 int one = 1;
                 ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
                 auto c = std::make_unique<Client>();
@@ -380,17 +465,19 @@ void SyncServer::run() {
             if (n <= 0) { c->gone = true; continue; }
             c->buffer.append(chunk, static_cast<size_t>(n));
             size_t end;
-            while ((end = c->buffer.find('\n')) != std::string::npos) {
+            while (!c->gone && (end = c->buffer.find('\n')) != std::string::npos) {
                 const std::string line = c->buffer.substr(0, end);
                 c->buffer.erase(0, end + 1);
+                if (line.size() > kSyncMaxLine) { c->gone = true; break; }
                 handleLine(*c, line);
             }
+            if (c->buffer.size() > kSyncMaxLine) c->gone = true;    // no newline in sight
         }
         // The ones that hung up, and the count for those still here.
         bool left = false;
         for (size_t i = 0; i < mClients.size();) {
             if (mClients[i]->gone) {
-                std::cerr << "sync: " << mClients[i]->name << " left\n";
+                if (mClients[i]->admitted) std::cerr << "sync: " << mClients[i]->name << " left\n";
                 ::close(mClients[i]->fd);
                 mClients.erase(mClients.begin() + static_cast<long>(i));
                 left = true;

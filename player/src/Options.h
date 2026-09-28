@@ -33,6 +33,8 @@ struct Options {
     std::string sync;               // --sync host[:port]: follow and drive the slide with other players
     std::string syncName;           // --sync-name: this player, as the others see it
     bool syncServe = false;         // --sync-serve: host the sync point in this player
+    std::string syncBind;           // --sync-bind: the address the sync point listens on (all when empty)
+    std::string syncKey;            // --sync-key: the word every player must say to join
 
     bool record = false;
     bool recordAudio = false;       // implies record

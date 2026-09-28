@@ -1813,15 +1813,17 @@ int main(int argc, char* argv[]) {
         const size_t dot = name.find('.');
         if (options.syncName.empty() && dot != std::string::npos) name.resize(dot);   // "mac.local" -> "mac"
         if (options.syncServe) {
-            if (!syncServer.start(port)) {
-                std::cerr << "refractplayer: --sync-serve: cannot listen on port " << port << "\n";
+            if (!syncServer.start(port, options.syncBind, options.syncKey)) {
+                std::cerr << "refractplayer: --sync-serve: cannot listen on "
+                          << (options.syncBind.empty() ? std::string("port ") : options.syncBind + ":") << port << "\n";
                 return 1;
             }
             std::cerr << "refractplayer: sync point on port " << port << " — the other machines start with --sync "
-                      << machine << ":" << port << "\n";
-            host = "localhost";
+                      << machine << ":" << port << (options.syncKey.empty() ? "" : " --sync-key <the same word>") << "\n";
+            if (options.syncKey.empty()) std::cerr << "refractplayer: no --sync-key: anyone who can reach the port can drive the deck\n";
+            host = options.syncBind.empty() ? "localhost" : options.syncBind;
         }
-        slideSync.start(host, port, name);
+        slideSync.start(host, port, name, options.syncKey);
     }
 
     refreshVoicePresence();

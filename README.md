@@ -150,7 +150,8 @@ the narration, and exports to PDF (`--pdf talk.pdf`), PNGs (`--images dir/`), a 
 the narration as its soundtrack (`--video talk.mp4`) or a self-contained web page (`--web dir/`). See **[player/README.md](player/README.md)**.
 
 Two players on two machines can be kept on the same slide, blank screen and laser dot:
-one hosts with `--sync-serve`, the others join with `--sync host`, either of them driving.
+one hosts with `--sync-serve`, the others join with `--sync host`, either of them driving;
+`--sync-key word` on each keeps the rest of the room out.
 
 `rcviewer` is the plain RemoteCompose viewer; it shares the same playback and export code,
 and adds `--screenshot` / `--frames` for single-file headless capture.

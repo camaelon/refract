@@ -5,6 +5,13 @@
 #include "Sync.h"
 
 #include <cstdio>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 static int failures = 0;
 
@@ -24,6 +31,8 @@ static void testParse() {
     CHECK(refract::parseSyncLine("laser off desk", &m) && m.kind == "laser" && !m.laserOn && m.by == "desk", "a laser gone");
     CHECK(!refract::parseSyncLine("laser 0.5", &m), "a laser needs both fractions");
     CHECK(refract::parseSyncLine("peers 2", &m) && m.kind == "peers" && m.peers == 2, "a peer count");
+    CHECK(refract::parseSyncLine("bye key", &m) && m.kind == "bye" && m.by == "key", "a goodbye, with the reason");
+    CHECK(!refract::parseSyncLine("bye", &m), "a goodbye needs its reason");
     CHECK(refract::parseSyncLine("pong\r", &m) && m.kind == "pong", "pong, with a stray CR");
     CHECK(!refract::parseSyncLine("slide x 1", &m), "not a slide number");
     CHECK(!refract::parseSyncLine("slide 3", &m), "no sequence");
@@ -33,6 +42,9 @@ static void testParse() {
 }
 
 static void testWrite() {
+    CHECK(refract::syncHelloLine("desk") == "hello desk\n", "a hello");
+    CHECK(refract::syncHelloLine("desk", "s3cret") == "hello desk s3cret\n", "a hello with the key");
+    CHECK(refract::syncHelloLine("my desk", "a key!") == "hello my_desk a_key\n", "name and key are one token each");
     CHECK(refract::syncSlideLine(4) == "slide 4\n", "a move");
     CHECK(refract::syncBlankLine(1) == "blank 1\n", "a blank");
     CHECK(refract::syncLaserLine(0.5f, 0.25f) == "laser 0.5000 0.2500\n", "a laser position, four places");
@@ -53,7 +65,112 @@ static void testAddress() {
     CHECK(!refract::parseSyncAddress("mac:70000", &host, &port), "out of range");
 }
 
+// ── A live server, on a port of the system's choosing ──────────────
+
+namespace {
+struct Peer {
+    int fd = -1;
+    std::string buffer;
+    explicit Peer(int port) {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = htons(static_cast<uint16_t>(port));
+        if (::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) { ::close(fd); fd = -1; }
+        timeval tv{2, 0};
+        if (fd >= 0) ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    ~Peer() { if (fd >= 0) ::close(fd); }
+    void say(const std::string& line) { const std::string l = line + "\n"; ::send(fd, l.data(), l.size(), 0); }
+    // The next line, or "" when the link closed or two seconds passed.
+    std::string hear() {
+        for (;;) {
+            const size_t end = buffer.find('\n');
+            if (end != std::string::npos) { std::string l = buffer.substr(0, end); buffer.erase(0, end + 1); return l; }
+            char chunk[256];
+            const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+            if (n <= 0) return "";
+            buffer.append(chunk, static_cast<size_t>(n));
+        }
+    }
+    bool closed() {     // true when the server hung up on us (within two seconds)
+        char chunk[256];
+        for (;;) {      // whatever it still said before hanging up
+            const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+            if (n < 0) return false;    // the timeout: still open
+            if (n == 0) return true;
+        }
+    }
+};
+}  // namespace
+
+static void testServer() {
+    refract::SyncServer server;
+    CHECK(server.start(0, "127.0.0.1"), "listens on a port of the system's choosing, on loopback");
+    const int port = server.port();
+    CHECK(port > 0, "and says which");
+    Peer a(port);
+    a.say("hello A");
+    CHECK(a.hear() == "peers 1", "the first player is told it is alone");
+    Peer b(port);
+    b.say("slide 3");
+    b.say("hello B");
+    CHECK(a.hear() == "peers 2" && b.hear() == "peers 2", "a move before hello does not count");
+    a.say("slide 4");
+    CHECK(a.hear() == "slide 4 1 A" && b.hear() == "slide 4 1 A", "a move reaches everyone");
+    b.say("blank 1");
+    CHECK(a.hear() == "blank 1 2 B", "so does a blanking");
+    b.hear();
+    a.say("laser 0.5 0.5");
+    CHECK(b.hear() == "laser 0.5 0.5 A", "a laser is relayed to the others");
+    Peer c(port);
+    c.say("hello C");
+    CHECK(c.hear() == "slide 4 1 A" && c.hear() == "blank 1 2 B", "a late joiner is sent slide and screen, each with its own sequence");
+    Peer d(port);
+    d.say(std::string(300, 'x'));
+    CHECK(d.closed(), "a line over the limit ends the connection");
+    Peer e(port);
+    e.say("hello E");
+    e.hear();
+    for (int i = 0; i < refract::kSyncMaxLaserPerSec + 5; i++) e.say("laser 0.1 0.1");
+    CHECK(e.closed(), "a laser flood ends the connection");
+    server.stop();
+}
+
+static void testServerKey() {
+    refract::SyncServer server;
+    CHECK(server.start(0, "127.0.0.1", "open-sesame"), "listens with a key");
+    Peer wrong(server.port());
+    wrong.say("hello W nope");
+    CHECK(wrong.hear() == "bye key" && wrong.closed(), "the wrong key is told so, then the connection ends");
+    Peer none(server.port());
+    none.say("slide 2");
+    CHECK(none.closed(), "so does anything before a hello");
+    Peer right(server.port());
+    right.say("hello R open-sesame");
+    CHECK(right.hear() == "peers 1", "the right key is in");
+    server.stop();
+}
+
+static void testServerCap() {
+    refract::SyncServer server;
+    CHECK(server.start(0, "127.0.0.1"), "listens");
+    std::vector<std::unique_ptr<Peer>> room;
+    for (size_t i = 0; i < refract::kSyncMaxClients; i++) {
+        room.push_back(std::make_unique<Peer>(server.port()));
+        room.back()->say("hello P" + std::to_string(i));
+        room.back()->hear();
+    }
+    Peer extra(server.port());
+    CHECK(extra.hear() == "bye full" && extra.closed(), "one player over the cap is told so and turned away");
+    server.stop();
+}
+
 int main() {
+    testServer();
+    testServerKey();
+    testServerCap();
     testParse();
     testWrite();
     testAddress();

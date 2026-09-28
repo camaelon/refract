@@ -63,6 +63,8 @@ Options parseOptions(int argc, char* argv[]) {
         else if (arg == "--sync") o.sync = next("--sync");
         else if (arg == "--sync-name") o.syncName = next("--sync-name");
         else if (arg == "--sync-serve") o.syncServe = true;
+        else if (arg == "--sync-bind") o.syncBind = next("--sync-bind");
+        else if (arg == "--sync-key") o.syncKey = next("--sync-key");
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
         else if (arg == "--video") o.video = next("--video");
@@ -147,6 +149,10 @@ std::string usageText() {
         "  --sync-name <name> this player's name to the others (default: the machine's)\n"
         "  --sync-serve       host the sync point in this player (port from --sync,\n"
         "                     default 7333), so the other machines need only --sync\n"
+        "  --sync-key <word>  the word every player must say to join: set it on the host\n"
+        "                     and on each player, or anyone in the room can drive the deck\n"
+        "  --sync-bind <addr> the address the sync point listens on (default: every\n"
+        "                     interface; 127.0.0.1 keeps it to this machine and a tunnel)\n"
         "  --captions         open the close-caption window (needs timings from\n"
         "                     --transcribe); with --video, burn the captions into\n"
         "                     the movie as a line under the slides\n"

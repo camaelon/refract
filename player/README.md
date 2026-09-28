@@ -263,8 +263,8 @@ above Minimize, because opening one is what that menu is mostly for here.
 join it with `--sync`:
 
 ```sh
-prebuilt/refractplayer mytalk/out --presenter --sync-serve    # on machine A, port 7333
-prebuilt/refractplayer mytalk/out --presenter --sync a.local  # on B, and on C
+prebuilt/refractplayer mytalk/out --presenter --sync-serve --sync-key apricot    # on A, port 7333
+prebuilt/refractplayer mytalk/out --presenter --sync a.local --sync-key apricot  # on B, and on C
 ```
 
 Each player follows the slide the host holds and may change it: advance on A and B
@@ -285,6 +285,16 @@ known, and the laser is sent only while it moves, thirty times a second at most,
 twenty bytes a line — under a kilobyte a second while pointing, nothing while the dot rests.
 A move made while the link is down is not replayed: by the time it is back, the host's
 slide is the truer one.
+
+**Keeping the room out.** The port is open to whoever shares the network, and a deck that
+anyone can flip mid-talk is a prank waiting to happen, so give every player the same
+`--sync-key` word: a hello without it is answered with `bye key` and the connection ends
+before anything else is read (the refused player says so and stops trying), and the host
+warns at startup when there is no key. The word travels in the clear, like the
+slides (it guards against mischief, not eavesdropping); for more than that, bind the sync
+point to this machine with `--sync-bind 127.0.0.1` and reach it through an SSH tunnel.
+The server is also blunt with anything that is not the protocol: a line over 256 bytes,
+a seventeenth player, or a laser sent faster than sixty lines a second is cut off.
 
 **The mouse over the slide.** The arrow hides after three seconds without moving and comes
 back on the first move: an arrow parked on a projected slide is the one thing the room
