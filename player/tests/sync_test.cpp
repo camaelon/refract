@@ -4,6 +4,7 @@
 
 #include "Sync.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -98,8 +99,10 @@ struct Peer {
         char chunk[256];
         for (;;) {      // whatever it still said before hanging up
             const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
-            if (n < 0) return false;    // the timeout: still open
             if (n == 0) return true;
+            // A reset counts too: a server that closes with our lines still unread sends one
+            // instead of a clean end. Only the timeout means the link is still open.
+            if (n < 0) return errno != EAGAIN && errno != EWOULDBLOCK;
         }
     }
 };
