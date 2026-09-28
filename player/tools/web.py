@@ -91,23 +91,55 @@ def parse_slides(spec: str, count: int) -> list[int]:
     return sorted(chosen)
 
 
-def gifs_in_rc(path: str) -> list[tuple[int, bytes]]:
-    """The animated GIFs a compiled slide carries, as (image id, bytes). A bitmap operation
-    lays its payload out as [image id][width][height][length][bytes], so a GIF is found by
-    its magic and cut by the length in front of it."""
-    with open(path, "rb") as f:
-        data = f.read()
+def gifs_in_rc(data: bytes) -> list[tuple[int, int, int]]:
+    """The animated GIFs a compiled slide carries, as (image id, offset, length). A bitmap
+    operation lays its payload out as [image id][width][height][length][bytes], so a GIF is
+    found by its magic and cut by the length in front of it."""
     found = []
     pos = data.find(b"GIF8")
     while pos >= 0:
         if pos >= 16:
             image_id, length = struct.unpack(">i", data[pos - 16:pos - 12])[0], struct.unpack(">i", data[pos - 4:pos])[0]
             if 0 < length <= len(data) - pos and data[pos + length - 1] == 0x3B:
-                found.append((image_id, data[pos:pos + length]))
+                found.append((image_id, pos, length))
                 pos = data.find(b"GIF8", pos + length)
                 continue
         pos = data.find(b"GIF8", pos + 4)
     return found
+
+
+def replace_payloads(data: bytes, replacements: list[tuple[int, int, bytes]]) -> bytes:
+    """`data` with each (offset, length) payload swapped for other bytes, the length in front
+    of it rewritten to match. The wire format carries no offsets, so the rest is untouched."""
+    out = bytearray()
+    at = 0
+    for offset, length, new in sorted(replacements):
+        out += data[at:offset - 4]
+        out += struct.pack(">i", len(new))
+        out += new
+        at = offset + length
+    out += data[at:]
+    return bytes(out)
+
+
+def gif_poster(gif: bytes, anim_dir: str) -> bytes | None:
+    """The GIF's first frame as a PNG: the still a slide shows until its video is ready, and
+    all that is left of the GIF in the slide the site ships. Cached beside the video."""
+    if shutil.which("ffmpeg") is None:
+        return None
+    os.makedirs(anim_dir, exist_ok=True)
+    dest = os.path.join(anim_dir, hashlib.sha1(gif).hexdigest()[:16] + ".poster.png")
+    if not os.path.isfile(dest):
+        src = dest + ".gif"
+        with open(src, "wb") as f:
+            f.write(gif)
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-frames:v", "1",
+                            "-c:v", "png", dest], check=False)
+        os.remove(src)
+        if r.returncode != 0 or not os.path.isfile(dest):
+            return None
+    with open(dest, "rb") as f:
+        return f.read()
 
 
 def transcode_gif(gif: bytes, anim_dir: str) -> str | None:
@@ -285,24 +317,35 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
         # draw a slide; embedding removes the fetch, and the deck opens by double-clicking
         # index.html — as one file the size of the deck.
         if os.path.splitext(name)[1].lower() not in MEDIA_EXTS:
-            if inline:
-                with open(os.path.join(out_dir, name), "rb") as f:
-                    entry["data"] = base64.b64encode(f.read()).decode("ascii")
-            else:
-                shutil.copyfile(os.path.join(out_dir, name), os.path.join(slides_dir, name))
-                entry["src"] = "slides/" + name
+            with open(os.path.join(out_dir, name), "rb") as f:
+                data = f.read()
             # An animated GIF in the slide becomes a video the browser decodes in hardware,
-            # drawn where the bitmap goes; decoding GIF frames one by one is the fallback
-            # the player keeps for a page built without ffmpeg.
+            # drawn where the bitmap goes, and the slide the site ships keeps only the
+            # GIF's first frame as a PNG — the still shown until the video is ready — so a
+            # slide with a 45 MB GIF in it is a few hundred kilobytes on the web. Decoding
+            # GIF frames one by one is the fallback the player keeps for a page built
+            # without ffmpeg, and then the GIF bytes stay.
             videos = {}
-            for image_id, gif in gifs_in_rc(os.path.join(out_dir, name)):
+            swaps = []
+            for image_id, offset, length in gifs_in_rc(data):
                 progress(done, f"slide {done + 1}/{len(slides)} encoding a GIF")
+                gif = data[offset:offset + length]
                 url = transcode_gif(gif, anim_dir)
-                if url:
+                poster = gif_poster(gif, anim_dir) if url else None
+                if url and poster:
                     videos[str(image_id)] = url
+                    swaps.append((offset, length, poster))
+            if swaps:
+                data = replace_payloads(data, swaps)
             if videos:
                 entry["videos"] = videos
                 have_videos += len(videos)
+            if inline:
+                entry["data"] = base64.b64encode(data).decode("ascii")
+            else:
+                with open(os.path.join(slides_dir, name), "wb") as f:
+                    f.write(data)
+                entry["src"] = "slides/" + name
         number = stems.get(name) or slide_number(name)
         if voice_dir and number:
             wav = os.path.join(voice_dir, number + ".wav")

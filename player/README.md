@@ -1190,10 +1190,12 @@ player, which is fine for one slide and hopeless in a browser: a watch face of s
 450-pixel frames is half a gigabyte as bitmaps. The export cuts each GIF out of its slide,
 transcodes it once with ffmpeg to a WebM (VP9, alpha kept, a tenth of the size), and tells
 the player to draw that video's current frame where the bitmap goes — the browser's own
-video pipeline does the decoding. The same GIF on several slides encodes once, an unchanged
-one is not encoded again, and the GIF bytes still ship in the slide for the desktop. Without
-ffmpeg the player falls back to decoding GIF frames one at a time through WebCodecs, which
-works but costs.
+video pipeline does the decoding. The copy of the slide the site ships keeps only the GIF's
+first frame, as a PNG, for the still shown until the video is ready — so a slide with 45 MB
+of GIF in it is under a megabyte on the web, and the whole ads26 deck went from 171 MB to
+18 MB. The same GIF on several slides encodes once, an unchanged one is not encoded again,
+and the deck's own `out/` is untouched. Without ffmpeg the player falls back to decoding
+GIF frames one at a time through WebCodecs, and the slide keeps its GIF.
 
 From inside the player, **File ▸ Export Web…** asks for a folder (beside the deck, named
 `web`, by default), runs the export in the background — the processing window follows it
