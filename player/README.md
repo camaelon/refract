@@ -197,7 +197,9 @@ is why `E` opens the editor from the slide window but types an `e` in it.
 | `R` | reload the slide |
 | `D` | debug overlay |
 | `S` | screenshot to `/tmp/refractplayer.png` |
-| `L` | laser pointer: a red dot with a fading trail in place of the arrow |
+| `L` | laser pointer: a red dot with a fading trail in place of the arrow; hold the mouse button to draw |
+| `Shift`+`L` | clear the drawings on this slide |
+| `N` | narration on / off |
 | `shift`+`R` | re-record this slide's narration |
 | `H` | key card |
 | `Esc` | back out of whatever is on top — never quits |
@@ -300,9 +302,24 @@ a seventeenth player, or a laser sent faster than sixty lines a second is cut of
 back on the first move: an arrow parked on a projected slide is the one thing the room
 notices. `L` turns it into a **laser pointer** — a large red dot with a trail that fades out
 behind it — drawn on the slide itself, so the presenter's "now" pane shows where the room
-is being pointed. `L` again brings the arrow back. Both work whichever window has focus —
-the pointer is polled rather than taken from events, which macOS only sends to the focused
-window, and in a talk that is the presenter window, not the projector's.
+is being pointed. `L` again brings the arrow back. The dot rests like the arrow does: after
+the same three seconds without moving it goes, and the first move brings it back. Both work
+whichever window has focus — the pointer is polled rather than taken from events, which
+macOS only sends to the focused window, and in a talk that is the presenter window, not the
+projector's.
+
+**Drawing.** With the laser on, hold the mouse button and the dot leaves a line: circle a
+number, underline a word, join two boxes. The strokes stay on that slide for the run — go
+on and come back and they are still there — and `Shift`+`L` wipes the current slide's.
+Nothing is saved to disk; a drawing is for the room, on the day. Strokes are kept as
+fractions of the slide, so they sit where they were drawn after a resize or fullscreen.
+
+**Narration on or off.** A deck with recordings plays each slide's as it comes up. When
+you would rather do the talking yourself, untick **play narration** in the presenter's
+button row (or press `N`): the deck goes silent and the recordings stay where they are. It
+is remembered with the session, and a deck with narration says which way it is set when it
+starts, in a line at the foot of the window. Turning it back on starts the current slide's
+recording from the beginning. `--no-sound` still means no audio at all.
 
 The presenter window has a **play/pause button** beside the clock, doing the same thing as
 `T` — which is also what starts an armed recording, so a rehearsal can be driven without the
@@ -1435,6 +1452,7 @@ ctest --test-dir player/build --output-on-failure
 | `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
 | `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
 | `sync` | the lines two players in step exchange (slide, blank, laser), and how a server address is read |
+| `ink` | what the laser draws: strokes per slide, kept for the run, cleared one slide at a time |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

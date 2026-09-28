@@ -55,6 +55,8 @@ public:
     // The "autoplay narration" checkbox, when the deck has any narration to play. The
     // window only draws the state (app.autoplayVoice) and reports the click.
     void setOnToggleAutoplay(std::function<void()> toggle);
+    // The "play narration" box beside it: app.playVoice, and the click.
+    void setOnTogglePlayVoice(std::function<void()> toggle);
 
     // The "transcribe slide N" button, shown when the slide has a recording. `busy` says a
     // transcription is already running, so the button reads as such and does nothing.

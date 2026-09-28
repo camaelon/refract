@@ -50,4 +50,8 @@ bool Pointer::head(Sample* out) const {
     return true;
 }
 
+bool Pointer::shown(double now) const {
+    return mLaser && mInside && !mSamples.empty() && !idle(now, kPointerHideAfterSec);
+}
+
 }  // namespace refract

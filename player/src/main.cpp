@@ -34,6 +34,7 @@
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Options.h"
+#include "Ink.h"
 #include "Pointer.h"
 #include "Presenter.h"
 #include "Session.h"
@@ -119,7 +120,8 @@ bool applyingRemoteSlide = false;
 // second colour so the room can tell whose is whose.
 refract::Pointer remotePointer;
 constexpr unsigned kRemoteLaserColor = 0xFFFF9F0A;
-constexpr double kHideCursorAfterSec = 3.0;
+// What the laser has drawn, per slide, for the run.
+refract::Ink ink;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
 
@@ -181,6 +183,8 @@ void toggleAssetWindow();
 bool editorHoldsDeck();
 void goToSlide(int index);
 double voicelessDwell();
+void setPlayVoice(bool on);
+void say(const std::string& notice, double forSec = 4.0);
 
 // ── Caption processing ───────────────────────────────────────────────
 // Transcription and forced alignment are Python's — whisper and whisperx live there — so
@@ -242,6 +246,8 @@ void goToSlide(int index) {
     }
     // A take belongs to the slide it was started on; leaving keeps what was said.
     stopSlideRecording(/*keep=*/true);
+    // So does a stroke: what is drawn from here on belongs to the next slide.
+    ink.end();
 
     int target = app.deck.clamp(index);
     if (target == g.currentIndex && g.doc) return;
@@ -266,6 +272,26 @@ void goToSlide(int index) {
     if (presenter && g.currentIndex + 1 < app.deck.size()) {
         refract::requestThumb(app.deck.at(g.currentIndex + 1).entry, 640, 360);
     }
+}
+
+// Narration on or off, from the key or the presenter's box. Off stops what is playing now;
+// on starts this slide's from its beginning, the way a slide change would.
+void setPlayVoice(bool on) {
+    if (app.playVoice == on) return;
+    app.playVoice = on;
+    if (voice) {
+        if (on) playSlideAudio();
+        else { voice->stop(); voicePlaying = false; voiceHeld = false; }
+    }
+    say(on ? "narration on" : "narration off");
+    saveSessionIfChanged();
+}
+
+// A line at the foot of the window for a few seconds.
+void say(const std::string& notice, double forSec) {
+    app.notice = notice;
+    app.noticeUntil = glfwGetTime() + forSec;
+    g.needsRedraw = true;
 }
 
 // Everything that has to happen when a slide comes up in a recorded run: the trace gets the
@@ -424,8 +450,9 @@ void playSlideAudio(double startAt) {
     overlapNextVoice = false;
 
     // Narration follows the play/pause button: while the talk is paused a slide's wav
-    // waits, and starts from its beginning when the clock does.
-    const fs::path wav = voiceFileFor(g.currentIndex);
+    // waits, and starts from its beginning when the clock does. With narration off there
+    // is no wav to speak of: the slide is silent, and the recording stays where it is.
+    const fs::path wav = app.playVoice ? voiceFileFor(g.currentIndex) : fs::path();
     voiceHeld = false;
     if (!wav.empty() && app.clock.running) voicePlaying = voice->play(wav.string(), overlap, startAt);
     else if (!wav.empty()) { voice->stop(); voiceHeld = true; }
@@ -530,6 +557,7 @@ void openPresenter() {
         app.autoplayVoice = !app.autoplayVoice;
         saveSessionIfChanged();
     });
+    presenter->setOnTogglePlayVoice([] { setPlayVoice(!app.playVoice); });
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
     presenter->setOnStopRun(stopRun);
@@ -951,6 +979,7 @@ void captureSession() {
     session.captions = captionWindow != nullptr;
     session.assets = assetWindow != nullptr;
     session.autoplayVoice = app.autoplayVoice;
+    session.playVoice = app.playVoice;
     if (presenter) session.presenterCaptions = presenter->tab() == refract::PresenterWindow::Tab::Captions;
 
     if (assetWindow) session.capture("assets", assetWindow->window());
@@ -1304,9 +1333,19 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
             g.debug = (g.debug + 1) % 3;
             break;
         case GLFW_KEY_L:
+            if (mods & GLFW_MOD_SHIFT) {
+                // The drawings on this slide, gone. Only this slide's: the others keep
+                // theirs, and a stray shift+L should cost one slide's marks, not a talk's.
+                if (ink.any(g.currentIndex)) { ink.clear(g.currentIndex); say("drawings cleared"); }
+                g.needsRedraw = true;
+                break;
+            }
             pointer.setLaser(!pointer.laser());
-            if (!pointer.laser()) slideSync.announceLaserOff();
+            if (!pointer.laser()) { ink.end(); slideSync.announceLaserOff(); }
             g.needsRedraw = true;
+            break;
+        case GLFW_KEY_N:
+            setPlayVoice(!app.playVoice);
             break;
         case GLFW_KEY_S:
             if (saveScreenshot("/tmp/refractplayer.png"))
@@ -1685,6 +1724,7 @@ int main(int argc, char* argv[]) {
     if (session.load(input)) {
         sessionOnDisk = session.serialise();
         app.autoplayVoice = session.autoplayVoice;
+        app.playVoice = session.playVoice;
     }
 
     if (!glfwInit()) {
@@ -1742,6 +1782,8 @@ int main(int argc, char* argv[]) {
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
     glfwSetKeyCallback(window, playerKeyCallback);
+    // A click shorter than a frame still counts: the laser's drawing polls the button.
+    glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
     // The only text this window takes: a name typed at the navigator.
     glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {
         if (app.navOpen && app.navFiltering && codepoint >= 0x20 && codepoint != '/') {
@@ -1833,6 +1875,11 @@ int main(int argc, char* argv[]) {
         if (narrated) std::cerr << "refractplayer: " << narrated << " slides have narration in "
                                 << voiceDir().string() << "\n";
         else if (!voiceDir().empty()) std::cerr << "refractplayer: narration goes to " << voiceDir().string() << "\n";
+        // A deck with narration says at the start whether it will be heard: the one time
+        // it matters is the talk where you meant to do the speaking yourself.
+        if (narrated && voice) {
+            say(app.playVoice ? "narration on \u00b7 N turns it off" : "narration off \u00b7 N turns it on", 6.0);
+        }
     }
     loadCurrentFile();
     app.slideEnteredAt = 0.0;
@@ -1928,11 +1975,36 @@ int main(int argc, char* argv[]) {
         // until it is gone.
         {
             const double t = glfwGetTime();
+            app.wall = t;
+            // A notice redraws while it is up, and once more to take it down.
+            if (!app.notice.empty()) {
+                if (t >= app.noticeUntil) app.notice.clear();
+                g.needsRedraw = true;
+            }
             double cx = 0.0, cy = 0.0;
             glfwGetCursorPos(window, &cx, &cy);
             const bool hovered = glfwGetWindowAttrib(window, GLFW_HOVERED) != 0;
+            int ww = 0, wh = 0;
+            glfwGetWindowSize(window, &ww, &wh);
             static double lastCx = -1e9, lastCy = -1e9;
-            if (hovered && (cx != lastCx || cy != lastCy)) {
+            const bool moved = hovered && (cx != lastCx || cy != lastCy);
+            // The laser draws while the button is held: a stroke starts where it went down,
+            // follows the dot, and ends where it came up (or when the laser goes off).
+            if (pointer.laser() && ww > 0 && wh > 0) {
+                const bool down = hovered && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                if (down && !ink.drawing()) {
+                    ink.begin(g.currentIndex, static_cast<float>(cx / ww), static_cast<float>(cy / wh));
+                    g.needsRedraw = true;
+                } else if (down && moved) {
+                    ink.extend(static_cast<float>(cx / ww), static_cast<float>(cy / wh));
+                    g.needsRedraw = true;
+                } else if (!down && ink.drawing()) {
+                    ink.end();
+                }
+            } else if (ink.drawing()) {
+                ink.end();
+            }
+            if (moved) {
                 pointer.moved(cx, cy, t);
                 if (pointer.laser()) {
                     g.needsRedraw = true;
@@ -1941,8 +2013,6 @@ int main(int argc, char* argv[]) {
                     static double lastSent = 0.0;
                     if (t - lastSent >= 1.0 / 30.0) {
                         lastSent = t;
-                        int ww = 0, wh = 0;
-                        glfwGetWindowSize(window, &ww, &wh);
                         if (ww > 0 && wh > 0) slideSync.announceLaser(static_cast<float>(cx / ww), static_cast<float>(cy / wh));
                     }
                 }
@@ -1953,7 +2023,7 @@ int main(int argc, char* argv[]) {
                 if (hovered) pointer.entered(); else pointer.left();
                 if (pointer.laser()) g.needsRedraw = true;
             }
-            const bool hide = hovered && (pointer.laser() || pointer.idle(t, kHideCursorAfterSec));
+            const bool hide = hovered && (pointer.laser() || pointer.idle(t, refract::kPointerHideAfterSec));
             static bool hidden = false;
             if (hide != hidden) {
                 glfwSetInputMode(window, GLFW_CURSOR, hide ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
@@ -1961,6 +2031,13 @@ int main(int argc, char* argv[]) {
                 hidden = hide;
             }
             if (pointer.laser() && !pointer.trail(t, 0.5).empty()) g.needsRedraw = true;
+            // The dot goes when the mouse has rested, and comes back on a move: one redraw
+            // at each edge, since nothing else changes on a resting slide.
+            static bool laserShown = false, remoteShown = false;
+            const bool showNow = pointer.shown(t), remoteNow = remotePointer.shown(t);
+            if (showNow != laserShown || remoteNow != remoteShown) g.needsRedraw = true;
+            laserShown = showNow;
+            remoteShown = remoteNow;
         }
         double dt = elapsed - lastFrame;
         lastFrame = elapsed;
@@ -2039,8 +2116,10 @@ int main(int argc, char* argv[]) {
             glfwGetWindowSize(window, &winW, &winH);
             ensureSurface(winW, winH);
             renderFrame(dt);
-            if (pointer.laser() || remotePointer.laser()) {
+            // What the laser drew on this slide, then the dots on top of it.
+            if (pointer.laser() || remotePointer.laser() || ink.any(g.currentIndex)) {
                 if (SkCanvas* canvas = g.backend->canvas()) {
+                    if (ink.any(g.currentIndex)) refract::drawInk(canvas, ink.strokes(g.currentIndex), winW, winH);
                     if (remotePointer.laser()) refract::drawLaser(canvas, remotePointer, glfwGetTime(), kRemoteLaserColor);
                     if (pointer.laser()) refract::drawLaser(canvas, pointer, glfwGetTime());
                 }

@@ -32,6 +32,7 @@ struct Session {
 
     bool editorAutoSave = false;
     bool autoplayVoice = false;      // the presenter's "autoplay narration" box
+    bool playVoice = true;           // its "play narration" box: off silences the deck
     bool presenterCaptions = false;  // the presenter's pane was on its captions tab
     bool buildWatch = false;
     // The build panel's options. Left out of `build_args` territory deliberately: these are

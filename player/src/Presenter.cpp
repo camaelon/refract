@@ -51,6 +51,8 @@ struct PresenterWindow::Impl {
     int deleteSlide = -1;                       // the slide the delete button was drawn for
     std::function<void()> onToggleAutoplay;
     SkRect autoplayBox = SkRect::MakeEmpty();
+    std::function<void()> onTogglePlayVoice;
+    SkRect playVoiceBox = SkRect::MakeEmpty();
     std::function<void()> onTranscribeSlide;
     SkRect transcribeButton = SkRect::MakeEmpty();
     bool transcribing = false;
@@ -162,6 +164,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
             if (impl.onDeleteRecording) impl.onDeleteRecording(slide);
         }
         else if (impl.over(impl.autoplayBox) && impl.onToggleAutoplay) impl.onToggleAutoplay();
+        else if (impl.over(impl.playVoiceBox) && impl.onTogglePlayVoice) impl.onTogglePlayVoice();
         else if (impl.over(impl.transcribeButton) && impl.onTranscribeSlide && !impl.transcribing) impl.onTranscribeSlide();
     });
 
@@ -200,6 +203,10 @@ void PresenterWindow::setDeleteGoesToTrash(bool trash) { mImpl->deleteGoesToTras
 
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
     mImpl->onToggleAutoplay = std::move(toggle);
+}
+
+void PresenterWindow::setOnTogglePlayVoice(std::function<void()> toggle) {
+    mImpl->onTogglePlayVoice = std::move(toggle);
 }
 
 void PresenterWindow::setOnTranscribeSlide(std::function<void()> transcribe) {
@@ -801,6 +808,7 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
     recordButton = SkRect::MakeEmpty();
     discardButton = SkRect::MakeEmpty();
     autoplayBox = SkRect::MakeEmpty();
+    playVoiceBox = SkRect::MakeEmpty();
     stopButton = SkRect::MakeEmpty();
     // ── Stop the run ─────────────────────────────────────────────────
     // While a whole run is being recorded, the row holds one thing: the way to end it. Until
@@ -820,36 +828,44 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
         drawText(canvas, text, stopButton.left() + 30, stopButton.centerY() + 4, label,
                  hot ? ui::kText : ui::kOver);
     }
-    // ── Autoplay narration ───────────────────────────────────────────
-    // On the same row, at the right: a slide that has a wav advances when it ends, so a
-    // recorded talk plays itself; a slide without one waits for you as usual.
-    if (onToggleAutoplay && showRecord && !app.deck.empty()) {
+    // ── Narration boxes ──────────────────────────────────────────────
+    // On the same row, at the right. "play narration": whether a slide's recording plays
+    // at all — off, the deck is silent, for a run where you are doing the talking. "autoplay
+    // narration": a slide that has a wav advances when it ends, so a recorded talk plays
+    // itself; a slide without one waits for you as usual.
+    if (showRecord && !app.deck.empty()) {
         SkFont label = uiFont(12, true);
-        const std::string text = "autoplay narration";
-        const float tw = textWidth(label, text);
         const float box = 16.0f;
         const float by = notesBottom + 6;
-        const float right = w - pad;
-        autoplayBox = SkRect::MakeXYWH(right - tw - 10 - box, by + 5, box + 10 + tw, box);
-        const bool hot = over(autoplayBox);
-        const SkColor tone = app.autoplayVoice ? ui::kText : (hot ? ui::kText : ui::kDim);
-        SkRect square = SkRect::MakeXYWH(autoplayBox.left(), by + 5, box, box);
-        fillRoundRect(canvas, square, 3, ui::kPanel);
-        strokeRoundRect(canvas, square, 3, app.autoplayVoice ? ui::kText : (hot ? ui::kDim : ui::kLine), 1.0f);
-        if (app.autoplayVoice) {
-            // A tick, drawn: the chrome has one typeface and a check glyph is not in it.
-            SkPaint tick;
-            tick.setAntiAlias(true);
-            tick.setStyle(SkPaint::kStroke_Style);
-            tick.setStrokeWidth(2.0f);
-            tick.setColor(ui::kText);
-            SkPathBuilder path;
-            path.moveTo(square.left() + 3.5f, square.centerY() + 0.5f);
-            path.lineTo(square.left() + 6.5f, square.bottom() - 4.0f);
-            path.lineTo(square.right() - 3.5f, square.top() + 4.0f);
-            canvas->drawPath(path.detach(), tick);
-        }
-        drawText(canvas, text, square.right() + 10, square.centerY() + 4, label, tone);
+        float right = w - pad;
+        // One box, ticked or not, with its label, laid right to left; the rect takes the click.
+        auto checkbox = [&](const std::string& text, bool on) {
+            const float tw = textWidth(label, text);
+            SkRect hit = SkRect::MakeXYWH(right - tw - 10 - box, by + 5, box + 10 + tw, box);
+            const bool hot = over(hit);
+            const SkColor tone = on ? ui::kText : (hot ? ui::kText : ui::kDim);
+            SkRect square = SkRect::MakeXYWH(hit.left(), by + 5, box, box);
+            fillRoundRect(canvas, square, 3, ui::kPanel);
+            strokeRoundRect(canvas, square, 3, on ? ui::kText : (hot ? ui::kDim : ui::kLine), 1.0f);
+            if (on) {
+                // A tick, drawn: the chrome has one typeface and a check glyph is not in it.
+                SkPaint tick;
+                tick.setAntiAlias(true);
+                tick.setStyle(SkPaint::kStroke_Style);
+                tick.setStrokeWidth(2.0f);
+                tick.setColor(ui::kText);
+                SkPathBuilder path;
+                path.moveTo(square.left() + 3.5f, square.centerY() + 0.5f);
+                path.lineTo(square.left() + 6.5f, square.bottom() - 4.0f);
+                path.lineTo(square.right() - 3.5f, square.top() + 4.0f);
+                canvas->drawPath(path.detach(), tick);
+            }
+            drawText(canvas, text, square.right() + 10, square.centerY() + 4, label, tone);
+            right = hit.left() - 18;
+            return hit;
+        };
+        if (onToggleAutoplay) autoplayBox = checkbox("autoplay narration", app.autoplayVoice);
+        if (onTogglePlayVoice) playVoiceBox = checkbox("play narration", app.playVoice);
     }
     deleteButton = SkRect::MakeEmpty();
     confirmDelete = SkRect::MakeEmpty();

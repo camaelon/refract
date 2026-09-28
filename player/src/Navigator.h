@@ -5,6 +5,7 @@
 #pragma once
 
 #include "App.h"
+#include "Ink.h"
 
 #include "include/core/SkCanvas.h"
 
@@ -33,5 +34,13 @@ void navMoveSection(App& app, int direction);
 // is being pointed.
 class Pointer;
 void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now, unsigned color = 0xFFFF3B30);
+
+// The strokes drawn on this slide with the laser, over the slide itself.
+void drawInk(SkCanvas* canvas, const std::vector<InkStroke>& strokes, int width, int height,
+             unsigned color = 0xFFFF3B30);
+
+// A line of status at the foot of the window ("narration off", "drawings cleared") for a
+// few seconds: app.notice, until app.noticeUntil on app.wall's clock.
+void drawNotice(SkCanvas* canvas, const App& app, int width, int height);
 
 }  // namespace refract

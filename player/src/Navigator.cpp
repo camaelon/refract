@@ -1,5 +1,7 @@
 #include "Navigator.h"
 
+#include "include/core/SkPathBuilder.h"
+
 #include "Pointer.h"
 
 #include "ViewGeometry.h"
@@ -244,7 +246,9 @@ const HelpRow kHelp[] = {
     {"R", "reload the slide"},
     {"D", "debug overlay"},
     {"S", "screenshot to /tmp"},
-    {"L", "laser pointer"},
+    {"L", "laser pointer — hold the mouse to draw"},
+    {"Shift L", "clear this slide's drawings"},
+    {"N", "narration on / off"},
     {"H  ?", "this card"},
     {"Q", "quit"},
 };
@@ -277,6 +281,21 @@ void drawOverlays(SkCanvas* canvas, App& app, int width, int height) {
     drawNavigator(canvas, app, width, height);
     drawHelp(canvas, app, width, height);
     drawJumpChip(canvas, app, width, height);
+    drawNotice(canvas, app, width, height);
+}
+
+void drawNotice(SkCanvas* canvas, const App& app, int width, int height) {
+    if (app.notice.empty() || app.wall >= app.noticeUntil) return;
+    SkFont font = uiFont(15, true);
+    const float w = textWidth(font, app.notice) + 32;
+    SkRect chip = SkRect::MakeXYWH(width * 0.5f - w * 0.5f, height - 56, w, 34);
+    // The last half second fades, so it leaves rather than vanishes.
+    const double left = app.noticeUntil - app.wall;
+    const unsigned alpha = static_cast<unsigned>(255 * std::min(1.0, left / 0.5));
+    fillRoundRect(canvas, chip, 8, withAlpha(0xFF181B21, alpha * 0xF0 / 255));
+    strokeRoundRect(canvas, chip, 8, withAlpha(ui::kLine, alpha));
+    drawText(canvas, app.notice, chip.left() + 16, chip.centerY() + font.getSize() * 0.36f, font,
+             withAlpha(ui::kText, alpha));
 }
 
 // ── Laser pointer ────────────────────────────────────────────────────
@@ -295,7 +314,7 @@ void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now, unsigned co
         canvas->drawCircle(static_cast<float>(s.x), static_cast<float>(s.y), kRadius * (0.35f + 0.65f * (1.0f - age)), paint);
     }
     Pointer::Sample head;
-    if (!pointer.head(&head)) return;
+    if (!pointer.shown(now) || !pointer.head(&head)) return;
     const float x = static_cast<float>(head.x), y = static_cast<float>(head.y);
     // A glow under the dot so it stands out on a red slide as much as on a white one.
     paint.setColor(withAlpha(red, 70));
@@ -304,6 +323,34 @@ void drawLaser(SkCanvas* canvas, const Pointer& pointer, double now, unsigned co
     canvas->drawCircle(x, y, kRadius, paint);
     paint.setColor(0xFFFFE0DC);
     canvas->drawCircle(x - kRadius * 0.25f, y - kRadius * 0.25f, kRadius * 0.3f, paint);
+}
+
+// ── Ink ──────────────────────────────────────────────────────────────
+
+void drawInk(SkCanvas* canvas, const std::vector<InkStroke>& strokes, int width, int height,
+             unsigned color) {
+    if (strokes.empty()) return;
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeCap(SkPaint::kRound_Cap);
+    paint.setStrokeJoin(SkPaint::kRound_Join);
+    // A line about half the laser's dot at the size the deck was drawn at, and the same
+    // fraction of the slide on a bigger or smaller one.
+    paint.setStrokeWidth(std::max(2.5f, width * 0.0045f));
+    paint.setColor(withAlpha(color, 230));
+    for (const InkStroke& stroke : strokes) {
+        if (stroke.points.empty()) continue;
+        SkPathBuilder path;
+        path.moveTo(stroke.points[0].x * width, stroke.points[0].y * height);
+        for (size_t i = 1; i < stroke.points.size(); i++) {
+            path.lineTo(stroke.points[i].x * width, stroke.points[i].y * height);
+        }
+        if (stroke.points.size() == 1) {     // a click: a dot, since a zero-length line is nothing
+            path.lineTo(stroke.points[0].x * width + 0.1f, stroke.points[0].y * height);
+        }
+        canvas->drawPath(path.detach(), paint);
+    }
 }
 
 }  // namespace refract

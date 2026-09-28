@@ -76,6 +76,18 @@ struct App {
 
     bool showHelp = false;
 
+    // Narration: whether a slide's recording is played when the slide comes up. Off, the
+    // deck is silent and the recordings stay where they are. N toggles it; the presenter
+    // shows it as a box.
+    bool playVoice = true;
+
+    // A line at the foot of the window for a few seconds ("narration off"), and until when
+    // on the wall clock — `wall` is the frame's glfwGetTime(), kept here so the overlays
+    // can read it without knowing about GLFW.
+    std::string notice;
+    double noticeUntil = 0.0;
+    double wall = 0.0;
+
     // Which slides have narration recorded for them, one entry per slide. Refreshed when the
     // deck is loaded rather than probed while drawing: the answer needs the voice index and a
     // look at the disk, and the deck view asks it of every card on screen.

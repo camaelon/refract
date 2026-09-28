@@ -44,6 +44,10 @@ static void testLaserTrail() {
     CHECK(p.trail(1.5, 0.5).empty() && !p.head(&head), "nothing drawn once the mouse is out of the window");
     p.entered();
     CHECK(p.head(&head), "and back when it returns");
+    CHECK(p.shown(1.5), "the dot shows while the mouse is fresh");
+    CHECK(!p.shown(1.4 + refract::kPointerHideAfterSec), "and goes when it has rested as long as the arrow would");
+    p.moved(32, 10, 9.0);
+    CHECK(p.shown(9.1), "back on the first move");
     p.setLaser(false);
     CHECK(!p.head(&head), "off is off");
     CHECK(p.idle(1.6, 3.0), "and the arrow stays hidden: turning the laser off is not a move");

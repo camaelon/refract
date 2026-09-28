@@ -95,6 +95,7 @@ set(REFRACTPLAYER_SOURCES
     src/Transcriber.cpp
     src/Progress.cpp
     src/Pointer.cpp
+    src/Ink.cpp
     src/SlideSelection.cpp
     src/Sync.cpp
     src/Tasks.cpp

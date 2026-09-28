@@ -5,6 +5,10 @@
 // mode: a large red dot in place of the arrow, with a trail that fades behind it, so a
 // hand waving at the wall can be followed from the back of the room.
 //
+// The laser rests like the arrow does: a dot left sitting on the slide is as much of a
+// distraction, so after the same few seconds without moving it goes, and the first move
+// brings it back. Holding the mouse button while the laser is on draws (see Ink.h).
+//
 // This is the model — where the mouse has been, and when. The drawing is in Navigator.cpp
 // with the other overlays.
 #pragma once
@@ -13,6 +17,9 @@
 #include <vector>
 
 namespace refract {
+
+// How long the mouse may rest before the arrow — or the laser's dot — is hidden.
+constexpr double kPointerHideAfterSec = 3.0;
 
 class Pointer {
 public:
@@ -41,6 +48,9 @@ public:
 
     // The newest sample, for the dot itself.
     bool head(Sample* out) const;
+    // Whether the dot is on screen at `now`: the laser is on, the mouse is in the window,
+    // and it has moved within the last kPointerHideAfterSec.
+    bool shown(double now) const;
 
 private:
     std::deque<Sample> mSamples;
