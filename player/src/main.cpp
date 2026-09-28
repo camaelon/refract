@@ -38,6 +38,7 @@
 #include "Pointer.h"
 #include "Presenter.h"
 #include "Session.h"
+#include "SlideNotes.h"
 #include "SlideSelection.h"
 #include "Sync.h"
 #include "DeckLibrary.h"
@@ -169,6 +170,7 @@ void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 void captureSession();
 void transcribe(bool onlyThisSlide);
+void transcriptToNotes();
 void saveSessionIfChanged();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
@@ -608,6 +610,7 @@ void openPresenter() {
         saveSessionIfChanged();
     });
     presenter->setOnTogglePlayVoice([] { setPlayVoice(!app.playVoice); });
+    presenter->setOnTranscriptToNotes(transcriptToNotes);
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
     presenter->setOnStopRun(stopRun);
@@ -820,6 +823,50 @@ void transcribe(bool onlyThisSlide) {
         std::cerr << "refractplayer: transcribing " << what << " ...\n";
         openProcessing();
     }
+}
+
+// The slide's transcript, written into its presenter notes — into the deck's own markdown,
+// so it is still there after a rebuild and can be edited like anything else somebody wrote.
+// The write goes through the same path the slide editor's save does: recorded in the deck's
+// history, so replacing notes somebody wrote is undoable from the deck view.
+bool notesWriteRunning = false;
+
+void transcriptToNotes() {
+    if (app.deck.empty()) return;
+    const std::string transcript = captions.text();
+    if (transcript.empty()) {
+        say("this slide has no transcript");
+        return;
+    }
+    if (!source.available()) {
+        say("this deck has no markdown to write to");
+        return;
+    }
+    if (source.running() || notesWriteRunning) {
+        say("the deck is already being written to");
+        return;
+    }
+    const int slide = g.currentIndex;
+    std::string text, file, error;
+    int shared = 0;
+    if (!source.readSlide(slide, &text, &file, &shared, &error)) {
+        say("cannot read the slide: " + error);
+        return;
+    }
+    const std::string notes = refract::transcriptAsNotes(transcript);
+    if (refract::notesOf(text) == notes) {
+        say("these notes are already the transcript");
+        return;
+    }
+    if (!source.writeSlide(slide, refract::withNotes(text, notes), &error)) {
+        say("cannot write the slide: " + error);
+        return;
+    }
+    notesWriteRunning = true;
+    // A block that makes several slides gives them all the same notes: worth saying, since
+    // nothing on screen shows that this slide's markdown is shared.
+    say(shared > 1 ? "writing the transcript into the notes of " + std::to_string(shared) + " slides\u2026"
+                   : "writing the transcript into the notes\u2026", 8.0);
 }
 
 void collectTranscription() {
@@ -1777,6 +1824,12 @@ int main(int argc, char* argv[]) {
         });
         source.setOnSaveFinished([](bool ok, const std::string& done) {
             if (slideEditor) slideEditor->saveFinished(ok, done);
+            if (notesWriteRunning) {
+                notesWriteRunning = false;
+                say(ok ? "the transcript is in the notes \u00b7 undo in the deck view"
+                       : "could not write the notes: " + done, 6.0);
+                if (ok && presenter) presenter->showTab(refract::PresenterWindow::Tab::Notes);
+            }
         });
     }
 

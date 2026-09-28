@@ -123,6 +123,16 @@ say where it has got to — "3 of 23 · aligning 07" — with a bar that fills a
 (and sweeps while the models load, before there is a count), read from the progress lines
 `captions.py` prints.
 
+**Copy to notes**, on the captions tab beside the transcribe button, writes the slide's
+transcript into its presenter notes — into the deck's own markdown, as a `???` block, one
+sentence to a line, so it survives a rebuild and can be edited afterwards like anything else
+somebody wrote. It is how a rehearsal becomes notes: talk the slide through, transcribe it,
+copy it, then cut it down. The button says **replace the notes** when the slide already has
+some, because it overwrites them; the write is recorded in the deck's history like every
+other edit, so the deck view's undo brings the old notes back. The pane switches to the notes
+tab when the write lands. A slide whose markdown block makes several slides gives them all
+the same notes, and the line at the foot of the window says so before it does.
+
 **Delete recording**, beside those two, moves the slide's wav together with its transcript
 and word timings to the Trash (removes them, on other platforms). It asks first, in the row
 itself: **keep** takes the place the button had, so a repeated click there keeps; the
@@ -1442,7 +1452,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Twenty-one C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
+Twenty-three C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1476,6 +1486,7 @@ ctest --test-dir player/build --output-on-failure
 | `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
 | `sync` | the lines two players in step exchange (slide, blank, laser), and how a server address is read |
 | `ink` | what the laser draws: strokes per slide, kept for the run, cleared one slide at a time |
+| `slide_notes` | the `???` block inside a slide's markdown: reading it, replacing it, and a transcript laid out as notes |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

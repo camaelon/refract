@@ -61,6 +61,9 @@ public:
     // The "transcribe slide N" button, shown when the slide has a recording. `busy` says a
     // transcription is already running, so the button reads as such and does nothing.
     void setOnTranscribeSlide(std::function<void()> transcribe);
+    // "copy to notes" beside it, on the captions tab: the slide's transcript written into
+    // its presenter notes. Shown only where there is a transcript to copy.
+    void setOnTranscriptToNotes(std::function<void()> copy);
     // `status` says where it has got to ("3 of 23 · aligning 07") and `fraction` how far,
     // 0..1, or negative when unknown; both are shown while `busy`.
     void setTranscribing(bool busy, const std::string& status = std::string(), float fraction = -1.0f);

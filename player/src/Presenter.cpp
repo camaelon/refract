@@ -55,6 +55,8 @@ struct PresenterWindow::Impl {
     SkRect playVoiceBox = SkRect::MakeEmpty();
     std::function<void()> onTranscribeSlide;
     SkRect transcribeButton = SkRect::MakeEmpty();
+    std::function<void()> onTranscriptToNotes;
+    SkRect toNotesButton = SkRect::MakeEmpty();
     bool transcribing = false;
     std::string transcribeStatus;
     std::string syncStatus;
@@ -166,6 +168,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         else if (impl.over(impl.autoplayBox) && impl.onToggleAutoplay) impl.onToggleAutoplay();
         else if (impl.over(impl.playVoiceBox) && impl.onTogglePlayVoice) impl.onTogglePlayVoice();
         else if (impl.over(impl.transcribeButton) && impl.onTranscribeSlide && !impl.transcribing) impl.onTranscribeSlide();
+        else if (impl.over(impl.toNotesButton) && impl.onTranscriptToNotes) impl.onTranscriptToNotes();
     });
 
     glfwMakeContextCurrent(window);
@@ -200,6 +203,10 @@ void PresenterWindow::setOnDeleteRecording(std::function<void(int)> remove) {
 }
 
 void PresenterWindow::setDeleteGoesToTrash(bool trash) { mImpl->deleteGoesToTrash = trash; }
+
+void PresenterWindow::setOnTranscriptToNotes(std::function<void()> copy) {
+    mImpl->onTranscriptToNotes = std::move(copy);
+}
 
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
     mImpl->onToggleAutoplay = std::move(toggle);
@@ -809,6 +816,7 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
     discardButton = SkRect::MakeEmpty();
     autoplayBox = SkRect::MakeEmpty();
     playVoiceBox = SkRect::MakeEmpty();
+    toNotesButton = SkRect::MakeEmpty();
     stopButton = SkRect::MakeEmpty();
     // ── Stop the run ─────────────────────────────────────────────────
     // While a whole run is being recorded, the row holds one thing: the way to end it. Until
@@ -939,11 +947,27 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
         } else {
             transcribeButton = SkRect::MakeEmpty();
         }
+        // The transcript into the slide's notes: offered where the transcript is — on the
+        // captions tab, beside the words it would copy — and labelled with what it will do,
+        // since a slide that already has notes loses them (the deck view can undo it).
+        if (!app.reRecording && onTranscriptToNotes && !transcribing && tab == Tab::Captions
+            && captions && !captions->text().empty()) {
+            const bool had = !app.deck.notesFor(app.current()).empty();
+            const std::string ntext = had ? "replace the notes" : "copy to notes";
+            const float nw = textWidth(label, ntext) + 24;
+            const SkRect& before = transcribeButton.isEmpty() ? recordButton : transcribeButton;
+            toNotesButton = SkRect::MakeXYWH(before.right() + 8, by, nw, 26);
+            const bool nhot = over(toNotesButton);
+            pillButton(canvas, toNotesButton, ntext, label, ui::kPanel, nhot ? ui::kDim : ui::kLine,
+                       nhot ? ui::kText : ui::kDim);
+        } else {
+            toNotesButton = SkRect::MakeEmpty();
+        }
         if (!app.reRecording && onDeleteRecording && showWave && !transcribing) {
             const std::string dtext = "delete recording";
             const float dw = textWidth(label, dtext) + 24;
-            const SkRect& before = transcribeButton.isEmpty() ? recordButton
-                                                                     : transcribeButton;
+            const SkRect& before = !toNotesButton.isEmpty() ? toNotesButton
+                                 : transcribeButton.isEmpty() ? recordButton : transcribeButton;
             deleteButton = SkRect::MakeXYWH(before.right() + 8, by, dw, 26);
             const bool dhot = over(deleteButton);
             pillButton(canvas, deleteButton, dtext, label, ui::kPanel, dhot ? ui::kOver : ui::kLine,
