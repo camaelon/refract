@@ -53,6 +53,18 @@ std::string notesOf(const std::string& markdown) {
     return trimmed(out);
 }
 
+std::string appendNotes(const std::string& existing, const std::string& addition) {
+    const std::string a = trimmed(existing), b = trimmed(addition);
+    if (a.empty()) return b;
+    if (b.empty()) return a;
+    return a + "\n\n" + b;
+}
+
+bool notesContain(const std::string& notes, const std::string& addition) {
+    const std::string a = trimmed(addition);
+    return !a.empty() && trimmed(notes).find(a) != std::string::npos;
+}
+
 std::string withNotes(const std::string& markdown, const std::string& notes) {
     const std::vector<std::string> ls = lines(markdown);
     const int start = notesStart(ls, nullptr);

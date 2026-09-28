@@ -825,10 +825,11 @@ void transcribe(bool onlyThisSlide) {
     }
 }
 
-// The slide's transcript, written into its presenter notes — into the deck's own markdown,
-// so it is still there after a rebuild and can be edited like anything else somebody wrote.
-// The write goes through the same path the slide editor's save does: recorded in the deck's
-// history, so replacing notes somebody wrote is undoable from the deck view.
+// The slide's transcript, added to its presenter notes — in the deck's own markdown, so it
+// is still there after a rebuild and can be edited like anything else somebody wrote. It is
+// added after whatever the notes already say rather than put in their place: the notes are
+// what somebody meant to say, and the transcript is a second opinion on it. The write goes
+// through the same path the slide editor's save does, so it is in the deck's history.
 bool notesWriteRunning = false;
 
 void transcriptToNotes() {
@@ -853,12 +854,13 @@ void transcriptToNotes() {
         say("cannot read the slide: " + error);
         return;
     }
-    const std::string notes = refract::transcriptAsNotes(transcript);
-    if (refract::notesOf(text) == notes) {
-        say("these notes are already the transcript");
+    const std::string addition = refract::transcriptAsNotes(transcript);
+    const std::string existing = refract::notesOf(text);
+    if (refract::notesContain(existing, addition)) {
+        say("these notes already have this transcript");
         return;
     }
-    if (!source.writeSlide(slide, refract::withNotes(text, notes), &error)) {
+    if (!source.writeSlide(slide, refract::withNotes(text, refract::appendNotes(existing, addition)), &error)) {
         say("cannot write the slide: " + error);
         return;
     }

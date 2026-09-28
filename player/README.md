@@ -123,15 +123,17 @@ say where it has got to — "3 of 23 · aligning 07" — with a bar that fills a
 (and sweeps while the models load, before there is a count), read from the progress lines
 `captions.py` prints.
 
-**Copy to notes**, on the captions tab beside the transcribe button, writes the slide's
-transcript into its presenter notes — into the deck's own markdown, as a `???` block, one
+**Copy to notes**, on the captions tab beside the transcribe button, adds the slide's
+transcript to its presenter notes — in the deck's own markdown, as a `???` block, one
 sentence to a line, so it survives a rebuild and can be edited afterwards like anything else
 somebody wrote. It is how a rehearsal becomes notes: talk the slide through, transcribe it,
-copy it, then cut it down. The button says **replace the notes** when the slide already has
-some, because it overwrites them; the write is recorded in the deck's history like every
-other edit, so the deck view's undo brings the old notes back. The pane switches to the notes
-tab when the write lands. A slide whose markdown block makes several slides gives them all
-the same notes, and the line at the foot of the window says so before it does.
+copy it, then cut it down. Notes already there are kept and the transcript goes after them,
+a blank line between: the notes are what you meant to say and the transcript is what you
+said, and neither replaces the other. Copying the same transcript twice does nothing, and
+says so. The write is recorded in the deck's history like every other edit, so the deck
+view's undo takes it back, and the pane switches to the notes tab when it lands. A slide
+whose markdown block makes several slides gives them all the same notes, and the line at the
+foot of the window says so before it does.
 
 **Delete recording**, beside those two, moves the slide's wav together with its transcript
 and word timings to the Trash (removes them, on other platforms). It asks first, in the row

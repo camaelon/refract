@@ -948,12 +948,11 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
             transcribeButton = SkRect::MakeEmpty();
         }
         // The transcript into the slide's notes: offered where the transcript is — on the
-        // captions tab, beside the words it would copy — and labelled with what it will do,
-        // since a slide that already has notes loses them (the deck view can undo it).
+        // captions tab, beside the words it would copy. It adds to the notes rather than
+        // replacing them, so there is nothing to warn about and one label does.
         if (!app.reRecording && onTranscriptToNotes && !transcribing && tab == Tab::Captions
             && captions && !captions->text().empty()) {
-            const bool had = !app.deck.notesFor(app.current()).empty();
-            const std::string ntext = had ? "replace the notes" : "copy to notes";
+            const std::string ntext = "copy to notes";
             const float nw = textWidth(label, ntext) + 24;
             const SkRect& before = transcribeButton.isEmpty() ? recordButton : transcribeButton;
             toNotesButton = SkRect::MakeXYWH(before.right() + 8, by, nw, 26);

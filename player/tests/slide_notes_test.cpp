@@ -38,6 +38,22 @@ static void testWriting() {
           "the sections are left alone");
 }
 
+static void testAdding() {
+    CHECK(refract::appendNotes("", "From the transcript.") == "From the transcript.",
+          "nothing to add to: the addition alone");
+    CHECK(refract::appendNotes("Mine.", "") == "Mine.", "nothing to add: what was there");
+    CHECK(refract::appendNotes("Mine.\n", "  Theirs.  ") == "Mine.\n\nTheirs.",
+          "a blank line between what was written and what was said");
+    CHECK(refract::notesContain("Mine.\n\nFrom the transcript.", "From the transcript."),
+          "a transcript already copied in is found");
+    CHECK(!refract::notesContain("Mine.", "From the transcript."), "and one that is not, is not");
+    CHECK(!refract::notesContain("Mine.", ""), "nothing is never already there");
+    // What the button does to a slide that has notes: the transcript after them.
+    const std::string md = "# A slide\n\n???\n\nMine.\n";
+    CHECK(refract::withNotes(md, refract::appendNotes(refract::notesOf(md), "Said this."))
+          == "# A slide\n\n???\n\nMine.\n\nSaid this.\n", "the notes kept, the transcript added");
+}
+
 static void testTranscript() {
     CHECK(refract::transcriptAsNotes("So this is the part where we talk about it. And then we move on. Right?")
           == "So this is the part where we talk about it.\nAnd then we move on.\nRight?",
@@ -52,6 +68,7 @@ static void testTranscript() {
 int main() {
     testReading();
     testWriting();
+    testAdding();
     testTranscript();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::printf("slide_notes: all passed\n");
