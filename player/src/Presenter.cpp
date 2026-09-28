@@ -57,6 +57,8 @@ struct PresenterWindow::Impl {
     SkRect transcribeButton = SkRect::MakeEmpty();
     std::function<void()> onTranscriptToNotes;
     SkRect toNotesButton = SkRect::MakeEmpty();
+    std::function<void()> onPlayNarration;
+    SkRect playButton = SkRect::MakeEmpty();
     bool transcribing = false;
     std::string transcribeStatus;
     std::string syncStatus;
@@ -76,6 +78,16 @@ struct PresenterWindow::Impl {
 
     bool over(const SkRect& box) const {
         return box.contains(static_cast<float>(mouseX), static_cast<float>(mouseY));
+    }
+
+    // The pointer, asked for rather than remembered — see the click callback.
+    void readPointer(GLFWwindow* window) {
+        double x = 0, y = 0;
+        glfwGetCursorPos(window, &x, &y);
+        mouseX = x;
+        mouseY = y;
+        buttonHot = clockButton.contains(static_cast<float>(x), static_cast<float>(y));
+        captionView.mouseMove(static_cast<float>(x), static_cast<float>(y));
     }
 
     // Recent input levels, oldest first — a few seconds of history drawn as a waveform.
@@ -126,20 +138,21 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
     presenter->mImpl = std::make_unique<Impl>();
 
     glfwSetWindowUserPointer(window, presenter.get());
-    glfwSetCursorPosCallback(window, [](GLFWwindow* w, double x, double y) {
+    glfwSetCursorPosCallback(window, [](GLFWwindow* w, double, double) {
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
-        if (!self || !self->mImpl) return;
-        self->mImpl->mouseX = x;
-        self->mImpl->mouseY = y;
-        self->mImpl->buttonHot =
-            self->mImpl->clockButton.contains(static_cast<float>(x), static_cast<float>(y));
-        self->mImpl->captionView.mouseMove(static_cast<float>(x), static_cast<float>(y));
+        if (self && self->mImpl) self->mImpl->readPointer(w);
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int) {
         if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
         Impl& impl = *self->mImpl;
+        // Where the pointer is now, not where the last move event said. macOS sends moves
+        // only to the focused window, and in a talk this one rarely is — the slide window on
+        // the projector has the focus, or the terminal does. Hit-testing a click against a
+        // position from the last time this window happened to be focused presses whichever
+        // button was under the pointer then, which is the wrong one or none at all.
+        impl.readPointer(w);
         if (impl.over(impl.notesTab)) { self->showTab(Tab::Notes); return; }
         if (impl.over(impl.captionsTab)) { self->showTab(Tab::Captions); return; }
         if (impl.tab == Tab::Captions) {
@@ -169,6 +182,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
         else if (impl.over(impl.playVoiceBox) && impl.onTogglePlayVoice) impl.onTogglePlayVoice();
         else if (impl.over(impl.transcribeButton) && impl.onTranscribeSlide && !impl.transcribing) impl.onTranscribeSlide();
         else if (impl.over(impl.toNotesButton) && impl.onTranscriptToNotes) impl.onTranscriptToNotes();
+        else if (impl.over(impl.playButton) && impl.onPlayNarration) impl.onPlayNarration();
     });
 
     glfwMakeContextCurrent(window);
@@ -206,6 +220,10 @@ void PresenterWindow::setDeleteGoesToTrash(bool trash) { mImpl->deleteGoesToTras
 
 void PresenterWindow::setOnTranscriptToNotes(std::function<void()> copy) {
     mImpl->onTranscriptToNotes = std::move(copy);
+}
+
+void PresenterWindow::setOnPlayNarration(std::function<void()> toggle) {
+    mImpl->onPlayNarration = std::move(toggle);
 }
 
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
@@ -817,6 +835,7 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
     autoplayBox = SkRect::MakeEmpty();
     playVoiceBox = SkRect::MakeEmpty();
     toNotesButton = SkRect::MakeEmpty();
+    playButton = SkRect::MakeEmpty();
     stopButton = SkRect::MakeEmpty();
     // ── Stop the run ─────────────────────────────────────────────────
     // While a whole run is being recorded, the row holds one thing: the way to end it. Until
@@ -911,7 +930,38 @@ void PresenterWindow::Impl::drawButtonsRow(const Frame& F) {
             : "re-record slide " + std::to_string(app.current() + 1);
         const float bw = textWidth(label, text) + 44;
         const float by = notesBottom + 6;
-        recordButton = SkRect::MakeXYWH(pad, by, bw, 26);
+
+        // ── Hear it ──────────────────────────────────────────────────
+        // A small play button before the record button: the take just made, played back
+        // where it was made, without starting the talk. A triangle while it is stopped and
+        // two bars while it runs — drawn, since the chrome has one typeface and neither
+        // glyph is in it.
+        float left = pad;
+        if (onPlayNarration && showWave && !app.reRecording) {
+            playButton = SkRect::MakeXYWH(pad, by, 34, 26);
+            const bool phot = over(playButton);
+            fillRoundRect(canvas, playButton, 13, ui::kPanel);
+            strokeRoundRect(canvas, playButton, 13, phot ? ui::kDim : ui::kLine, 1.0f);
+            SkPaint glyph;
+            glyph.setAntiAlias(true);
+            glyph.setColor(playing ? ui::kText : (phot ? ui::kText : ui::kDim));
+            const float cx = playButton.centerX(), cy = playButton.centerY();
+            if (playing) {
+                canvas->drawRect(SkRect::MakeXYWH(cx - 4.5f, cy - 5, 3.5f, 10), glyph);
+                canvas->drawRect(SkRect::MakeXYWH(cx + 1.0f, cy - 5, 3.5f, 10), glyph);
+            } else {
+                SkPathBuilder tri;
+                tri.moveTo(cx - 3.5f, cy - 5.5f);
+                tri.lineTo(cx + 5.0f, cy);
+                tri.lineTo(cx - 3.5f, cy + 5.5f);
+                tri.close();
+                canvas->drawPath(tri.detach(), glyph);
+            }
+            left = playButton.right() + 8;
+        } else {
+            playButton = SkRect::MakeEmpty();
+        }
+        recordButton = SkRect::MakeXYWH(left, by, bw, 26);
 
         const bool hot = over(recordButton);
         const SkColor tone = app.reRecording ? ui::kOver : (hot ? ui::kText : ui::kDim);
@@ -1027,6 +1077,9 @@ void PresenterWindow::Impl::drawFooter(const Frame& F) {
 void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     if (!mWindow || !mImpl) return;
     glfwMakeContextCurrent(mWindow);
+    // The same reason the click does it: without the focus there are no move events, and a
+    // button that never lights under the pointer looks like a button that does nothing.
+    if (glfwGetWindowAttrib(mWindow, GLFW_HOVERED)) mImpl->readPointer(mWindow);
 
     int w = 0, h = 0;
     glfwGetWindowSize(mWindow, &w, &h);

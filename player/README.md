@@ -114,7 +114,10 @@ the rest of the session.
 
 **The narration strip.** When the slide on screen has a recording, a strip under the buttons
 shows its waveform, its file name and its length, with a playhead and the time it has reached
-while it plays. Beside the re-record button, **transcribe slide N** runs `captions.py` on that
+while it plays. A small **play** button at the head of the button row starts and stops it —
+the take you have just made, heard where you made it, with the talk clock still at nothing.
+It is a triangle while the recording is stopped and two bars while it runs, and it plays a
+slide's camera take with it, since the picture follows the audio clock. Beside the re-record button, **transcribe slide N** runs `captions.py` on that
 one recording in the background (redoing it even if it looks up to date), switches the pane
 to its captions tab, and puts the transcript there when it lands — so a slide can be
 transcribed, read and corrected without leaving the presenter. **File ▸ Transcribe

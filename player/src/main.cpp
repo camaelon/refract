@@ -171,6 +171,7 @@ void openCaptions();
 void captureSession();
 void transcribe(bool onlyThisSlide);
 void transcriptToNotes();
+void toggleNarrationPlayback();
 void saveSessionIfChanged();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
@@ -611,6 +612,7 @@ void openPresenter() {
     });
     presenter->setOnTogglePlayVoice([] { setPlayVoice(!app.playVoice); });
     presenter->setOnTranscriptToNotes(transcriptToNotes);
+    presenter->setOnPlayNarration(toggleNarrationPlayback);
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
     presenter->setOnStopRun(stopRun);
@@ -823,6 +825,29 @@ void transcribe(bool onlyThisSlide) {
         std::cerr << "refractplayer: transcribing " << what << " ...\n";
         openProcessing();
     }
+}
+
+// Hear this slide's recording, or stop it. The presenter's play button, and the one way to
+// play a take back that does not depend on the talk having started: a take is listened to
+// the moment it is made, with the clock still at nothing.
+void toggleNarrationPlayback() {
+    if (!voice || app.deck.empty()) return;
+    if (voice->isPlaying()) {
+        voice->stop();
+        voicePlaying = false;
+        voiceHeld = false;
+        return;
+    }
+    const fs::path wav = voiceFileFor(g.currentIndex);
+    std::error_code ec;
+    if (wav.empty() || !fs::exists(wav, ec)) {
+        say("this slide has no recording");
+        return;
+    }
+    // The captions and the camera take are already on this slide's narration — the slide
+    // change put them there — and both follow the audio clock from here.
+    voiceHeld = false;
+    voicePlaying = voice->play(wav.string(), /*letPreviousFinish=*/false, 0.0);
 }
 
 // The slide's transcript, added to its presenter notes — in the deck's own markdown, so it

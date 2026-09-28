@@ -61,6 +61,9 @@ public:
     // The "transcribe slide N" button, shown when the slide has a recording. `busy` says a
     // transcription is already running, so the button reads as such and does nothing.
     void setOnTranscribeSlide(std::function<void()> transcribe);
+    // The small play button left of the record button: hear this slide's recording, or stop
+    // it. Shown only where the slide has one.
+    void setOnPlayNarration(std::function<void()> toggle);
     // "copy to notes" beside it, on the captions tab: the slide's transcript written into
     // its presenter notes. Shown only where there is a transcript to copy.
     void setOnTranscriptToNotes(std::function<void()> copy);
