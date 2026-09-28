@@ -96,6 +96,7 @@ set(REFRACTPLAYER_SOURCES
     src/Progress.cpp
     src/Pointer.cpp
     src/SlideSelection.cpp
+    src/Sync.cpp
     src/Tasks.cpp
     src/VoiceDir.cpp
     src/ProcessingWindow.cpp

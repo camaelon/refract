@@ -38,6 +38,7 @@
 #include "Presenter.h"
 #include "Session.h"
 #include "SlideSelection.h"
+#include "Sync.h"
 #include "DeckLibrary.h"
 #include "StartWindow.h"
 #include "SlideRecorder.h"
@@ -108,6 +109,11 @@ std::unique_ptr<refract::CaptionWindow> captionWindow;
 std::unique_ptr<refract::ProcessingWindow> processingWindow;
 // The mouse over the slide window: hidden after a few seconds still, or the laser.
 refract::Pointer pointer;
+// Other players on other machines, kept on the same slide through tools/sync.py (--sync).
+// A move here is announced; a move there arrives through takeRemote and is applied as if
+// made here, without being announced back.
+refract::Sync slideSync;
+bool applyingRemoteSlide = false;
 constexpr double kHideCursorAfterSec = 3.0;
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
@@ -247,6 +253,7 @@ void goToSlide(int index) {
     playSlideAudio();
     loadCurrentFile();
     noteSlideShown();
+    if (!applyingRemoteSlide) slideSync.announce(g.currentIndex);
     if (slideEditor) slideEditor->showSlide(g.currentIndex);
 
     // Start the next slide's still now. It is built a little at a time over the following
@@ -1785,6 +1792,21 @@ int main(int argc, char* argv[]) {
                               [] { return processingWindow != nullptr; }},
     });
 
+    if (!options.sync.empty()) {
+        std::string host;
+        int port = 0;
+        if (!refract::parseSyncAddress(options.sync, &host, &port)) {
+            std::cerr << "refractplayer: --sync wants host[:port], not " << options.sync << "\n";
+            return 1;
+        }
+        char machine[256] = {0};
+        if (options.syncName.empty() && ::gethostname(machine, sizeof(machine) - 1) != 0) machine[0] = 0;
+        std::string name = options.syncName.empty() ? std::string(machine) : options.syncName;
+        const size_t dot = name.find('.');
+        if (options.syncName.empty() && dot != std::string::npos) name.resize(dot);   // "mac.local" -> "mac"
+        slideSync.start(host, port, name);
+    }
+
     refreshVoicePresence();
     {
         int narrated = 0;
@@ -2024,6 +2046,17 @@ int main(int argc, char* argv[]) {
             glfwSetWindowTitle(window, title);
         }
 
+        // A move made on another machine: applied as if made here, and not announced back.
+        {
+            int remote = -1;
+            if (slideSync.takeRemote(&remote) && remote >= 0 && remote < app.deck.size()
+                && remote != g.currentIndex) {
+                applyingRemoteSlide = true;
+                goToSlide(remote);
+                applyingRemoteSlide = false;
+            }
+        }
+
         if (presenter) {
             if (presenter->shouldClose()) {
                 presenter.reset();
@@ -2052,6 +2085,7 @@ int main(int argc, char* argv[]) {
                     {
                         const refract::TranscribeProgress progress = transcriber.progress();
                         presenter->setTranscribing(transcriber.running(), progress.label(), progress.fraction());
+                        presenter->setSyncStatus(options.sync.empty() ? std::string() : slideSync.status());
                     }
                     // The captions tab follows the audio clock, as the caption window does.
                     presenter->setCaptions(&captions, voice ? voice->currentTime() : 0.0,

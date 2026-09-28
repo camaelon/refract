@@ -30,6 +30,8 @@ struct Options {
     double autoAdvanceSec = 0.0;    // 0 = stay on the slide
     bool autoVoice = false;
     bool sound = true;              // --no-sound clears it
+    std::string sync;               // --sync host[:port]: follow and drive the slide with other players
+    std::string syncName;           // --sync-name: this player, as the others see it
 
     bool record = false;
     bool recordAudio = false;       // implies record

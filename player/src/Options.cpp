@@ -60,6 +60,8 @@ Options parseOptions(int argc, char* argv[]) {
         }
         else if (arg == "--auto-voice") o.autoVoice = true;
         else if (arg == "--no-sound") o.sound = false;
+        else if (arg == "--sync") o.sync = next("--sync");
+        else if (arg == "--sync-name") o.syncName = next("--sync-name");
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
         else if (arg == "--video") o.video = next("--video");
@@ -138,6 +140,9 @@ std::string usageText() {
         "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
         "                     wavs a --record-audio run captured)\n"
         "  --no-sound         never play a slide's voice-over, even where one exists\n"
+        "  --sync <host[:port]>  keep the slide in step with other players through the\n"
+        "                     sync server (tools/sync.py) at host — any of them may move\n"
+        "  --sync-name <name> this player's name to the others (default: the machine's)\n"
         "  --captions         open the close-caption window (needs timings from\n"
         "                     --transcribe); with --video, burn the captions into\n"
         "                     the movie as a line under the slides\n"

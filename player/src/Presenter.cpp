@@ -55,6 +55,7 @@ struct PresenterWindow::Impl {
     SkRect transcribeButton = SkRect::MakeEmpty();
     bool transcribing = false;
     std::string transcribeStatus;
+    std::string syncStatus;
     float transcribeFraction = -1.0f;
     PresenterWindow::Narration narration;
     PresenterWindow::Tab tab = PresenterWindow::Tab::Notes;
@@ -210,6 +211,8 @@ void PresenterWindow::setTranscribing(bool busy, const std::string& status, floa
     mImpl->transcribeStatus = status;
     mImpl->transcribeFraction = fraction;
 }
+
+void PresenterWindow::setSyncStatus(const std::string& status) { mImpl->syncStatus = status; }
 
 void PresenterWindow::setCaptions(Captions* captions, double playbackTime, bool playing) {
     mImpl->captions = captions;
@@ -510,6 +513,13 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
     char position[64];
     std::snprintf(position, sizeof(position), "%d / %d", app.current() + 1, std::max(1, deck.size()));
     drawTextRight(canvas, position, w - pad, barY, metaFont, ui::kText);
+    // Kept in step with other players: said beside the counter, since it is the counter
+    // that another machine may change under you.
+    if (!syncStatus.empty()) {
+        const bool linked = syncStatus.find("connecting") == std::string::npos;
+        drawTextRight(canvas, syncStatus, w - pad - textWidth(metaFont, position) - 16, barY,
+                      uiFont(11, true), linked ? ui::kAccent : ui::kWarn);
+    }
     int sectionIdx = deck.sectionIndexOf(app.current());
     if (sectionIdx >= 0) {
         const auto& section = deck.sections()[sectionIdx];

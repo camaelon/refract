@@ -259,6 +259,23 @@ above Minimize, because opening one is what that menu is mostly for here.
 | `E` | correct the transcript |
 | `Esc` | leave edit mode |
 
+**Two players in step.** Start the sync point on any machine the others can reach, then
+every player with `--sync`:
+
+```sh
+python3 player/tools/sync.py                                  # on machine A, port 7333
+prebuilt/refractplayer mytalk/out --presenter --sync a.local  # on A, and the same on B
+```
+
+Each player follows the slide the server holds and may change it: advance on A and B
+follows; jump on B and A follows. Whoever moved last is where everybody is, and a player
+that joins late is sent there. The presenter says `sync · 2 players` beside the counter,
+amber while it is still connecting. The protocol is lines of text over one TCP connection
+(`hello`, `slide n`, `ping` up; `slide n seq by`, `peers k`, `pong` down), so `nc host 7333`
+shows the traffic and anything that can open a socket can drive the deck. A move made while
+the link is down is not replayed: by the time it is back, the server's slide is the truer
+one. `--sync-name` names the player to the others; the machine's name is the default.
+
 **The mouse over the slide.** The arrow hides after three seconds without moving and comes
 back on the first move: an arrow parked on a projected slide is the one thing the room
 notices. `L` turns it into a **laser pointer** — a large red dot with a trail that fades out
@@ -362,6 +379,7 @@ Each of them moves the narration index and the rehearsal trace along with the bl
 in the same write and as one undoable edit — see the note on recordings under
 [Rehearsing](#rehearsing).
 | `tools/captions.py` | transcribe the narration and align it into per-word timings |
+| `tools/sync.py` | the sync point that keeps players on different machines on the same slide |
 | `tools/web.py` | assemble the deck, its audio and its captions into a web page |
 
 ## The deck view
@@ -1364,7 +1382,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Twenty C++ suites, none of which needs a window or a GPU. Seventeen of them need nothing but their
+Twenty-one C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1373,7 +1391,7 @@ line it is over:
 cmake -B build -S player/tests && cmake --build build && ctest --test-dir build
 ```
 
-All twenty, alongside the player:
+All twenty-one, alongside the player:
 
 ```sh
 ctest --test-dir player/build --output-on-failure
@@ -1396,6 +1414,7 @@ ctest --test-dir player/build --output-on-failure
 | `export_plan` | what an export is named, which slides a movie takes, how a slide's stay snaps to the frame grid, and the ffmpeg line that lays the narration under it |
 | `transcribe_progress` | the progress lines the tools print, as the processing window and the presenter read and word them |
 | `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
+| `sync` | the lines two players in step exchange, and how a server address is read |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

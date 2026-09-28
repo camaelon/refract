@@ -63,6 +63,10 @@ public:
     // 0..1, or negative when unknown; both are shown while `busy`.
     void setTranscribing(bool busy, const std::string& status = std::string(), float fraction = -1.0f);
 
+    // "sync · 2 players", when the player is kept in step with others (--sync); empty
+    // otherwise. Drawn under the slide counter.
+    void setSyncStatus(const std::string& status);
+
     // The slide's narration, for the strip above the buttons: its name, its envelope (peak
     // per bin, 0..1, left to right), its length, and where playback is. Null envelope: no
     // recording, no strip. The envelope is the caller's and must outlive the frame.
