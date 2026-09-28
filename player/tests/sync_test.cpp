@@ -133,7 +133,8 @@ static void testServer() {
     Peer e(port);
     e.say("hello E");
     e.hear();
-    for (int i = 0; i < refract::kSyncMaxLaserPerSec + 5; i++) e.say("laser 0.1 0.1");
+    // Twice the limit and a few: however the burst straddles a second boundary, one side is over.
+    for (int i = 0; i < 2 * refract::kSyncMaxLaserPerSec + 5; i++) e.say("laser 0.1 0.1");
     CHECK(e.closed(), "a laser flood ends the connection");
     server.stop();
 }

@@ -114,7 +114,7 @@ class SyncServer(Fixture):
         self.assertTrue(d.closed(), "a line over the limit ends the connection")
         e = Client(self.port, "E")
         e.hear()
-        for _ in range(sync.MAX_LASER_PER_SEC + 5):
+        for _ in range(2 * sync.MAX_LASER_PER_SEC + 5):   # straddling a second boundary, one side is still over
             e.say("laser 0.1 0.1")
         self.assertTrue(e.closed(), "a laser flood ends the connection")
         room = [Client(self.port, f"P{i}") for i in range(sync.MAX_CLIENTS)]
