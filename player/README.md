@@ -314,6 +314,15 @@ on and come back and they are still there — and `Shift`+`L` wipes the current 
 Nothing is saved to disk; a drawing is for the room, on the day. Strokes are kept as
 fractions of the slide, so they sit where they were drawn after a resize or fullscreen.
 
+**The camera on a slide.** A slide with `<camera>` (see the deck README's include table)
+shows the machine's camera where the layout put it, in the shape the layout gave it — a
+circle beside the speaker's name, a rounded panel under a title. macOS asks for camera
+access the first time the player draws one (the prompt names the terminal the player was
+started from); until it is allowed, and wherever there is no camera, the box is a dark
+plate. The capture runs only while a slide is drawing it: leave the camera slides behind
+and the light goes off a few seconds later, come back and it is on again before the
+transition ends. Exports and the presenter's previews show a marked box in its place.
+
 **Narration on or off.** A deck with recordings plays each slide's as it comes up. When
 you would rather do the talking yourself, untick **play narration** in the presenter's
 button row (or press `N`): the deck goes silent and the recordings stay where they are. It

@@ -261,6 +261,7 @@ Use `skip=false` to keep one while leaving the flag in place.
 | image         | `<name.png>` (`.jpg/.gif/.webp`) — embedded **inline** in the `.rc`; an animated `.gif` plays in place (every frame is embedded, the viewer picks the frame by document time) |
 | code file     | `<name.kt>` (`.java/.py/.ts`) — the file rendered as a highlighted code block |
 | video         | `<name.mp4>` (`.mov/.m4v`) — **embedded** in the page (a native custom component the viewer plays in place); a lone video with no title fills the slide. `crop` trims the frame (e.g. black bars). |
+| camera        | `<camera>` — the presenting machine's **camera feed**, drawn live into the box at playback (a native custom component, like video); `<camera:FaceTime>` names the device. Frames, crops, clips and captions like a video: `<camera \| ratio=1:1 clip=circle mirror>` is a speaker in a circle. Exports show a marked box. |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — a prebuilt RemoteCompose doc embedded **live** in the slide: spliced flat if a sibling `.json` exists, else painted as a nested sub-document (its own id space, animates on its own, and receives mouse drags — e.g. rotate a 3D plot). A lone `.rc` (no title) is a whole-slide passthrough. Scaling via `[embed] fit`. The asset is copied to `out/media/` (not listed as a slide). |
 | web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box |
@@ -273,7 +274,12 @@ and rc/json embeds:
 - `crop=l,t,r,b` — a source rectangle as fractions 0–1 (default full); shows only that region,
   scaled to fill the box. Handy to remove black bars around a portrait recording, e.g.
   `<phone.mp4 | crop=0.28,0,0.72,1>`, or to zoom into part of an embedded doc.
-- `fit=fit|fill|native` — override the `[embed] fit` for this embed.
+- `fit=fit|fill|native` — override the `[embed] fit` for this embed (a camera fills by default).
+- `clip=circle|<px>|none` — the shape of the box: fully round (a circle, with `ratio=1:1`), a
+  corner radius in pixels, or square corners, over the theme's `[image] corner_radius`. Works
+  on video, rc/json embeds and the camera.
+- `mirror` — flip the camera left-right, the way a speaker expects to see themselves.
+  `device=…` picks a camera by a substring of its name or by index (the same as `<camera:…>`).
 - `title=…` — a centred caption drawn below the embed (the embed shrinks to make room). Quote
   it for multiple words: `<widget.rc | fit=fit title="Launcher Widget">`. Works on video,
   rc/json embeds and images.
@@ -649,6 +655,14 @@ The viewer ships two hosts, both keyed off the `config` string:
 - **web** (`config: "web:<url>"`, WKWebView) — `<https://url>` embeds a live, clickable
   browser positioned over the component's box; it follows layout and transitions and
   supports file-open dialogs.
+- **camera** (`config: "camera:<device>#fit=…&crop=…&mirror=1"`, AVFoundation) — `<camera>`
+  draws the machine's camera into the box: the speaker beside their slides, in whatever
+  frame the layout gives it (the box's clip is the core's, so a `clip=circle` box is a
+  circle of face). One capture session per device, started the first time a slide draws it
+  and stopped by itself once no slide has drawn it for a few seconds, so the camera light
+  is not on for the whole talk. macOS asks for camera access the first time; a refused
+  camera (or one that is not there) leaves a dark plate where it would be. The web export
+  asks the browser for the viewer's camera instead (`getUserMedia`).
 
 ```markdown
 # Live demo
@@ -658,6 +672,9 @@ Watch it run:
 
 # The Spec
 <https://example.dev/spec | Reference>
+
+# Q&A
+<camera | ratio=1:1 clip=circle mirror title="you">
 ```
 
 Custom components need the ANDROIDX+EXPERIMENTAL profile, which refract sets

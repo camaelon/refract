@@ -230,6 +230,28 @@ class RenderBlock(unittest.TestCase):
         h = next(m["height"] for m in out[0]["modifiers"] if isinstance(m, dict) and "height" in m)
         self.assertEqual(h, 400.0)
 
+    def test_camera_custom_component(self):
+        out = self.rb({"kind": "camera", "device": ""})
+        self.assertEqual(out[0]["type"], "custom")
+        self.assertEqual(out[0]["config"], "camera:default")   # fill is the default: unsaid
+        out = self.rb({"kind": "camera", "device": "FaceTime", "fit": "fit", "mirror": True,
+                       "crop": [0.1, 0.0, 0.9, 1.0]})
+        self.assertEqual(out[0]["config"], "camera:FaceTime#fit=fit&crop=0.1,0.0,0.9,1.0&mirror=1")
+
+    def test_camera_in_a_circle(self):
+        # ratio=1:1 frames a square box; clip=circle rounds it fully: a radius of half its side.
+        out = self.rb({"kind": "camera", "device": "", "ratio": 1.0, "clip": "circle"})
+        inner = out[0]["children"][0]
+        size = next(m["height"] for m in inner["modifiers"] if isinstance(m, dict) and "height" in m)
+        clip = next(m["clip"] for m in inner["modifiers"] if isinstance(m, dict) and "clip" in m)
+        self.assertEqual(size, 400.0)
+        self.assertEqual(clip, 200.0)
+        # clip=none squares a box the theme would have rounded; clip=<px> sets the radius.
+        out = self.rb({"kind": "video", "path": "v.mp4", "clip": "none"})
+        self.assertFalse(any(isinstance(m, dict) and "clip" in m for m in out[0]["modifiers"]))
+        out = self.rb({"kind": "video", "path": "v.mp4", "clip": "24"})
+        self.assertIn({"clip": 24.0}, out[0]["modifiers"])
+
     def test_embedded_video_src_falls_back_to_basename(self):
         # Without an explicit copied `src`, the config uses the path's file name.
         out = self.rb({"kind": "video", "path": "clips/demo.mp4"})

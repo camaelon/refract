@@ -64,6 +64,38 @@ class ResolveBlocks(unittest.TestCase):
         self.assertEqual(out[0]["kind"], "image")
         self.assertEqual(out[1]["kind"], "text")
 
+    def test_camera_is_an_include_without_a_file(self):
+        d = tempfile.mkdtemp()
+        b = deck.resolve_include("camera", d)
+        self.assertEqual(b["kind"], "camera")
+        self.assertEqual(b["device"], "")
+        b = deck.resolve_include("camera:FaceTime", d)
+        self.assertEqual(b["device"], "FaceTime")
+
+    def test_camera_opts(self):
+        slide = {"base_dir": tempfile.mkdtemp(), "blocks": [
+            {"kind": "include", "name": "camera",
+             "opts": {"ratio": "1:1", "clip": "circle", "mirror": True, "device": "1",
+                      "crop": "0.1,0,0.9,1"}},
+        ]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["kind"], "camera")
+        self.assertEqual(out[0]["ratio"], 1.0)
+        self.assertEqual(out[0]["clip"], "circle")
+        self.assertTrue(out[0]["mirror"])
+        self.assertEqual(out[0]["device"], "1")
+        self.assertEqual(out[0]["crop"], [0.1, 0.0, 0.9, 1.0])
+
+    def test_clip_applies_to_video_too(self):
+        d = tempfile.mkdtemp()
+        inc = os.path.join(d, "includes")
+        os.makedirs(inc)
+        open(os.path.join(inc, "v.mp4"), "wb").close()
+        slide = {"base_dir": d, "blocks": [
+            {"kind": "include", "name": "v.mp4", "opts": {"clip": "24"}}]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["clip"], "24")
+
     def test_include_opts_apply_crop_and_fit(self):
         d = tempfile.mkdtemp()
         inc = os.path.join(d, "includes")

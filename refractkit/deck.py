@@ -77,7 +77,14 @@ def load_deck(deck_dir: str, visited: set[str], root_dir: str | None = None) -> 
 
 
 def resolve_include(name: str, includes_dir: str, extra_dirs: list[str] | None = None) -> dict:
-    """Resolve an ``<name>`` include to a concrete block with an absolute path."""
+    """Resolve an ``<name>`` include to a concrete block with an absolute path.
+
+    ``<camera>`` is the one include with no file behind it: the player's camera feed, drawn
+    live into the box at playback (``<camera:FaceTime>`` names the device by a substring of
+    its name, or by index). It frames, crops, clips and captions like a video."""
+    low = name.strip().lower()
+    if low == "camera" or low.startswith("camera:"):
+        return {"kind": "camera", "device": name.strip().partition(":")[2].strip(), "name": name}
     _, ext = os.path.splitext(name)
     candidates = [name] if ext else [name + e for e in INCLUDE_PROBE]
     search_dirs = [includes_dir] + [d for d in (extra_dirs or []) if d and os.path.isdir(d)]
@@ -138,7 +145,7 @@ def parse_ratio(value) -> float | None:
     return round(w / h, 4)
 
 
-_FRAMEABLE = ("video", "rc_include", "json_include")
+_FRAMEABLE = ("video", "rc_include", "json_include", "camera")
 _CAPTIONABLE = _FRAMEABLE + ("image",)
 
 
@@ -159,6 +166,17 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         block["ratio"] = ratio
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
+    # ``clip=circle`` | ``clip=<px>`` | ``clip=none`` rounds (or fully rounds, or squares) the
+    # embed's box, over the theme's image corner radius.
+    if opts.get("clip") and block["kind"] in _FRAMEABLE:
+        block["clip"] = str(opts["clip"]).lower()
+    # The camera: ``mirror`` flips it like a mirror (what a speaker expects to see of
+    # themselves), ``device=`` picks one when the machine has several.
+    if block["kind"] == "camera":
+        if opts.get("mirror") and str(opts["mirror"]).lower() not in ("0", "false", "off", "no"):
+            block["mirror"] = True
+        if opts.get("device"):
+            block["device"] = str(opts["device"])
     # Slide-driven embedded documents: ``persist`` keeps the document alive across slides on
     # its own clock; ``step=N`` hands it this slide's number and ``stepid``/``timeid`` name
     # the document's float ids that receive the step and the host's slide time. Passed

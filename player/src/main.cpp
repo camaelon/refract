@@ -1562,6 +1562,9 @@ int main(int argc, char* argv[]) {
             entries = std::move(picked);
         }
         int failures = 0;
+        // An export is not a talk: the camera stays closed and its box is drawn as the marked
+        // plate a still shows, rather than the machine asking for camera access mid-render.
+        g.cameraHost.setLive(false);
         if (!options.pdf.empty()) {
             auto result = exportEntriesToPdf(entries, options.pdf, initW, initH, options.exportDelay);
             if (result.pages == 0) failures++;
@@ -2355,6 +2358,7 @@ int main(int argc, char* argv[]) {
     presenter.reset();
     glfwMakeContextCurrent(window);
     g.avfPlayer.reset();
+    g.cameraHost.stop();      // the camera light goes off with the deck
     g.webpPlayer.reset();
     g.paintCtx.reset();
     g.context.reset();

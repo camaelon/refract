@@ -640,12 +640,31 @@ def _with_caption(content, block: dict, theme: Theme, debug: bool, avail_h: floa
              "children": [*children, node]}]
 
 
-def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner: float,
+def _embed_corner(block: dict, theme: Theme):
+    """The corner radius an embed's box is clipped to: the theme's image radius unless the
+    include said ``clip=circle`` (fully round — a circle on a square box), ``clip=<px>`` or
+    ``clip=none``."""
+    raw = block.get("clip")
+    if raw is None:
+        return theme.image_corner_radius
+    raw = str(raw).lower()
+    if raw in ("circle", "ellipse", "round"):
+        return "circle"
+    if raw in ("none", "no", "off", "0", "square"):
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return theme.image_corner_radius
+
+
+def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
                debug: bool) -> dict:
     """Size an embed's box. By default it fills the width at ``box_h`` tall; when ``ratio``
     (width / height) is set the box is fitted to that aspect ratio within (avail_w, box_h) and
     centred in the area, so a square face doesn't stretch to fill a wide slide. ``inner`` is the
-    embed node — this sets its size/clip modifiers (it must not already carry them)."""
+    embed node — this sets its size/clip modifiers (it must not already carry them). ``corner``
+    is a radius, or ``"circle"`` for half the box's shorter side."""
     framed = ratio is not None
     if framed:
         bh = float(box_h)
@@ -654,9 +673,12 @@ def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner: float,
             bw, bh = float(avail_w), float(avail_w) / ratio
         mods: list = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
     else:
+        bw, bh = float(avail_w), float(box_h)
         mods = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
+    if corner == "circle":
+        corner = min(bw, bh) / 2.0
     if corner and corner > 0:
-        mods.append({"clip": float(corner)})
+        mods.append({"clip": round(float(corner), 2)})
     inner["modifiers"] = dbg(mods, debug)
     if not framed:
         return inner
@@ -679,7 +701,26 @@ def render_video(block: dict, theme: Theme, debug: bool,
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
     config = _media_config("video", src, {"crop": _crop_opt(block)})
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), theme.image_corner_radius, debug)
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
+    return _with_caption(box, block, theme, debug, avail_h)
+
+
+def render_camera(block: dict, theme: Theme, debug: bool,
+                  avail_w: float, avail_h: float) -> list[dict]:
+    """The player's camera feed as a native custom component (op 93): ``camera:<device>``
+    with the options the camera host reads — ``fit`` (``fill`` by default: a face in a circle
+    should fill it; ``fit`` letterboxes), a source ``crop``, and ``mirror``. The device is a
+    name substring or an index; ``default`` is the machine's own. Nothing is copied: the
+    picture only exists at playback, so exports draw a marked box in its place."""
+    _, _, cap_h = _caption_metrics(block, theme)
+    box_h = avail_h - cap_h
+    device = block.get("device") or "default"
+    fit = (block.get("fit") or "fill").lower()
+    opts = {"fit": fit if fit != "fill" else "", "crop": _crop_opt(block),
+            "mirror": "1" if block.get("mirror") else ""}
+    config = _media_config("camera", device, opts)
+    box = _embed_box({"type": "custom", "config": config, "children": []},
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -700,7 +741,7 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), theme.image_corner_radius, debug)
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -809,6 +850,8 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         out = render_weblink(block, theme, debug, avail_w, avail_h)
     elif kind == "video":
         out = render_video(block, theme, debug, avail_w, avail_h)
+    elif kind == "camera":
+        out = render_camera(block, theme, debug, avail_w, avail_h)
     elif kind == "outline":
         from .measure import _outline_size
         out = render_outline(block, theme, debug, _outline_size(theme, body_size))
@@ -1035,7 +1078,7 @@ def _scroll_viewport(content: list, viewport: float, y, debug: bool,
 
 
 # ── Stacked layout sections (``===``) ─────────────────────────────────────────
-_MEDIA_KINDS = {"image", "rc_include", "json_include", "video", "weblink", "graph",
+_MEDIA_KINDS = {"image", "rc_include", "json_include", "video", "camera", "weblink", "graph",
                 "chart", "include", "missing"}
 
 
