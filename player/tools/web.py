@@ -23,9 +23,11 @@ The bundle is built once from the players/cpp sibling checkout:
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -87,6 +89,48 @@ def parse_slides(spec: str, count: int) -> list[int]:
     if not chosen:
         raise ValueError(f"no slides in {spec}")
     return sorted(chosen)
+
+
+def gifs_in_rc(path: str) -> list[tuple[int, bytes]]:
+    """The animated GIFs a compiled slide carries, as (image id, bytes). A bitmap operation
+    lays its payload out as [image id][width][height][length][bytes], so a GIF is found by
+    its magic and cut by the length in front of it."""
+    with open(path, "rb") as f:
+        data = f.read()
+    found = []
+    pos = data.find(b"GIF8")
+    while pos >= 0:
+        if pos >= 16:
+            image_id, length = struct.unpack(">i", data[pos - 16:pos - 12])[0], struct.unpack(">i", data[pos - 4:pos])[0]
+            if 0 < length <= len(data) - pos and data[pos + length - 1] == 0x3B:
+                found.append((image_id, data[pos:pos + length]))
+                pos = data.find(b"GIF8", pos + length)
+                continue
+        pos = data.find(b"GIF8", pos + 4)
+    return found
+
+
+def transcode_gif(gif: bytes, anim_dir: str) -> str | None:
+    """A GIF as a WebM (VP9, alpha kept) under `anim_dir`, named by content so the same GIF
+    on several slides encodes once and an unchanged one is not encoded again. The file's
+    name relative to the site, or None when ffmpeg is missing or fails."""
+    if shutil.which("ffmpeg") is None:
+        return None
+    os.makedirs(anim_dir, exist_ok=True)
+    name = hashlib.sha1(gif).hexdigest()[:16] + ".webm"
+    dest = os.path.join(anim_dir, name)
+    if not os.path.isfile(dest):
+        src = dest + ".gif"
+        with open(src, "wb") as f:
+            f.write(gif)
+        # -b:v 0 with a CRF is VP9's quality mode; yuva420p keeps the GIF's transparency.
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+                            "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "32",
+                            "-deadline", "good", "-cpu-used", "4", "-an", dest], check=False)
+        os.remove(src)
+        if r.returncode != 0 or not os.path.isfile(dest):
+            return None
+    return "media/anim/" + name
 
 
 def slide_number(filename: str) -> str:
@@ -225,6 +269,8 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
         # One line per step on stderr, the shape the player's processing window reads.
         print(f"progress: {done}/{len(slides)} {what}", file=sys.stderr, flush=True)
 
+    anim_dir = os.path.join(web_dir, "media", "anim")
+    have_videos = 0
     for done, name in enumerate(slides):
         progress(done, f"slide {done + 1}/{len(slides)} {name}")
         entry = {"file": name,
@@ -245,6 +291,18 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
             else:
                 shutil.copyfile(os.path.join(out_dir, name), os.path.join(slides_dir, name))
                 entry["src"] = "slides/" + name
+            # An animated GIF in the slide becomes a video the browser decodes in hardware,
+            # drawn where the bitmap goes; decoding GIF frames one by one is the fallback
+            # the player keeps for a page built without ffmpeg.
+            videos = {}
+            for image_id, gif in gifs_in_rc(os.path.join(out_dir, name)):
+                progress(done, f"slide {done + 1}/{len(slides)} encoding a GIF")
+                url = transcode_gif(gif, anim_dir)
+                if url:
+                    videos[str(image_id)] = url
+            if videos:
+                entry["videos"] = videos
+                have_videos += len(videos)
         number = stems.get(name) or slide_number(name)
         if voice_dir and number:
             wav = os.path.join(voice_dir, number + ".wav")
@@ -280,7 +338,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
     size = sum(os.path.getsize(os.path.join(dp, f))
                for dp, _, fs in os.walk(web_dir) for f in fs)
     progress(len(slides), "done")
-    print(f"web: {len(entries)} slides, {have_audio} with narration, "
+    print(f"web: {len(entries)} slides, {have_audio} with narration, {have_videos} GIF(s) as video, "
           f"{size / 1e6:.0f} MB -> {web_dir}" + (" (inline: one page holds it all)" if inline else ""))
     if inline:
         print("     opens straight off the disk (double-click index.html), or serve it:")
@@ -464,6 +522,7 @@ PAGE = r"""<!doctype html>
           return fetch(path).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
         });
       }
+      handle.player.setBitmapVideos(slide.videos || null);
       const bytes = await bytesFor(slide);
       if (index !== Math.max(0, Math.min(i, slides.length - 1))) return;   // moved on meanwhile
       if (!bytes) {

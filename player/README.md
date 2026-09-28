@@ -1182,9 +1182,18 @@ custom-component host as the C++ one (`WebCustomHost`), keeping a persistent doc
 slides on its own clock and feeding it the slide number and the slide's time. The embedded
 files are fetched by path like the slides (inside the page, with `--inline`). An embedded
 video plays muted in its box; an embedded web page becomes the labelled frame the exports
-show. An animated GIF plays, frame by frame on the document's clock, where the browser has
-WebCodecs' image decoder (Chrome and Edge; elsewhere its first frame). This needs the bundle
-rebuilt from a checkout with that host (`npm run bundle`, as above).
+show. This needs the bundle rebuilt from a checkout with that host (`npm run bundle`, as
+above).
+
+**Animated GIFs become video.** A GIF inside a slide is decoded frame by frame in the C++
+player, which is fine for one slide and hopeless in a browser: a watch face of six hundred
+450-pixel frames is half a gigabyte as bitmaps. The export cuts each GIF out of its slide,
+transcodes it once with ffmpeg to a WebM (VP9, alpha kept, a tenth of the size), and tells
+the player to draw that video's current frame where the bitmap goes — the browser's own
+video pipeline does the decoding. The same GIF on several slides encodes once, an unchanged
+one is not encoded again, and the GIF bytes still ship in the slide for the desktop. Without
+ffmpeg the player falls back to decoding GIF frames one at a time through WebCodecs, which
+works but costs.
 
 From inside the player, **File ▸ Export Web…** asks for a folder (beside the deck, named
 `web`, by default), runs the export in the background — the processing window follows it
