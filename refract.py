@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import glob
 import os
 import re
 import shutil
@@ -769,6 +770,44 @@ def watch_mtime(deck_dir: str) -> float:
     return latest
 
 
+def shrink_camera_takes(voice_dir: str, height: int) -> int:
+    """Re-encode every camera take (``voice/NN.mov``) to ``height`` px tall, in place, with
+    ffmpeg. A take already that small or smaller is left alone. Returns how many were
+    re-encoded, or -1 when ffmpeg is missing."""
+    import shutil
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        print("--shrink-camera needs ffmpeg and ffprobe on the PATH", file=sys.stderr)
+        return -1
+    takes = sorted(glob.glob(os.path.join(voice_dir, "*.mov")))
+    done = 0
+    for take in takes:
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                                "-show_entries", "stream=height", "-of", "csv=p=0", take],
+                               capture_output=True, text=True)
+        try:
+            current = int(probe.stdout.strip().splitlines()[0])
+        except (ValueError, IndexError):
+            current = 0
+        if current and current <= height:
+            continue
+        tmp = take + ".shrink.mov"
+        before = os.path.getsize(take)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", take, "-vf", f"scale=-2:{height}",
+               "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-an", "-movflags", "+faststart", tmp]
+        if subprocess.run(cmd).returncode != 0 or not os.path.exists(tmp):
+            print(f"could not shrink {take}", file=sys.stderr)
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            continue
+        os.replace(tmp, take)
+        after = os.path.getsize(take)
+        print(f"shrunk {os.path.basename(take)}: {current}p -> {height}p, {before / 1e6:.1f} MB -> {after / 1e6:.1f} MB")
+        done += 1
+    if not takes:
+        print(f"no camera takes in {voice_dir}")
+    return done
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line. On its own so the flags can be checked without building a deck."""
     ap = argparse.ArgumentParser(description="markdown deck -> RemoteCompose .rc slides")
@@ -799,6 +838,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="write a self-contained web site that plays the deck (default <deck>/web)")
     ap.add_argument("--slides", default="",
                     help='the slides an export takes, 1-based: "3-12, 20", "7-" to the end (default: all)')
+    ap.add_argument("--shrink-camera", type=int, default=0, metavar="HEIGHT",
+                    help="re-encode the camera takes in <deck>/voice to this height in px (e.g. 360 "
+                         "for a speaker thumbnail); the full-size originals are replaced")
     ap.add_argument("--watch", action="store_true",
                     help="regenerate whenever slides.md / settings.toml / includes change")
     ap.add_argument("--force", action="store_true",
@@ -1228,6 +1270,12 @@ def run_once(args) -> int:
         cache.forget(stale)
         print(f"removed {stale}  [no longer in the deck]")
     cache.save()
+
+    # The camera takes, made smaller: a take is recorded at the camera's full size, which is
+    # right for a box that is most of the slide and a waste for a thumbnail beside a title.
+    if args.shrink_camera:
+        if shrink_camera_takes(os.path.join(deck_dir, "voice"), args.shrink_camera) < 0:
+            return 1
 
     # Optional movie via refractplayer: the slides played at a fixed rate, the narration wavs
     # from the voice dir as the soundtrack, slides without one held for --dwell seconds.

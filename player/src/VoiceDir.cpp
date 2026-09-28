@@ -40,7 +40,7 @@ Adoption adoptVoiceDir(const fs::path& input, const fs::path& target) {
 std::vector<fs::path> narrationFiles(const fs::path& wav) {
     std::vector<fs::path> files;
     if (wav.empty()) return files;
-    for (const char* ext : {".wav", ".txt", ".words.json"}) {
+    for (const char* ext : {".wav", ".txt", ".words.json", ".mov"}) {
         fs::path path = wav;
         path.replace_extension();
         path += ext;

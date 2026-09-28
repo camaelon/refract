@@ -78,8 +78,9 @@ static void testAdoption() {
 
 static void testNarrationFiles() {
     std::vector<fs::path> files = refract::narrationFiles("/v/07.wav");
-    CHECK(files.size() == 3, "a wav, a transcript, the timings");
-    CHECK(files[0] == "/v/07.wav" && files[1] == "/v/07.txt" && files[2] == "/v/07.words.json", "named after the wav");
+    CHECK(files.size() == 4, "a wav, a transcript, the timings, the camera take");
+    CHECK(files[0] == "/v/07.wav" && files[1] == "/v/07.txt" && files[2] == "/v/07.words.json"
+          && files[3] == "/v/07.mov", "named after the wav");
     CHECK(refract::narrationFiles("").empty(), "no wav, no files");
 }
 

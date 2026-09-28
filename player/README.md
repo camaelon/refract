@@ -995,6 +995,20 @@ it closes the slide's wav, writes the trace, and brings playback back so the tak
 heard at once. Before it, a run ended only at quit, and a slide's wav only when the next
 slide came up.
 
+**The camera, recorded with the voice.** When the deck has a camera box anywhere (a
+`<camera>` include or a template's `[camera]`), a narration take records the camera too:
+`NN.mov` beside `NN.wav`, at the camera's full size, started and stopped with the wav, paused
+with it, dropped with it when a re-record is abandoned and moved to the Trash with it by the
+delete button. The wav stays the recording of record — transcription, captions and the web
+export read it and ignore the movie. On playback, every camera box on a narrated slide shows
+the take instead of the live feed, following the audio's clock (so a pause holds the frame and
+a caption edit that restarts the wav restarts the picture), and the video export puts the same
+frames in the same boxes. Where a slide has a wav and no movie, the box shows the live camera
+as before. `--camera-take on` records the camera whether or not the deck has a box for it yet;
+`off` never does. A take is authoring material — a phone on a desk wants every pixel — so it
+is not shrunk at capture; `refract.py <deck> --shrink-camera 360` re-encodes the takes to a
+thumbnail's height once that is all they are for. The web export does not play takes yet.
+
 A recorded talk plays itself back:
 
 ```sh

@@ -82,6 +82,7 @@
 #include <cstring>
 #include <map>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -122,6 +123,11 @@ refract::Pointer remotePointer;
 constexpr unsigned kRemoteLaserColor = 0xFFFF9F0A;
 // What the laser has drawn, per slide, for the run.
 refract::Ink ink;
+// The camera take: recorded beside the narration when the deck has a camera box (or
+// --camera-take says so), as the wav's .mov; played back in the camera boxes under the voice.
+bool deckHasCamera = false;
+std::string cameraTakeMode = "auto";   // --camera-take, kept where the recorder can see it
+double takeStartAt = 0.0;         // where the take was started from, for a held narration
 refract::Captions captions;      // timings for the slide on screen
 refract::VoiceIndex voiceIndex;  // which wav belongs to which slide, across a reorder
 
@@ -184,6 +190,8 @@ bool editorHoldsDeck();
 void goToSlide(int index);
 double voicelessDwell();
 void setPlayVoice(bool on);
+fs::path takePathFor(const fs::path& wav);
+bool takeWanted();
 void say(const std::string& notice, double forSec = 4.0);
 
 // ── Caption processing ───────────────────────────────────────────────
@@ -314,8 +322,11 @@ void noteSlideShown() {
         if (wav.empty()) {
             std::cerr << "audio: " << slide.file << " has no leading number to key a wav by\n";
             recorder->stop();
+            g.cameraHost.finishTake();
         } else {
             recorder->start(wav.string());
+            if (takeWanted()) g.cameraHost.startTake("default", takePathFor(wav).string());
+            else g.cameraHost.finishTake();
             voiceIndex.record(slide.sourceKey(), wav.stem().string());
             if (g.currentIndex < static_cast<int>(app.voice.size())) {
                 app.voice[g.currentIndex] = 1;   // it has narration from this moment on
@@ -332,6 +343,22 @@ void noteSlideShown() {
 // The index the recorder writes says which wav belongs to which *block*, and a block is what
 // a reorder moves. Without an index — a recording made before there was one, on a deck nobody
 // has reordered — the number is used, exactly as before.
+// The camera take that goes with a wav: the same name, .mov.
+fs::path takePathFor(const fs::path& wav) {
+    if (wav.empty()) return {};
+    fs::path take = wav;
+    take.replace_extension(".mov");
+    return take;
+}
+
+// Whether a narration take should record the camera too: --camera-take on, or auto and a
+// slide somewhere in the deck has a camera box to show it in.
+bool takeWanted() {
+    if (cameraTakeMode == "off" || cameraTakeMode == "never") return false;
+    if (cameraTakeMode == "on" || cameraTakeMode == "always") return true;
+    return deckHasCamera;
+}
+
 fs::path voiceFileFor(int slide, const char* extension) {
     if (app.deck.empty()) return {};
     const auto& entry = app.deck.at(slide);
@@ -387,6 +414,12 @@ void refreshVoicePresence() {
 refract::SlideRecorder slideRecorder;
 
 void stopSlideRecording(bool keep) {
+    if (slideRecorder.running()) {
+        // The take lands beside the kept wav, under its final name; a dropped take goes.
+        const fs::path wav = voiceFileFor(slideRecorder.slide());
+        if (keep && !wav.empty()) g.cameraHost.finishTake(takePathFor(wav).string());
+        else g.cameraHost.discardTake();
+    }
     slideRecorder.stop(keep);
     app.reRecording = false;
     app.reRecordSlide = -1;
@@ -402,9 +435,11 @@ void toggleSlideRecording() {
     if (!recorder) return;
 
     // Playing the old take back through the speakers while recording the new one puts it
-    // straight into the new file.
+    // straight into the new file. The old camera take goes too: the live camera is what is
+    // being recorded, and what the box should show.
     if (voice) voice->stop();
     voicePlaying = false;
+    g.cameraHost.setTake(std::string());
 
     slideRecorder.configure(
         [](int slide) { return voiceFileFor(slide); },
@@ -412,6 +447,7 @@ void toggleSlideRecording() {
             std::error_code ec;
             fs::create_directories(fs::path(path).parent_path(), ec);
             if (recorder) recorder->start(path);
+            if (takeWanted()) g.cameraHost.startTake("default", takePathFor(path).string());
         },
         [] { if (recorder) recorder->stop(); },
         [](int slide, const std::string& stem) {
@@ -458,6 +494,18 @@ void playSlideAudio(double startAt) {
     else if (!wav.empty()) { voice->stop(); voiceHeld = true; }
     else if (!overlap) voice->stop();
 
+    // The camera take recorded with this narration, when there is one: the camera boxes
+    // show it under the voice instead of the live feed, from the same point.
+    const fs::path take = takePathFor(wav);
+    std::error_code takeEc;
+    if (!take.empty() && fs::exists(take, takeEc)) {
+        g.cameraHost.setTake(take.string());
+        g.cameraHost.setTakeTime(startAt);
+        takeStartAt = startAt;
+    } else {
+        g.cameraHost.setTake(std::string());
+    }
+
     if (g.currentIndex + 1 < app.deck.size()) {
         const fs::path next = voiceFileFor(g.currentIndex + 1);
         if (!next.empty()) voice->preload(next.string());
@@ -478,6 +526,7 @@ void toggleTalkClock() {
     // The microphone follows the talk: a pause is a break, and a break belongs in neither
     // the slide's wav nor its recorded duration.
     if (recorder) recorder->setPaused(!app.clock.running);
+    g.cameraHost.pauseTake(!app.clock.running);
     if (voice) {
         if (app.clock.running && voiceHeld) playSlideAudio();   // held back at the slide change
         else voice->setPaused(!app.clock.running);
@@ -489,6 +538,7 @@ void toggleTalkClock() {
 void stopRun() {
     if (!app.timing.recording()) return;
     if (recorder) recorder->stop();
+    g.cameraHost.finishTake();
     app.timing.finish(app.clock.elapsed);
     refreshVoicePresence();
     if (!voice && app.recordAudio) {
@@ -1405,6 +1455,7 @@ sk_sp<SkImage> captureLiveFrame() {
 
 int main(int argc, char* argv[]) {
     const refract::Options options = refract::parseOptions(argc, argv);
+    cameraTakeMode = options.cameraTake;
     if (!options.error.empty()) {
         std::cerr << "refractplayer: " << options.error << "\n" << refract::usageText();
         return 1;
@@ -1503,6 +1554,11 @@ int main(int argc, char* argv[]) {
             rcplayer::VideoSlide slide;
             slide.entry = app.deck.at(i).entry;
             slide.duration = duration;
+            // The camera take, for the slide's camera boxes: recorded with this wav.
+            if (!wavPath.empty()) {
+                const fs::path take = takePathFor(wav);
+                if (fs::exists(take)) slide.take = take.string();
+            }
             // With --captions, the slide's transcript as lines for the band under it. The
             // words are timed from the wav's start, which is where the slide starts.
             if (options.captions && !wavPath.empty()) {
@@ -1872,6 +1928,15 @@ int main(int argc, char* argv[]) {
     }
 
     refreshVoicePresence();
+    // Whether any slide has a camera box: a narration take then records the camera too. The
+    // config string is in the slide's bytes, so a look through the files answers it.
+    if (!g.zip) {
+        for (const std::string& file : g.files) {
+            std::ifstream in(file, std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (bytes.find("camera:") != std::string::npos) { deckHasCamera = true; break; }
+        }
+    }
     {
         int narrated = 0;
         for (int v : app.voice) narrated += v;
@@ -1979,6 +2044,12 @@ int main(int argc, char* argv[]) {
         {
             const double t = glfwGetTime();
             app.wall = t;
+            // A take under the narration follows the audio's clock — the one the captions
+            // follow — and holds where it was started while the talk is paused.
+            if (g.cameraHost.takePlaying()) {
+                g.cameraHost.setTakeTime(voicePlaying && voice ? voice->currentTime() : takeStartAt);
+                g.needsRedraw = true;
+            }
             // A notice redraws while it is up, and once more to take it down.
             if (!app.notice.empty()) {
                 if (t >= app.noticeUntil) app.notice.clear();
@@ -2358,6 +2429,7 @@ int main(int argc, char* argv[]) {
     presenter.reset();
     glfwMakeContextCurrent(window);
     g.avfPlayer.reset();
+    g.cameraHost.finishTake();
     g.cameraHost.stop();      // the camera light goes off with the deck
     g.webpPlayer.reset();
     g.paintCtx.reset();

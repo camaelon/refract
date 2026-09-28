@@ -38,6 +38,9 @@ struct Options {
 
     bool record = false;
     bool recordAudio = false;       // implies record
+    // --camera-take: record the camera beside the narration — "auto" (when the deck has a
+    // camera box), "on" (always), "off" (never).
+    std::string cameraTake = "auto";
 
     // The modes that do their work and exit, in the order main runs them.
     std::string pdf;

@@ -65,6 +65,7 @@ Options parseOptions(int argc, char* argv[]) {
         else if (arg == "--sync-serve") o.syncServe = true;
         else if (arg == "--sync-bind") o.syncBind = next("--sync-bind");
         else if (arg == "--sync-key") o.syncKey = next("--sync-key");
+        else if (arg == "--camera-take") o.cameraTake = next("--camera-take");
         else if (arg == "--pdf") o.pdf = next("--pdf");
         else if (arg == "--images") o.images = next("--images");
         else if (arg == "--video") o.video = next("--video");
@@ -153,6 +154,9 @@ std::string usageText() {
         "                     and on each player, or anyone in the room can drive the deck\n"
         "  --sync-bind <addr> the address the sync point listens on (default: every\n"
         "                     interface; 127.0.0.1 keeps it to this machine and a tunnel)\n"
+        "  --camera-take <auto|on|off>  record the camera beside the narration, as NN.mov\n"
+        "                     next to NN.wav; auto (default) does so when the deck has a\n"
+        "                     camera box, and the take plays in that box under the voice\n"
         "  --captions         open the close-caption window (needs timings from\n"
         "                     --transcribe); with --video, burn the captions into\n"
         "                     the movie as a line under the slides\n"
