@@ -252,6 +252,39 @@ class RenderBlock(unittest.TestCase):
         out = self.rb({"kind": "video", "path": "v.mp4", "clip": "24"})
         self.assertIn({"clip": 24.0}, out[0]["modifiers"])
 
+    def test_sized_camera_sits_in_its_row(self):
+        out = self.rb({"kind": "camera", "device": "", "width": 190.66, "height": 190.66,
+                       "clip": "circle", "crop": [0.25, 0.25, 0.75, 0.75]})
+        row = out[0]
+        self.assertEqual(row["horizontalAlignment"], "start")
+        inner = row["children"][0]
+        self.assertIn({"width": 190.66}, inner["modifiers"])
+        self.assertIn({"clip": 95.33}, inner["modifiers"])
+        self.assertEqual(inner["config"], "camera:default#crop=0.25,0.25,0.75,0.75")
+        out = self.rb({"kind": "camera", "device": "", "height": 200, "ratio": 2.0, "align": "end"})
+        self.assertIn({"width": 400.0}, out[0]["children"][0]["modifiers"])
+        self.assertEqual(out[0]["horizontalAlignment"], "end")
+
+    def test_template_camera_badge(self):
+        from dataclasses import replace
+        theme = replace(THEME, camera_overlay={"x": 957.55, "y": 197.54, "width": 505.59,
+                                               "clip": "circle", "zoom": 1.5, "mirror": True})
+        root = render.with_chrome({"type": "box", "children": []}, theme, 0, 3, 1600, 900, False)
+        badge = root["children"][-1]
+        self.assertEqual((badge["horizontalAlignment"], badge["verticalAlignment"]), ("start", "top"))
+        self.assertIn({"padding": [957.55, 197.54, 0.0, 0.0]}, badge["modifiers"])
+        node = badge["children"][0]
+        self.assertEqual(node["config"], "camera:default#crop=0.1667,0.1667,0.8333,0.8333&mirror=1")
+        self.assertIn({"clip": 252.79}, node["modifiers"])
+        self.assertIn({"height": 505.59}, node["modifiers"], "a square when only one side is given")
+        # A corner anchor pads from that corner; no camera means no layer.
+        theme = replace(THEME, camera_overlay={"x": 40, "y": 40, "width": 200, "anchor": "bottom-right"})
+        badge = render.with_chrome({"type": "box", "children": []}, theme, 0, 3, 1600, 900, False)["children"][-1]
+        self.assertEqual((badge["horizontalAlignment"], badge["verticalAlignment"]), ("end", "bottom"))
+        self.assertIn({"padding": [0.0, 0.0, 40.0, 40.0]}, badge["modifiers"])
+        plain = render.with_chrome({"type": "box", "children": []}, THEME, 0, 3, 1600, 900, False)
+        self.assertEqual(plain, {"type": "box", "children": []})
+
     def test_embedded_video_src_falls_back_to_basename(self):
         # Without an explicit copied `src`, the config uses the path's file name.
         out = self.rb({"kind": "video", "path": "clips/demo.mp4"})

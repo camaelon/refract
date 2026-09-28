@@ -659,19 +659,30 @@ def _embed_corner(block: dict, theme: Theme):
 
 
 def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
-               debug: bool) -> dict:
+               debug: bool, size=None, align: str = "start") -> dict:
     """Size an embed's box. By default it fills the width at ``box_h`` tall; when ``ratio``
     (width / height) is set the box is fitted to that aspect ratio within (avail_w, box_h) and
-    centred in the area, so a square face doesn't stretch to fill a wide slide. ``inner`` is the
-    embed node — this sets its size/clip modifiers (it must not already carry them). ``corner``
-    is a radius, or ``"circle"`` for half the box's shorter side."""
+    centred in the area, so a square face doesn't stretch to fill a wide slide; when ``size``
+    (width, height — either may be None) is set the box is exactly that, placed by ``align``
+    in a row of its own height, the way a sized image is. ``inner`` is the embed node — this
+    sets its size/clip modifiers (it must not already carry them). ``corner`` is a radius, or
+    ``"circle"`` for half the box's shorter side."""
+    sized = size is not None and (size[0] or size[1])
     framed = ratio is not None
-    if framed:
+    if sized:
+        bw, bh = size
+        if bw and not bh:
+            bh = bw / ratio if ratio else bw
+        elif bh and not bw:
+            bw = bh * ratio if ratio else bh
+        bw, bh = float(bw), float(bh)
+        mods: list = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
+    elif framed:
         bh = float(box_h)
         bw = bh * ratio
         if bw > avail_w:
             bw, bh = float(avail_w), float(avail_w) / ratio
-        mods: list = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
+        mods = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
     else:
         bw, bh = float(avail_w), float(box_h)
         mods = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
@@ -680,12 +691,23 @@ def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
     if corner and corner > 0:
         mods.append({"clip": round(float(corner), 2)})
     inner["modifiers"] = dbg(mods, debug)
+    if sized:
+        return {"type": "box",
+                "modifiers": dbg(["fillMaxWidth", {"height": round(bh, 2)}], debug),
+                "horizontalAlignment": align if align in ("start", "center", "end") else "start",
+                "verticalAlignment": "top", "children": [inner]}
     if not framed:
         return inner
     return {"type": "box",
             "modifiers": dbg(["fillMaxWidth", {"height": round(float(box_h), 2)}], debug),
             "horizontalAlignment": "center", "verticalAlignment": "center",
             "children": [inner]}
+
+
+def _embed_size(block: dict):
+    """(width, height) an include asked for outright, or None."""
+    w, h = block.get("width"), block.get("height")
+    return (w, h) if (w or h) else None
 
 
 def render_video(block: dict, theme: Theme, debug: bool,
@@ -701,27 +723,85 @@ def render_video(block: dict, theme: Theme, debug: bool,
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
     config = _media_config("video", src, {"crop": _crop_opt(block)})
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
+                     size=_embed_size(block), align=block.get("align", "start"))
     return _with_caption(box, block, theme, debug, avail_h)
+
+
+def _camera_config(block: dict) -> str:
+    """The camera host's config for a block (or a template's ``[camera]`` table): device,
+    ``fit`` (``fill`` by default: a face in a circle should fill it; ``fit`` letterboxes), a
+    source ``crop`` — from ``zoom``/``focus`` when those are what was said — and ``mirror``."""
+    device = block.get("device") or "default"
+    fit = str(block.get("fit") or "fill").lower()
+    crop = block.get("crop")
+    if isinstance(crop, str):
+        from .deck import parse_crop
+        crop = parse_crop(crop)
+    if block.get("zoom") and not block.get("_zoomed"):
+        from .deck import zoom_crop, parse_focus
+        focus = block.get("focus")
+        if isinstance(focus, str):
+            focus = parse_focus(focus)
+        crop = zoom_crop(block["zoom"], focus, crop)
+    mirror = block.get("mirror")
+    if isinstance(mirror, str):
+        mirror = mirror.lower() not in ("0", "false", "off", "no")
+    opts = {"fit": fit if fit != "fill" else "", "crop": _crop_opt({"crop": crop}),
+            "mirror": "1" if mirror else ""}
+    return _media_config("camera", str(device), opts)
 
 
 def render_camera(block: dict, theme: Theme, debug: bool,
                   avail_w: float, avail_h: float) -> list[dict]:
     """The player's camera feed as a native custom component (op 93): ``camera:<device>``
-    with the options the camera host reads — ``fit`` (``fill`` by default: a face in a circle
-    should fill it; ``fit`` letterboxes), a source ``crop``, and ``mirror``. The device is a
-    name substring or an index; ``default`` is the machine's own. Nothing is copied: the
-    picture only exists at playback, so exports draw a marked box in its place."""
+    with the options the camera host reads (see ``_camera_config``). The device is a name
+    substring or an index; ``default`` is the machine's own. Nothing is copied: the picture
+    only exists at playback, so exports draw a marked box in its place."""
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
-    device = block.get("device") or "default"
-    fit = (block.get("fit") or "fill").lower()
-    opts = {"fit": fit if fit != "fill" else "", "crop": _crop_opt(block),
-            "mirror": "1" if block.get("mirror") else ""}
-    config = _media_config("camera", device, opts)
+    config = _camera_config({**block, "_zoomed": True})   # deck.py already turned zoom into crop
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
+                     size=_embed_size(block), align=block.get("align", "start"))
     return _with_caption(box, block, theme, debug, avail_h)
+
+
+def _camera_overlay(theme: Theme, width: int, height: int, debug: bool):
+    """The template's camera badge: a ``[camera]`` table in a theme toml (or ``[camera]`` in
+    settings.toml for every slide) puts the feed at a fixed spot on every slide that uses it,
+    over the content — the speaker in the corner of the deck, without a line of markdown per
+    slide. ``x``/``y`` are insets from the ``anchor`` corner (top-left by default), in slide
+    px; ``width``/``height`` size it; ``clip``, ``zoom``, ``focus``, ``crop``, ``mirror``,
+    ``fit`` and ``device`` mean what they do on ``<camera | …>``. None when the theme has no
+    camera, or the slide said ``camera=off``."""
+    cam = getattr(theme, "camera_overlay", None)
+    if not cam:
+        return None
+    def num(k, default):
+        try:
+            return float(cam.get(k, default))
+        except (TypeError, ValueError):
+            return float(default)
+    w = num("width", 0) or num("height", 240)
+    h = num("height", 0) or w
+    x, y = num("x", 0), num("y", 0)
+    anchor = str(cam.get("anchor", "top-left")).lower()
+    h_align = "end" if "right" in anchor else "start"
+    v_align = "bottom" if "bottom" in anchor else "top"
+    pad = [x if h_align == "start" else 0.0, y if v_align == "top" else 0.0,
+           x if h_align == "end" else 0.0, y if v_align == "bottom" else 0.0]
+    corner = _embed_corner(cam, theme) if "clip" in cam else 0.0
+    if corner == "circle":
+        corner = min(w, h) / 2.0
+    mods: list = [{"width": round(w, 2)}, {"height": round(h, 2)}]
+    if corner and corner > 0:
+        mods.append({"clip": round(float(corner), 2)})
+    node = {"type": "custom", "config": _camera_config(cam), "modifiers": dbg(mods, debug),
+            "children": []}
+    return {"type": "box", "horizontalAlignment": h_align, "verticalAlignment": v_align,
+            "modifiers": dbg(["fillMaxSize", {"padding": [round(v, 2) for v in pad]}], debug),
+            "children": [node]}
 
 
 def render_rc_embed(block: dict, theme: Theme, debug: bool,
@@ -741,7 +821,8 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug)
+                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
+                     size=_embed_size(block), align=block.get("align", "start"))
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -1586,15 +1667,21 @@ def _chrome_overlay(theme: Theme, index: int, total: int, width: int, height: in
 
 def with_chrome(content: dict, theme: Theme, index: int, total: int,
                 width: int, height: int, debug: bool, stype: str = "content") -> dict:
-    """Layer the chrome overlay on top of a slide's content node. Title and section
-    slides are clean covers — they never carry footer / page number / progress chrome."""
-    if stype in ("title", "section") or getattr(theme, "chrome_hidden", False):
-        return content
-    overlay = _chrome_overlay(theme, index, total, width, height, debug)
-    if overlay is None:
+    """Layer the chrome overlay — and the template's camera badge, when it has one — on top
+    of a slide's content node. Title and section slides are clean covers: they never carry
+    footer / page number / progress chrome (the camera, if the template asks, they do)."""
+    layers = []
+    if not (stype in ("title", "section") or getattr(theme, "chrome_hidden", False)):
+        overlay = _chrome_overlay(theme, index, total, width, height, debug)
+        if overlay is not None:
+            layers.append(overlay)
+    camera = _camera_overlay(theme, width, height, debug)
+    if camera is not None:
+        layers.append(camera)
+    if not layers:
         return content
     return {"type": "box", "modifiers": dbg(["fillMaxSize"], debug),
-            "children": [content, overlay]}
+            "children": [content, *layers]}
 
 
 def _no_web(blocks: list[dict]) -> list[dict]:

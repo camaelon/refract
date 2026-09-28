@@ -104,6 +104,15 @@ gap = 47
         self.assertEqual(ov["h3_color"], "#FF5F6368")
         self.assertEqual(ov["h3_gap"], "47")
 
+    def test_camera_table_becomes_one_option_string(self):
+        data = {"type": "content", "camera": {"x": 957.55, "y": 197.54, "width": 505.59,
+                                              "clip": "circle", "zoom": 1.5, "mirror": True,
+                                              "device": "FaceTime HD"}}
+        parsed = as_theme.parse_theme_toml(data)
+        self.assertEqual(parsed["overrides"]["camera"],
+                         'x=957.55 y=197.54 width=505.59 clip=circle zoom=1.5 mirror device="FaceTime HD"')
+        self.assertEqual(as_theme.parse_theme_toml({"camera": {}})["overrides"]["camera"], "off")
+
     def test_theme_include_asset_resolution(self):
         asset_file = os.path.join(self.include_dir, "theme_badge.png")
         with open(asset_file, "wb") as f:

@@ -186,7 +186,24 @@ def parse_theme_toml(data: dict) -> dict:
             if not isinstance(v, (dict, list)):
                 overrides["bg_doc"] = str(v)
 
-    # 7. [section] table
+    # 7. [camera] table: the template's camera badge, carried as one include-option string
+    # ("x=957.55 y=197.54 width=505.59 clip=circle mirror") — the grammar `<camera | …>` uses,
+    # so a slide can say the same thing, or `camera=off`, in its own metadata.
+    cam = data.get("camera")
+    if isinstance(cam, dict):
+        parts = []
+        for k, v in cam.items():
+            if isinstance(v, (dict, list)):
+                continue
+            if isinstance(v, bool):
+                if v:
+                    parts.append(str(k).lower())
+                continue
+            sval = str(v)
+            parts.append(f"{str(k).lower()}=" + (f'"{sval}"' if " " in sval else sval))
+        overrides["camera"] = " ".join(parts) if parts else "off"
+
+    # 8. [section] table
     sec = data.get("section")
     if isinstance(sec, dict):
         if "numbered" in sec:
@@ -225,9 +242,26 @@ def resolve_as_slide(slide: dict, deck_dir: str, fallback_dirs=()) -> dict:
     if not new_meta.get("ratio") and parsed.get("ratio"):
         new_meta["ratio"] = parsed["ratio"]
 
-    # Merge overrides: TOML defaults, with slide overrides taking precedence
+    # Merge overrides: TOML defaults, with slide overrides taking precedence. The camera
+    # badge is the one key that adds up: a slide that says `camera="x=40 y=40"` moves the
+    # template's badge and keeps its clip, zoom and the rest; `camera=off` still drops it.
     merged = dict(parsed.get("overrides") or {})
-    merged.update(new_meta.get("overrides") or {})
+    slide_overrides = dict(new_meta.get("overrides") or {})
+    if "camera" in merged and "camera" in slide_overrides:
+        own = str(slide_overrides["camera"]).strip()
+        if own.lower() not in ("off", "none", "false", "no", "0", "on", "true", "yes", "1", ""):
+            from .markdown import _parse_include_opts
+            base = _parse_include_opts(str(merged["camera"]))
+            mine = _parse_include_opts(own)
+            # A new width without a height (or the reverse) means a square of that side,
+            # not the template's other side kept.
+            if ("width" in mine) != ("height" in mine):
+                base.pop("height" if "width" in mine else "width", None)
+            base.update(mine)
+            slide_overrides["camera"] = " ".join(
+                k if v is True else f"{k}=" + (f'"{v}"' if " " in str(v) else str(v))
+                for k, v in base.items() if v is not False)
+    merged.update(slide_overrides)
     new_meta["overrides"] = merged
 
     slide["meta"] = new_meta

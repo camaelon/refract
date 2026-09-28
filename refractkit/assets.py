@@ -25,6 +25,9 @@ KINDS = [
     ("code", (".kt", ".kts", ".java", ".py", ".ts", ".js")),
     ("shader", (".sksl",)),
     ("deck", (".md",)),
+    # Not a file: `<camera>` is the machine's camera. Listed so the include options that
+    # apply to it (clip, zoom, mirror, device…) have a kind to be filed under.
+    ("camera", ()),
 ]
 
 

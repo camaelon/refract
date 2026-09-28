@@ -614,6 +614,19 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".", fallback_dirs=(
     if "numbered" in overrides or "number" in overrides:
         val = str(overrides.get("numbered", overrides.get("number"))).lower()
         changes["section_numbered"] = val not in ("false", "0", "off", "no")
+    # The template's camera badge: `camera=off` on a slide drops it, `camera="x=… y=…"` (the
+    # `<camera | …>` option grammar) places or re-places it, `camera=on` keeps the theme's.
+    if "camera" in overrides:
+        val = overrides["camera"]
+        if isinstance(val, dict):
+            changes["camera_overlay"] = val or None
+        else:
+            sval = str(val).strip()
+            if sval.lower() in ("off", "none", "false", "no", "0", ""):
+                changes["camera_overlay"] = None
+            elif sval.lower() not in ("on", "true", "yes", "1"):
+                from refractkit.markdown import _parse_include_opts
+                changes["camera_overlay"] = {**(theme.camera_overlay or {}), **_parse_include_opts(sval)}
     # `chrome=off` drops this slide's bottom chrome (footer / page number / progress bar) and
     # lets the content expand into the freed space.
     if "chrome" in overrides:

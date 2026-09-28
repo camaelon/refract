@@ -112,6 +112,40 @@ def resolve_include(name: str, includes_dir: str, extra_dirs: list[str] | None =
     return {"kind": "missing", "name": name}
 
 
+def zoom_crop(zoom: float, focus=(0.5, 0.5), within: list | None = None) -> list | None:
+    """The ``crop`` rectangle a ``zoom=N`` means: the middle 1/N of the frame (by side), centred
+    on ``focus`` (fractions of the frame, default the centre) and kept inside it. ``within``
+    is a crop already asked for: the zoom then applies inside that rectangle."""
+    try:
+        z = float(zoom)
+    except (TypeError, ValueError):
+        return None
+    if z <= 1.0:
+        return within
+    half = 0.5 / z
+    fx, fy = focus if focus else (0.5, 0.5)
+    cx = min(max(float(fx), half), 1.0 - half)
+    cy = min(max(float(fy), half), 1.0 - half)
+    rect = [cx - half, cy - half, cx + half, cy + half]
+    if within:
+        l, t, r, b = within
+        rect = [l + rect[0] * (r - l), t + rect[1] * (b - t), l + rect[2] * (r - l), t + rect[3] * (b - t)]
+    return [round(v, 4) for v in rect]
+
+
+def parse_focus(value) -> tuple | None:
+    """``focus=x,y`` as two fractions 0–1, or None."""
+    if not value:
+        return None
+    try:
+        parts = [float(x) for x in str(value).replace(" ", "").split(",")]
+    except ValueError:
+        return None
+    if len(parts) != 2:
+        return None
+    return (min(max(parts[0], 0.0), 1.0), min(max(parts[1], 0.0), 1.0))
+
+
 def parse_crop(value) -> list | None:
     """Parse a ``crop=l,t,r,b`` value into four source fractions (0–1), or None. Ignored
     unless it's four numbers forming a positive-area rectangle inside the unit square."""
@@ -170,6 +204,25 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # embed's box, over the theme's image corner radius.
     if opts.get("clip") and block["kind"] in _FRAMEABLE:
         block["clip"] = str(opts["clip"]).lower()
+    # ``width=`` / ``height=`` size the box outright (px), as they do an image, instead of
+    # filling what is left; one of them with ``ratio=`` gives the other. ``align=`` places a
+    # sized box in its row (start by default).
+    if block["kind"] in _FRAMEABLE:
+        for k in ("width", "height"):
+            if opts.get(k):
+                try:
+                    block[k] = float(opts[k])
+                except (TypeError, ValueError):
+                    pass
+        if opts.get("align"):
+            block["align"] = str(opts["align"]).lower()
+    # ``zoom=N`` shows the middle 1/N of the frame — a face, closer — centred on ``focus=x,y``
+    # when given; it composes with a ``crop`` by zooming inside it.
+    if opts.get("zoom") and block["kind"] in _FRAMEABLE:
+        zoomed = zoom_crop(opts["zoom"], parse_focus(opts.get("focus")), block.get("crop"))
+        if zoomed:
+            block["crop"] = zoomed
+            block["zoom"] = float(opts["zoom"])
     # The camera: ``mirror`` flips it like a mirror (what a speaker expects to see of
     # themselves), ``device=`` picks one when the machine has several.
     if block["kind"] == "camera":

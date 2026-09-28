@@ -142,5 +142,19 @@ class ParseMarkdown(unittest.TestCase):
         self.assertEqual(len(slides), 1)
 
 
+class MetaQuotedValues(unittest.TestCase):
+    def test_a_quoted_value_keeps_its_spaces(self):
+        from refractkit.markdown import parse_meta
+        m = parse_meta('as: hero camera="x=40 y=40 anchor=bottom-right" accent=#FF00FF00')
+        self.assertEqual(m["type"], "as")
+        self.assertEqual(m["params"], "hero")
+        self.assertEqual(m["overrides"]["camera"], "x=40 y=40 anchor=bottom-right")
+        self.assertEqual(m["overrides"]["accent"], "#FF00FF00")
+        self.assertEqual(m["flags"], [])
+        m = parse_meta("content [2:3] title='Two words' @nico")
+        self.assertEqual(m["overrides"]["title"], "Two words")
+        self.assertEqual((m["ratio"], m["author"]), ([2, 3], "nico"))
+
+
 if __name__ == "__main__":
     unittest.main()

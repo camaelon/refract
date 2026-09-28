@@ -41,6 +41,8 @@ TITLE_RE = re.compile(r"^#\s+(.*)$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)-\s+(.+)$")
 INCLUDE_LINE = re.compile(r"^<([^>]+)>$")
+# A metadata token: runs of non-space, with double- or single-quoted stretches kept whole.
+META_TOKEN_RE = re.compile(r"""(?:[^\s"']+|"[^"]*"|'[^']*')+""")
 RATIO_RE = re.compile(r"\[(\d+(?::\d+)+)\]")
 # A *single-asterisk italic* line = subtitle. The lookarounds exclude **bold** (and ***…***),
 # which must stay inline emphasis rather than being swallowed as a subtitle.
@@ -68,14 +70,18 @@ def parse_meta(spec: str) -> dict:
         ratio = [int(x) for x in m.group(1).split(":")]
         spec = (spec[:m.start()] + spec[m.end():]).strip()
 
-    # Pull out key=value overrides and ``@author`` attributions from anywhere.
+    # Pull out key=value overrides and ``@author`` attributions from anywhere. A value may
+    # be quoted to carry spaces (``camera="x=40 y=40 anchor=bottom-right"``); the quotes go.
     overrides = {}
     author = None
     kept = []
-    for tok in spec.split():
+    for tok in META_TOKEN_RE.findall(spec):
         if "=" in tok:
             k, v = tok.split("=", 1)
-            overrides[k.strip()] = v.strip()
+            v = v.strip()
+            if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+                v = v[1:-1]
+            overrides[k.strip()] = v
         elif tok.startswith("@") and len(tok) > 1:
             author = tok[1:]
         else:

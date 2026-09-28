@@ -86,6 +86,19 @@ class ResolveBlocks(unittest.TestCase):
         self.assertEqual(out[0]["device"], "1")
         self.assertEqual(out[0]["crop"], [0.1, 0.0, 0.9, 1.0])
 
+    def test_zoom_is_a_centred_crop(self):
+        self.assertEqual(deck.zoom_crop(2), [0.25, 0.25, 0.75, 0.75])
+        self.assertEqual(deck.zoom_crop(2, (0.0, 0.5)), [0.0, 0.25, 0.5, 0.75], "a focus at the edge stays inside")
+        self.assertEqual(deck.zoom_crop(1), None, "no zoom is no crop")
+        self.assertEqual(deck.zoom_crop(2, None, [0.0, 0.0, 0.5, 1.0]), [0.125, 0.25, 0.375, 0.75],
+                         "a zoom inside a crop")
+        slide = {"base_dir": tempfile.mkdtemp(), "blocks": [
+            {"kind": "include", "name": "camera",
+             "opts": {"zoom": "1.6", "focus": "0.5,0.4", "width": "190.66", "height": "190.66"}}]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["crop"], [0.1875, 0.0875, 0.8125, 0.7125])
+        self.assertEqual((out[0]["width"], out[0]["height"]), (190.66, 190.66))
+
     def test_clip_applies_to_video_too(self):
         d = tempfile.mkdtemp()
         inc = os.path.join(d, "includes")

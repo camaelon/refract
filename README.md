@@ -280,6 +280,39 @@ and rc/json embeds:
   on video, rc/json embeds and the camera.
 - `mirror` — flip the camera left-right, the way a speaker expects to see themselves.
   `device=…` picks a camera by a substring of its name or by index (the same as `<camera:…>`).
+- `width=` / `height=` — size the box outright in px, as for an image, instead of filling
+  what is left; one of them with `ratio=` gives the other. `align=start|center|end` places a
+  sized box in its row. So a portrait slot takes the camera as it took the photograph:
+  `<camera | width=190.66 height=190.66 clip=circle zoom=1.6 mirror>`.
+- `zoom=N` — show the middle 1/N of the frame: a face, closer, without moving the camera.
+  `focus=x,y` (fractions 0–1, default the centre) says what to zoom on; a `crop` composes
+  with it (the zoom happens inside the crop).
+
+**A camera in the template.** A theme preset (`theme/<name>.toml`, used with `:: as: name`)
+can carry the camera itself, so every slide on that template shows the speaker at the same
+spot without a line of markdown each: a `[camera]` table with `x`/`y` (insets from the
+`anchor` corner — `top-left` by default, or `top-right`, `bottom-left`, `bottom-right` —
+in slide px), `width`/`height`, and any of `clip`, `zoom`, `focus`, `crop`, `mirror`,
+`fit`, `device`. The badge is layered over the content, above the chrome, on every slide of
+that template — title and section slides included. A slide can drop it with `camera=off`
+in its metadata, or re-place it: `:: as: hero camera="x=40 y=40 width=240 anchor=bottom-right"`
+(the same option grammar, quoted). A `[camera]` table in `settings.toml` does the same for
+the whole deck. Exports draw the marked "camera" plate where the badge goes.
+
+```toml
+# theme/speaker_live.toml — the speaker card with the speaker live
+type = "content"
+bg_doc = "bg_hero.json"
+
+[camera]
+x = 957.55
+y = 197.54
+width = 505.59
+clip = "circle"
+zoom = 1.4
+focus = "0.5,0.45"
+mirror = true
+```
 - `title=…` — a centred caption drawn below the embed (the embed shrinks to make room). Quote
   it for multiple words: `<widget.rc | fit=fit title="Launcher Widget">`. Works on video,
   rc/json embeds and images.

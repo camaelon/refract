@@ -118,6 +118,9 @@ class Theme:
     chrome_footer: str = ""
     chrome_progress: bool = False
     chrome_hidden: bool = False          # per-slide `chrome=off`: no bottom chrome, content expands
+    # The camera badge a template (or settings.toml's [camera]) puts on every slide: the
+    # same keys as `<camera | …>` plus x/y/anchor — see render._camera_overlay. None: no badge.
+    camera_overlay: dict | None = None
     chrome_color: str = "#66FFFFFF"     # deprecated (kept for back-compat); use chrome_alpha
     chrome_alpha: float = 0.55          # translucency of the whole chrome overlay
     # Progress bar: mark section starts with a small circle above the bar, and colour the
@@ -353,6 +356,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.table_header_bg = th.get("table_header_bg", t.table_header_bg)
     if "table_corner_radius" in th:
         t.table_corner_radius = float(th["table_corner_radius"])
+
+    cam = settings.get("camera")
+    if isinstance(cam, dict) and cam:
+        t.camera_overlay = {str(k).lower(): v for k, v in cam.items() if not isinstance(v, (dict, list))}
 
     code = settings.get("code", {})
     t.code_background = code.get("background", th.get("code_background", t.code_background))
