@@ -71,7 +71,9 @@ Two things, and only two, since the checkout holds the rest:
 | **Python 3.11+** | `refract.py` is Python, and it reads `settings.toml` with `tomllib`, which arrived in 3.11. macOS ships 3.9, so: `brew install python`. Put it **ahead of `/usr/bin` on `PATH`** — the player looks `python3` up itself for its editing tools, and where that finds Apple's, refract works from the terminal and fails quietly inside the editor. `--check` reports both. |
 | **A JVM 21+** | `json2rc` turns each slide's JSON into `.rc`, and it is a Java program: `brew install openjdk@21`. Only that one step wants it. `--json-only` stops before it, and playing a deck someone has already built never reaches it. |
 
-Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and nothing else.
+Optional: **graphviz** (`brew install graphviz`) for `graph` slides, and — only for turning a
+recorded narration into captions — the transcriber, which the player installs into its own
+environment on request: `prebuilt/refractplayer --install-transcriber`. Nothing else.
 
 ### The prebuilt binaries
 

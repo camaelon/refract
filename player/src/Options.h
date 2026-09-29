@@ -41,6 +41,8 @@ struct Options {
     // --camera-take: record the camera beside the narration — "auto" (when the deck has a
     // camera box), "on" (always), "off" (never).
     std::string cameraTake = "auto";
+    // --install-transcriber: put whisper/whisperx in captions.py's own environment and exit.
+    bool installTranscriber = false;
 
     // The modes that do their work and exit, in the order main runs them.
     std::string pdf;

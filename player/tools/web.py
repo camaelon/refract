@@ -21,6 +21,8 @@ The bundle is built once from the players/cpp sibling checkout:
     (cd players/typescript && npm install && npm run bundle)
 """
 
+from __future__ import annotations   # importable under a stock macOS python3 (3.9)
+
 import argparse
 import base64
 import hashlib

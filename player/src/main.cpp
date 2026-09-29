@@ -1538,6 +1538,11 @@ int main(int argc, char* argv[]) {
         std::cerr << refract::usageText();
         return 0;
     }
+    // Setting the transcriber up needs no deck, no window and no narration: it is the one
+    // thing somebody does on a machine that has just been handed the checkout.
+    if (options.installTranscriber) {
+        return refract::runTool("captions.py", {"--install"});
+    }
 
     // What the options say about the run itself, rather than about a window.
     app.clock.target = options.duration;

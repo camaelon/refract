@@ -1135,17 +1135,34 @@ prebuilt/refractplayer mytalk/out --transcribe       # transcribe + align it
 prebuilt/refractplayer mytalk/out --captions         # play it back with captions (or press C)
 ```
 
-`--transcribe` needs two Python packages, one per step:
+`--transcribe` needs a transcriber and an aligner, and they are not small — they bring torch
+with them — so the player keeps its own environment rather than asking anything of the Python
+it happens to find. On a machine that has never done this, once:
 
 ```sh
-pip install openai-whisper     # transcription (or: pip install faster-whisper)
-pip install whisperx           # forced alignment
+prebuilt/refractplayer --install-transcriber      # or: python3 player/tools/captions.py --install
 ```
+
+That makes a virtual environment under the user's cache directory
+(`~/Library/Caches/refract/captions-venv`, or wherever `REFRACT_CAPTIONS_VENV` says) and
+installs `whisperx` into it, which brings `faster-whisper` along for the transcription step.
+It prints the same `progress:` lines a transcription does, so the processing window shows how
+far the download has got. Afterwards every run finds it: `captions.py` re-executes itself
+inside that environment whenever the Python it was started with has nothing, which is what
+makes `--transcribe` work on a machine where nothing was installed by hand. A Python that
+already has the packages is used as it is and no environment is made — `captions.py --where`
+says which case a machine is in, and whether `ffmpeg` (which both steps read audio through)
+is on the PATH.
+
+A deck can also be transcribed on another machine entirely: the recordings are ordinary wavs,
+so `python3 player/tools/captions.py <deck>/voice` on the machine that has the packages writes
+the `.txt` and `.words.json` files back beside them, and they travel with the deck.
 
 The work is Python's, so the player runs [`tools/captions.py`](tools/captions.py) — passing
 it the voice directory, the one thing the script cannot work out for itself. That script also
-stands alone (`python3 tools/captions.py <voice-dir>`), and `REFRACT_CAPTIONS_SCRIPT` points
-the player at it if the binary has been moved away from the repo.
+stands alone (`python3 tools/captions.py <voice-dir>`), needs only a `python3` of any vintage
+to start (it is written to import under the 3.9 macOS ships), and `REFRACT_CAPTIONS_SCRIPT`
+points the player at it if the binary has been moved away from the repo.
 
 It writes two files beside each wav:
 

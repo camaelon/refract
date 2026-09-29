@@ -15,6 +15,17 @@ Two steps, each with its own optional dependency:
     transcribe   wav              -> text     (openai-whisper, or faster-whisper)
     align        wav + text       -> per-word start/end  (whisperx)
 
+Neither is a small install (they bring torch with them), and a machine that has them in one
+Python rarely has them in the one `python3` happens to mean. So this script keeps its own:
+
+    python3 player/tools/captions.py --install
+
+makes a virtual environment under the user's cache directory and puts them in it, and every
+run after that re-executes itself there when the Python it was started with has nothing —
+which is what makes `--transcribe` work on a machine where nothing was set up by hand.
+``REFRACT_CAPTIONS_VENV`` puts that environment somewhere else; a Python that already has
+the packages is used as it is, and no environment is made.
+
 For every ``NN.wav`` in the deck's voice directory this writes:
 
     NN.txt          the transcript, as plain text
@@ -30,9 +41,144 @@ Both models are loaded once and reused across the deck; loading dominates the co
 short files a slide's narration produces.
 """
 
+from __future__ import annotations   # this script must import under the python3 a machine
+                                    # happens to have, which on macOS is still 3.9
+
+import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
+
+
+# ── Where the packages live ──────────────────────────────────────────────────
+
+def venv_dir(env: dict | None = None) -> str:
+    """The environment `--install` fills, and the one a run falls back to. Under the user's
+    cache directory, because it is a cache: deleting it costs one re-install and nothing
+    else, and a deck never refers to it."""
+    env = os.environ if env is None else env
+    named = env.get("REFRACT_CAPTIONS_VENV")
+    if named:
+        return os.path.expanduser(named)
+    home = env.get("HOME") or os.path.expanduser("~")
+    if sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Caches", "refract")
+    else:
+        base = env.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
+        base = os.path.join(base, "refract")
+    return os.path.join(base, "captions-venv")
+
+
+def venv_python(venv: str) -> str:
+    """The interpreter inside an environment, whichever platform made it."""
+    if sys.platform == "win32":
+        return os.path.join(venv, "Scripts", "python.exe")
+    return os.path.join(venv, "bin", "python3")
+
+
+def missing(finder=None) -> list[str]:
+    """Which of the two steps this interpreter cannot do, by name. Asked with `find_spec`
+    rather than an import: importing whisperx pulls torch in, which takes seconds, and the
+    answer here is only whether the packages are installed at all."""
+    find = finder or importlib.util.find_spec
+
+    def has(name: str) -> bool:
+        try:
+            return find(name) is not None
+        except (ImportError, ValueError):
+            return False
+
+    out = []
+    if not has("whisper") and not has("faster_whisper"):
+        out.append("a transcriber (openai-whisper or faster-whisper)")
+    if not has("whisperx"):
+        out.append("whisperx (the aligner)")
+    return out
+
+
+def installer_python(which=None) -> str | None:
+    """The interpreter to build the environment with. This one when it is new enough, else
+    the newest `python3.N` on the PATH: Apple's 3.9 is what `python3` means on a Mac nobody
+    has set up, and the packages have no wheels for it. None when there is nothing suitable."""
+    look = which or shutil.which
+    if sys.version_info >= (3, 10):
+        return sys.executable
+    for name in ("python3.13", "python3.12", "python3.11", "python3.10"):
+        found = look(name)
+        if found:
+            return found
+    return None
+
+
+def install_commands(venv: str, upgrade: bool = False, python: str | None = None) -> list[list[str]]:
+    """The commands `--install` runs, in order. whisperx brings faster-whisper and torch with
+    it, so one install covers both steps; openai-whisper is an alternative transcriber, not a
+    second requirement."""
+    py = venv_python(venv)
+    return [
+        [python or sys.executable, "-m", "venv", venv],
+        [py, "-m", "pip", "install", "--upgrade", "pip", "wheel"],
+        [py, "-m", "pip", "install"] + (["--upgrade"] if upgrade else []) + ["whisperx"],
+    ]
+
+
+def install(venv: str, upgrade: bool = False, dry_run: bool = False) -> int:
+    """Make the environment and put the packages in it. Prints the same `progress:` lines the
+    transcription does, so a window watching one can watch this too — it is minutes of
+    downloading, and silence would look like a hang."""
+    python = installer_python()
+    if python is None:
+        print("captions: this is Python %d.%d and the packages need 3.10 or newer. Install one\n"
+              "    brew install python\n"
+              "and run this again." % sys.version_info[:2], file=sys.stderr)
+        return 2
+    commands = install_commands(venv, upgrade, python)
+    what = ["creating the environment", "updating pip", "installing whisperx (this takes a while)"]
+    for i, (command, step) in enumerate(zip(commands, what)):
+        print(f"progress: {i}/{len(commands)} {step}", file=sys.stderr, flush=True)
+        print("  " + " ".join(command))
+        if dry_run:
+            continue
+        # The first command makes the environment; if it is already there, `venv` is a no-op
+        # that keeps what is in it.
+        result = subprocess.run(command)
+        if result.returncode != 0:
+            print(f"captions: {step} failed", file=sys.stderr)
+            return result.returncode
+    print(f"progress: {len(commands)}/{len(commands)} done", file=sys.stderr, flush=True)
+    if dry_run:
+        return 0
+    left = subprocess.run([venv_python(venv), "-c",
+                           "import importlib.util as u;"
+                           "print('ok' if u.find_spec('whisperx') else 'missing')"],
+                          capture_output=True, text=True).stdout.strip()
+    if left != "ok":
+        print("captions: the packages did not land in " + venv, file=sys.stderr)
+        return 2
+    print(f"captions: ready — the transcriber lives in {venv}")
+    return 0
+
+
+def reexec_into_venv() -> None:
+    """Run again inside the environment `--install` made, when this Python has nothing and
+    that one does. The player calls `python3 captions.py`, and this is what makes that work
+    on a machine where the packages were never installed into `python3` itself."""
+    if os.environ.get("REFRACT_CAPTIONS_INSIDE"):
+        return                                  # already there: never loop
+    if not missing():
+        return                                  # this interpreter can do the work
+    python = venv_python(venv_dir())
+    if not os.path.exists(python):
+        return
+    try:
+        if os.path.samefile(python, sys.executable):
+            return
+    except OSError:
+        pass
+    os.environ["REFRACT_CAPTIONS_INSIDE"] = "1"
+    os.execv(python, [python, os.path.abspath(__file__)] + sys.argv[1:])
 
 
 def _wavs(voice_dir: str) -> list[str]:
@@ -90,6 +236,12 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
               "`refractplayer <deck>/out --record-audio`", file=sys.stderr)
         return 1
 
+    # Both models read the audio through ffmpeg. Said here rather than at the first failure,
+    # which happens minutes in, after the models have loaded.
+    if shutil.which("ffmpeg") is None:
+        print("captions: ffmpeg is needed to read the recordings — brew install ffmpeg", file=sys.stderr)
+        return 2
+
     wavs = _wavs(voice_dir)
     if only:
         wavs = [w for w in wavs if os.path.splitext(w)[0] in only]
@@ -130,16 +282,15 @@ def process_voice_dir(voice_dir: str, model_name: str = "base", language: str = 
         progress(0, len(pending), "loading the transcriber")
     transcribe = _load_transcriber(model_name) if needs_transcription else None
     if needs_transcription and transcribe is None:
-        print("captions: no transcriber available. Install one with:\n"
-              "    pip install openai-whisper      (or: pip install faster-whisper)",
-              file=sys.stderr)
+        print("captions: nothing to transcribe with — run `refractplayer --install-transcriber` "
+              "(or `python3 player/tools/captions.py --install`)", file=sys.stderr)
         return 2
 
     progress(0, len(pending), "loading the aligner")
     align = _load_aligner(language, device)
     if align is None:
-        print("captions: whisperx is required for word timings. Install with:\n"
-              "    pip install whisperx", file=sys.stderr)
+        print("captions: nothing to align with (whisperx) — run `refractplayer --install-transcriber` "
+              "(or `python3 player/tools/captions.py --install`)", file=sys.stderr)
         return 2
 
     failures = 0
@@ -195,7 +346,16 @@ def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(
         description="Transcribe and align a deck's recorded narration into caption timings.")
-    ap.add_argument("voice_dir", help="directory of recorded NN.wav files")
+    ap.add_argument("voice_dir", nargs="?", help="directory of recorded NN.wav files")
+    ap.add_argument("--install", action="store_true",
+                    help="put the transcriber and the aligner in this script's own virtual "
+                         "environment (under the user's cache directory, or REFRACT_CAPTIONS_VENV)")
+    ap.add_argument("--upgrade", action="store_true",
+                    help="with --install: update the packages already there")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --install: print what it would run, and run none of it")
+    ap.add_argument("--where", action="store_true",
+                    help="print where the packages are looked for, and whether they are there")
     ap.add_argument("--model", default="base",
                     help="whisper model for transcription (default: base)")
     ap.add_argument("--language", default="en",
@@ -208,10 +368,32 @@ def main() -> int:
     ap.add_argument("--only", default=None,
                     help="only these recordings, by stem, comma-separated (e.g. 07,08)")
     args = ap.parse_args()
+    venv = venv_dir()
+    if args.where:
+        print(f"this python:  {sys.executable}")
+        print(f"environment:  {venv}" + ("" if os.path.exists(venv_python(venv)) else "  (not made yet)"))
+        gaps = missing()
+        print("here:         " + ("everything needed" if not gaps else "missing " + ", ".join(gaps)))
+        if gaps and os.path.exists(venv_python(venv)):
+            inside = subprocess.run([venv_python(venv), os.path.abspath(__file__), "--where"],
+                                    capture_output=True, text=True,
+                                    env={**os.environ, "REFRACT_CAPTIONS_INSIDE": "1"})
+            print("in it:        " + ("everything needed" if "everything needed" in inside.stdout
+                                      else "missing something — re-run with --install"))
+        print(f"ffmpeg:       {shutil.which('ffmpeg') or 'not on the PATH — brew install ffmpeg'}")
+        return 0
+    if args.install:
+        return install(venv, args.upgrade, args.dry_run)
+    if not args.voice_dir:
+        ap.error("a voice directory is needed (or --install / --where)")
     only = [s.strip() for s in args.only.split(",") if s.strip()] if args.only else None
     return process_voice_dir(args.voice_dir, args.model, args.language, args.device,
                              args.force, only)
 
 
 if __name__ == "__main__":
+    # Before anything else: if this Python cannot do the work and the environment can, this
+    # process becomes one running there.
+    if "--install" not in sys.argv:
+        reexec_into_venv()
     sys.exit(main())
