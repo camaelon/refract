@@ -38,6 +38,8 @@
 #include "Pointer.h"
 #include "Presenter.h"
 #include "Session.h"
+#include "DragOut.h"
+#include "DroppedAsset.h"
 #include "SlideNotes.h"
 #include "SlideSelection.h"
 #include "Sync.h"
@@ -70,7 +72,9 @@
 
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
+#include "include/core/SkStream.h"
 #include "include/core/SkSurface.h"
+#include "include/encode/SkPngEncoder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -124,6 +128,10 @@ refract::Pointer remotePointer;
 constexpr unsigned kRemoteLaserColor = 0xFFFF9F0A;
 // What the laser has drawn, per slide, for the run.
 refract::Ink ink;
+// The slide as the presenter shows it: read back from the slide window every so often. Kept
+// here rather than in the loop because a drag out of the presenter wants exactly this
+// picture, and it starts from a callback.
+sk_sp<SkImage> liveFrame;
 // The camera take: recorded beside the narration when the deck has a camera box (or
 // --camera-take says so), as the wav's .mov; played back in the camera boxes under the voice.
 bool deckHasCamera = false;
@@ -172,6 +180,9 @@ void captureSession();
 void transcribe(bool onlyThisSlide);
 void transcriptToNotes();
 void toggleNarrationPlayback();
+void dropOnSlide(const std::vector<std::string>& paths);
+void dragSlideOut();
+void dragTextOut();
 void saveSessionIfChanged();
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
@@ -613,6 +624,8 @@ void openPresenter() {
     presenter->setOnTogglePlayVoice([] { setPlayVoice(!app.playVoice); });
     presenter->setOnTranscriptToNotes(transcriptToNotes);
     presenter->setOnPlayNarration(toggleNarrationPlayback);
+    presenter->setOnDragSlideOut(dragSlideOut);
+    presenter->setOnDragTextOut(dragTextOut);
     presenter->setOnRecordSlide(toggleSlideRecording,
                                 [] { stopSlideRecording(/*keep=*/false); });
     presenter->setOnStopRun(stopRun);
@@ -827,6 +840,116 @@ void transcribe(bool onlyThisSlide) {
     }
 }
 
+// ── Dragging out of the presenter ────────────────────────────────────
+// The slide is a picture and the pane below it is text, and both are often wanted somewhere
+// else — on the desktop, in a message, in a browser. Dragging the "now" pane takes the slide
+// as a PNG; dragging the handle by the tabs takes what the pane says. Starting the drag is
+// the window system's (DragOut.h); what is here is what is being dragged.
+
+void dragSlideOut() {
+    if (!presenter || app.deck.empty() || !liveFrame) return;
+    // Named after the slide, because the name is what lands on the desktop.
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path() / "refract-slides";
+    fs::create_directories(dir, ec);
+    std::string stem = fs::path(app.deck.at(g.currentIndex).file).stem().string();
+    if (stem.empty()) stem = "slide-" + std::to_string(g.currentIndex + 1);
+    const fs::path path = dir / (stem + ".png");
+
+    sk_sp<SkData> png = SkPngEncoder::Encode(nullptr, liveFrame.get(), {});
+    if (!png) { say("cannot make a picture of this slide"); return; }
+    SkFILEWStream out(path.string().c_str());
+    if (!out.isValid() || !out.write(png->data(), png->size())) {
+        say("cannot write " + path.string());
+        return;
+    }
+    out.flush();
+    if (!refract::beginFileDrag(presenter->window(), path.string())) {
+        say("this slide is at " + path.string(), 8.0);
+    }
+}
+
+void dragTextOut() {
+    if (!presenter || app.deck.empty()) return;
+    const bool wantCaptions = presenter->tab() == refract::PresenterWindow::Tab::Captions;
+    const std::string text = wantCaptions ? captions.text() : app.deck.notesFor(g.currentIndex);
+    if (text.empty()) {
+        say(wantCaptions ? "no transcript on this slide" : "no notes on this slide");
+        return;
+    }
+    const std::string label = (wantCaptions ? "transcript \u00b7 slide " : "notes \u00b7 slide ")
+                              + std::to_string(g.currentIndex + 1);
+    refract::beginTextDrag(presenter->window(), text, label);
+}
+
+// A file dropped on the slide window goes into the deck: copied into the deck's includes/
+// and written into the slide's markdown as an `<include>`, which is how a deck refers to
+// anything. Dropping a photo on the slide you are looking at is the shortest way there is
+// from "I have this picture" to seeing it on the wall, and it costs the same rebuild as
+// typing the line by hand — which is what it does.
+bool dropWriteRunning = false;
+bool notesWriteRunning = false;      // defined here, used by both writes below
+
+void dropOnSlide(const std::vector<std::string>& paths) {
+    if (paths.empty() || app.deck.empty()) return;
+    if (!source.available()) {
+        say("this deck has no markdown to add to");
+        return;
+    }
+    if (source.running() || dropWriteRunning || notesWriteRunning) {
+        say("the deck is already being written to");
+        return;
+    }
+    // What can go in, and what cannot: said in one line, so a mixed drop is not silent about
+    // the half it refused.
+    std::vector<fs::path> taking;
+    std::vector<std::string> refused;
+    for (const std::string& path : paths) {
+        if (refract::includable(path)) taking.push_back(path);
+        else refused.push_back(fs::path(path).filename().string());
+    }
+    if (taking.empty()) {
+        say("a slide cannot hold " + (refused.size() == 1 ? refused.front()
+                                                          : std::to_string(refused.size()) + " of those"));
+        return;
+    }
+
+    const fs::path includes = fs::path(source.deckDir()) / "includes";
+    std::error_code ec;
+    fs::create_directories(includes, ec);
+    std::vector<std::string> lines;
+    std::vector<std::string> names;
+    for (const fs::path& from : taking) {
+        const fs::path to = refract::placeFor(from, includes);
+        if (!fs::exists(to, ec) || !refract::sameFile(from, to)) {
+            fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                say("cannot copy " + from.filename().string() + " into includes/: " + ec.message());
+                return;
+            }
+        }
+        lines.push_back(refract::includeLine(to));
+        names.push_back(to.filename().string());
+    }
+
+    const int slide = g.currentIndex;
+    std::string text, file, error;
+    int shared = 0;
+    if (!source.readSlide(slide, &text, &file, &shared, &error)) {
+        say("cannot read the slide: " + error);
+        return;
+    }
+    for (const std::string& line : lines) text = refract::withContentAdded(text, line);
+    if (!source.writeSlide(slide, text, &error)) {
+        say("cannot write the slide: " + error);
+        return;
+    }
+    dropWriteRunning = true;
+    std::string what = names.size() == 1 ? names.front() : std::to_string(names.size()) + " files";
+    if (!refused.empty()) what += " (" + std::to_string(refused.size()) + " left out)";
+    say("adding " + what + " to slide " + std::to_string(slide + 1) + "\u2026", 8.0);
+}
+
 // Hear this slide's recording, or stop it. The presenter's play button, and the one way to
 // play a take back that does not depend on the talk having started: a take is listened to
 // the moment it is made, with the clock still at nothing.
@@ -855,8 +978,6 @@ void toggleNarrationPlayback() {
 // added after whatever the notes already say rather than put in their place: the notes are
 // what somebody meant to say, and the transcript is a second opinion on it. The write goes
 // through the same path the slide editor's save does, so it is in the deck's history.
-bool notesWriteRunning = false;
-
 void transcriptToNotes() {
     if (app.deck.empty()) return;
     const std::string transcript = captions.text();
@@ -1862,6 +1983,11 @@ int main(int argc, char* argv[]) {
                        : "could not write the notes: " + done, 6.0);
                 if (ok && presenter) presenter->showTab(refract::PresenterWindow::Tab::Notes);
             }
+            if (dropWriteRunning) {
+                dropWriteRunning = false;
+                say(ok ? "added to the slide \u00b7 undo in the deck view"
+                       : "could not add it: " + done, 6.0);
+            }
         });
     }
 
@@ -1926,6 +2052,12 @@ int main(int argc, char* argv[]) {
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
     glfwSetKeyCallback(window, playerKeyCallback);
+    // Something dragged onto the slide from the Finder: into the deck, and onto this slide.
+    glfwSetDropCallback(window, [](GLFWwindow*, int count, const char** paths) {
+        std::vector<std::string> dropped;
+        for (int i = 0; i < count; i++) dropped.emplace_back(paths[i]);
+        dropOnSlide(dropped);
+    });
     // A click shorter than a frame still counts: the laser's drawing polls the button.
     glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
     // The only text this window takes: a name typed at the navigator.
@@ -2062,7 +2194,6 @@ int main(int argc, char* argv[]) {
     bool buildReloaded = true;
     // Fast enough that a word lights on the syllable, cheap enough to be free.
     constexpr double kCaptionInterval = 1.0 / 30.0;
-    sk_sp<SkImage> liveFrame;
     // The presenter shows a clock, a timer and two stills. Drawing it at the slide window's
     // frame rate costs several milliseconds a frame to show the same pixels; 20 Hz is past
     // the point where a wall clock reads as live, and it leaves the machine to the deck.

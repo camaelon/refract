@@ -329,6 +329,24 @@ on and come back and they are still there — and `Shift`+`L` wipes the current 
 Nothing is saved to disk; a drawing is for the room, on the day. Strokes are kept as
 fractions of the slide, so they sit where they were drawn after a resize or fullscreen.
 
+**Dragging a slide out.** The presenter's **now** pane is a drag source: press it and drag,
+and a PNG of the slide comes away under the pointer — onto the desktop, into a message, into
+a browser tab, anywhere a file can be dropped. It is the picture the pane is showing, at the
+slide window's own size, written to a temporary file named after the slide
+(`03_remote_surfaces.png`), so what lands has a name worth keeping. Beside the pane's tabs
+there is a small page-of-text handle that drags **the text showing there** the same way: the
+notes on the notes tab, the transcript on the captions tab, dropped as plain text into
+whatever takes it. Neither changes the deck — both are copies going out. While a drag is in
+flight macOS runs the tracking, so the slides stop animating until it is dropped.
+
+**Dropping a file onto a slide.** The other direction, on the slide window: drag an image
+(or a video, or a `.rc`) from the Finder onto the slide on screen and it joins that slide —
+copied into the deck's `includes/` and written into the slide's markdown as an `<include>`,
+above the notes, which stay last. The deck rebuilds and the picture appears, the same as
+typing the line. Nothing is overwritten: the same file dropped twice adds one copy, and a
+different file whose name is taken becomes `photo-2.png`. It is one edit in the deck's
+history, so the deck view's undo takes it back.
+
 **The camera on a slide.** A slide with `<camera>` (see the deck README's include table)
 shows the machine's camera where the layout put it, in the shape the layout gave it — a
 circle beside the speaker's name, a rounded panel under a title. macOS asks for camera
@@ -1474,7 +1492,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Twenty-three C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
+Twenty-four C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1508,7 +1526,8 @@ ctest --test-dir player/build --output-on-failure
 | `slide_selection` | "3-12, 20": the slides an export takes, read from a field or --slides and written back from the deck view's selection |
 | `sync` | the lines two players in step exchange (slide, blank, laser), and how a server address is read |
 | `ink` | what the laser draws: strokes per slide, kept for the run, cleared one slide at a time |
-| `slide_notes` | the `???` block inside a slide's markdown: reading it, replacing it, and a transcript laid out as notes |
+| `slide_notes` | the `???` block inside a slide's markdown: reading it, replacing it, adding to the content above it, and a transcript laid out as notes |
+| `dropped_asset` | a file dropped on a slide: whether it can be included, and what it is called in includes/ |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |
 | `tasks` | the cards the processing window shows, worded from each worker's state |

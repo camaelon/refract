@@ -64,6 +64,14 @@ public:
     // The small play button left of the record button: hear this slide's recording, or stop
     // it. Shown only where the slide has one.
     void setOnPlayNarration(std::function<void()> toggle);
+
+    // ── Dragging things out ──────────────────────────────────────────
+    // The "now" pane is a drag source for the slide as a picture, and a small handle beside
+    // the pane's tabs is one for the text showing there — the notes, or the transcript.
+    // Each is called when a press inside it turns into a drag; the handler starts the drag
+    // (see DragOut.h), which is the window system's business and not this window's.
+    void setOnDragSlideOut(std::function<void()> drag);
+    void setOnDragTextOut(std::function<void()> drag);
     // "copy to notes" beside it, on the captions tab: the slide's transcript written into
     // its presenter notes. Shown only where there is a transcript to copy.
     void setOnTranscriptToNotes(std::function<void()> copy);

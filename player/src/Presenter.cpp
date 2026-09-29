@@ -59,6 +59,14 @@ struct PresenterWindow::Impl {
     SkRect toNotesButton = SkRect::MakeEmpty();
     std::function<void()> onPlayNarration;
     SkRect playButton = SkRect::MakeEmpty();
+    // Dragging out: the pane that holds the slide, and the handle that holds the text.
+    std::function<void()> onDragSlideOut;
+    std::function<void()> onDragTextOut;
+    SkRect nowPane = SkRect::MakeEmpty();
+    SkRect textHandle = SkRect::MakeEmpty();
+    // A press inside one of them, waiting to become a drag: which, and where it started.
+    int pressedDrag = 0;              // 0 none, 1 the slide, 2 the text
+    double pressX = 0, pressY = 0;
     bool transcribing = false;
     std::string transcribeStatus;
     std::string syncStatus;
@@ -140,19 +148,42 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
     glfwSetWindowUserPointer(window, presenter.get());
     glfwSetCursorPosCallback(window, [](GLFWwindow* w, double, double) {
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
-        if (self && self->mImpl) self->mImpl->readPointer(w);
+        if (!self || !self->mImpl) return;
+        Impl& impl = *self->mImpl;
+        impl.readPointer(w);
+        // Far enough from where the button went down to be a drag rather than a click: the
+        // drag starts here, inside the event that is being handled, which is what the
+        // window system needs to take it over.
+        if (!impl.pressedDrag) return;
+        const double dx = impl.mouseX - impl.pressX, dy = impl.mouseY - impl.pressY;
+        if (dx * dx + dy * dy < 16.0) return;
+        const int which = impl.pressedDrag;
+        impl.pressedDrag = 0;
+        if (which == 1 && impl.onDragSlideOut) impl.onDragSlideOut();
+        else if (which == 2 && impl.onDragTextOut) impl.onDragTextOut();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int) {
-        if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+        if (button != GLFW_MOUSE_BUTTON_LEFT) return;
         auto* self = static_cast<PresenterWindow*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
         Impl& impl = *self->mImpl;
+        if (action == GLFW_RELEASE) { impl.pressedDrag = 0; return; }
         // Where the pointer is now, not where the last move event said. macOS sends moves
         // only to the focused window, and in a talk this one rarely is — the slide window on
         // the projector has the focus, or the terminal does. Hit-testing a click against a
         // position from the last time this window happened to be focused presses whichever
         // button was under the pointer then, which is the wrong one or none at all.
         impl.readPointer(w);
+        // A press on something that can be dragged out waits to see whether it moves: a
+        // click on the slide pane does nothing, a drag takes the picture with it.
+        impl.pressedDrag = 0;
+        if (impl.onDragTextOut && impl.over(impl.textHandle)) impl.pressedDrag = 2;
+        else if (impl.onDragSlideOut && impl.over(impl.nowPane)) impl.pressedDrag = 1;
+        if (impl.pressedDrag) {
+            impl.pressX = impl.mouseX;
+            impl.pressY = impl.mouseY;
+            return;
+        }
         if (impl.over(impl.notesTab)) { self->showTab(Tab::Notes); return; }
         if (impl.over(impl.captionsTab)) { self->showTab(Tab::Captions); return; }
         if (impl.tab == Tab::Captions) {
@@ -224,6 +255,14 @@ void PresenterWindow::setOnTranscriptToNotes(std::function<void()> copy) {
 
 void PresenterWindow::setOnPlayNarration(std::function<void()> toggle) {
     mImpl->onPlayNarration = std::move(toggle);
+}
+
+void PresenterWindow::setOnDragSlideOut(std::function<void()> drag) {
+    mImpl->onDragSlideOut = std::move(drag);
+}
+
+void PresenterWindow::setOnDragTextOut(std::function<void()> drag) {
+    mImpl->onDragTextOut = std::move(drag);
 }
 
 void PresenterWindow::setOnToggleAutoplay(std::function<void()> toggle) {
@@ -592,6 +631,9 @@ void PresenterWindow::Impl::drawPanes(const Frame& F, const sk_sp<SkImage>& live
                             uiFont(13), currentBox.width() - 60));
     SkRect drawn = drawImageFit(canvas, live, currentBox);
     strokeRoundRect(canvas, drawn, 2, ui::kLine);
+    // What a drag of this pane takes with it is the picture, so the picture is the handle.
+    nowPane = drawn;
+    if (onDragSlideOut && over(nowPane)) strokeRoundRect(canvas, drawn, 2, ui::kAccent);
     // Time on this slide, in the corner of the pane it belongs to.
     drawTextRight(canvas, formatDuration(app.timeOnSlide()), currentBox.right(),
                   currentBox.top() - 10, uiFont(13, true), ui::kDim);
@@ -662,6 +704,24 @@ void PresenterWindow::Impl::drawPane(const Frame& F) {
             drawText(canvas, t.text, x, ty, tabFont, on ? ui::kText : (hot ? ui::kText : ui::kDim));
             if (on) fillRect(canvas, SkRect::MakeXYWH(x, ty + 5, tw, 2), ui::kAccent);
             x += tw + 22;
+        }
+        // ── The text handle ──────────────────────────────────────────
+        // A little page of text at the end of the tabs, there to be dragged: what is in the
+        // pane — these notes, this transcript — goes wherever it is dropped. Drawn rather
+        // than set in a glyph, for the same reason the tick in a checkbox is.
+        if (onDragTextOut) {
+            textHandle = SkRect::MakeXYWH(x - 4, ty - 17, 22, 24);
+            const bool hot = over(textHandle);
+            const SkColor tone = hot ? ui::kText : ui::kDim;
+            SkRect page = SkRect::MakeXYWH(textHandle.left() + 4, textHandle.top() + 3, 14, 18);
+            strokeRoundRect(canvas, page, 2, tone, 1.0f);
+            for (int line = 0; line < 3; line++) {
+                const float ly = page.top() + 5 + line * 4.5f;
+                const float lw = line == 2 ? 6.0f : 8.0f;
+                fillRect(canvas, SkRect::MakeXYWH(page.left() + 3, ly, lw, 1.4f), tone);
+            }
+        } else {
+            textHandle = SkRect::MakeEmpty();
         }
     }
     captionView.setActive(tab == Tab::Captions);

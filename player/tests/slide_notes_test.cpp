@@ -38,6 +38,18 @@ static void testWriting() {
           "the sections are left alone");
 }
 
+static void testAddingContent() {
+    CHECK(refract::withContentAdded("# A slide\n\n- a point\n", "<photo.png>")
+          == "# A slide\n\n- a point\n\n<photo.png>\n", "an include after the content");
+    CHECK(refract::withContentAdded("# A slide\n\n???\n\nSay this.\n", "<photo.png>")
+          == "# A slide\n\n<photo.png>\n\n???\n\nSay this.\n",
+          "above the notes, which have to stay last");
+    CHECK(refract::withContentAdded("# A slide\n", "  ") == "# A slide\n", "nothing to add");
+    CHECK(refract::withContentAdded("", "<a.png>") == "<a.png>\n", "an empty slide");
+    CHECK(refract::withContentAdded("# A\n\n<a.png>\n", "<b.png>") == "# A\n\n<a.png>\n\n<b.png>\n",
+          "a second one goes after the first");
+}
+
 static void testAdding() {
     CHECK(refract::appendNotes("", "From the transcript.") == "From the transcript.",
           "nothing to add to: the addition alone");
@@ -68,6 +80,7 @@ static void testTranscript() {
 int main() {
     testReading();
     testWriting();
+    testAddingContent();
     testAdding();
     testTranscript();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }

@@ -83,6 +83,18 @@ std::string withNotes(const std::string& markdown, const std::string& notes) {
     return (body.empty() ? std::string() : body + "\n\n") + "???\n\n" + kept + "\n";
 }
 
+std::string withContentAdded(const std::string& markdown, const std::string& line) {
+    const std::string kept = trimmed(line);
+    if (kept.empty()) return markdown;
+    const std::string notes = notesOf(markdown);
+    // The body, with the notes taken off: withNotes gives exactly that when the notes are
+    // empty, and puts them back afterwards.
+    std::string body = withNotes(markdown, "");
+    while (!body.empty() && std::isspace(static_cast<unsigned char>(body.back()))) body.pop_back();
+    body = body.empty() ? kept : body + "\n\n" + kept;
+    return notes.empty() ? body + "\n" : withNotes(body, notes);
+}
+
 std::string transcriptAsNotes(const std::string& transcript) {
     // One long line of words: whitespace collapsed, then broken after a sentence ends.
     std::string out;

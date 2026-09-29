@@ -96,6 +96,7 @@ set(REFRACTPLAYER_SOURCES
     src/Progress.cpp
     src/Pointer.cpp
     src/Ink.cpp
+    src/DroppedAsset.cpp
     src/SlideNotes.cpp
     src/SlideSelection.cpp
     src/Sync.cpp
@@ -135,17 +136,18 @@ set(REFRACTPLAYER_SOURCES
 
 if(APPLE)
     list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
-                                      src/FileDialog.mm src/Cursor.mm)
+                                      src/FileDialog.mm src/Cursor.mm src/DragOut.mm)
 else()
     list(APPEND REFRACTPLAYER_SOURCES src/AudioPlayerStub.cpp src/AudioRecorderStub.cpp
-                                      src/AppMenuStub.cpp src/FileDialogStub.cpp src/CursorStub.cpp)
+                                      src/AppMenuStub.cpp src/FileDialogStub.cpp src/CursorStub.cpp
+                                      src/DragOutStub.cpp)
 endif()
 
 add_executable(refractplayer ${REFRACTPLAYER_SOURCES})
 
 if(APPLE)
     set_source_files_properties(src/AudioPlayer.mm src/AudioRecorder.mm src/AppMenu.mm
-                                src/FileDialog.mm
+                                src/FileDialog.mm src/DragOut.mm
                                 PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
