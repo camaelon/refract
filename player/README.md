@@ -1266,10 +1266,20 @@ The slides are the **real `.rc` documents**, rendered by the RemoteCompose TypeS
 player: animations, shaders, the same documents the desktop player shows — not pictures of
 them. On top of that it plays the recorded narration, lights the captions word by word off
 the audio clock, and advances when a slide's narration ends. **A camera box plays the take
-recorded with that slide's narration**, not the viewer's own camera: the take is remuxed into
-an MP4 beside the page (a copy of the H.264 the player recorded, not a re-encode) and played
-on the narration's clock, so the speaker's face and their voice stay together as they did
-when it was recorded. It is paused when the deck is, and nudged back into step if it drifts.
+recorded with that slide's narration**, not the viewer's own camera: the take is shipped as
+an MP4 beside the page and played on the narration's clock, so the speaker's face and their
+voice stay together as they did when it was recorded. It is paused when the deck is, and
+nudged back into step if it drifts.
+
+What is shipped is **the part of the frame that box shows, at the size it shows it**. A take
+is recorded at the camera's full size because it might be most of a slide; a badge in a
+corner is a ninetieth of the width and shows the middle of a zoom, so sending the whole 1080p
+recording sends a hundred times the pixels anyone looks at. The build writes the box's size
+into the slide (`box=WxH` on the camera's config), and the export cuts the frame to the
+crop and scales it to three pixels per slide unit — enough for the deck shown across a
+4800-pixel display — never scaling up past what was recorded. A five-second take for a
+90-unit badge came out at 81 KB instead of 3.0 MB; for a half-slide circle, 0.7 MB instead of
+3.0 MB. The page is told the file is already framed, so the crop is not applied twice.
 A camera box on a slide with no take falls back to asking the browser for the viewer's own
 camera, which is what a live page — a kiosk, a demo — wants. A slide with no audio holds for
 the time the rehearsal recorded, so a partly-recorded deck still plays end to end.

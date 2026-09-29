@@ -658,6 +658,27 @@ def _embed_corner(block: dict, theme: Theme):
         return theme.image_corner_radius
 
 
+def _embed_dims(avail_w: float, box_h: float, ratio, size=None) -> tuple:
+    """How big an embed's box comes out: exactly ``size`` when one is given (the other side
+    from ``ratio``, or square), else the largest box of ``ratio`` that fits, else the whole
+    area. The exporters need this — a camera take is shipped at the size of the box it will
+    be seen in — so it is decided here rather than inside the node builder."""
+    if size is not None and (size[0] or size[1]):
+        bw, bh = size
+        if bw and not bh:
+            bh = bw / ratio if ratio else bw
+        elif bh and not bw:
+            bw = bh * ratio if ratio else bh
+        return float(bw), float(bh)
+    if ratio is not None:
+        bh = float(box_h)
+        bw = bh * ratio
+        if bw > avail_w:
+            bw, bh = float(avail_w), float(avail_w) / ratio
+        return bw, bh
+    return float(avail_w), float(box_h)
+
+
 def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
                debug: bool, size=None, align: str = "start") -> dict:
     """Size an embed's box. By default it fills the width at ``box_h`` tall; when ``ratio``
@@ -669,22 +690,10 @@ def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
     ``"circle"`` for half the box's shorter side."""
     sized = size is not None and (size[0] or size[1])
     framed = ratio is not None
-    if sized:
-        bw, bh = size
-        if bw and not bh:
-            bh = bw / ratio if ratio else bw
-        elif bh and not bw:
-            bw = bh * ratio if ratio else bh
-        bw, bh = float(bw), float(bh)
+    bw, bh = _embed_dims(avail_w, box_h, ratio, size)
+    if sized or framed:
         mods: list = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
-    elif framed:
-        bh = float(box_h)
-        bw = bh * ratio
-        if bw > avail_w:
-            bw, bh = float(avail_w), float(avail_w) / ratio
-        mods = [{"width": round(bw, 2)}, {"height": round(bh, 2)}]
     else:
-        bw, bh = float(avail_w), float(box_h)
         mods = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
     if corner == "circle":
         corner = min(bw, bh) / 2.0
@@ -728,10 +737,15 @@ def render_video(block: dict, theme: Theme, debug: bool,
     return _with_caption(box, block, theme, debug, avail_h)
 
 
-def _camera_config(block: dict) -> str:
+def _camera_config(block: dict, box=None) -> str:
     """The camera host's config for a block (or a template's ``[camera]`` table): device,
     ``fit`` (``fill`` by default: a face in a circle should fill it; ``fit`` letterboxes), a
-    source ``crop`` — from ``zoom``/``focus`` when those are what was said — and ``mirror``."""
+    source ``crop`` — from ``zoom``/``focus`` when those are what was said — and ``mirror``.
+
+    ``box`` (width, height in slide units) is written out as ``box=WxH``. The players ignore
+    it — they are drawing into a box they already have — but the web export reads it to ship
+    the recorded take at the size it will be seen at rather than the size it was recorded at,
+    which for a badge in a corner is a hundredth of the pixels."""
     device = block.get("device") or "default"
     fit = str(block.get("fit") or "fill").lower()
     crop = block.get("crop")
@@ -749,6 +763,8 @@ def _camera_config(block: dict) -> str:
         mirror = mirror.lower() not in ("0", "false", "off", "no")
     opts = {"fit": fit if fit != "fill" else "", "crop": _crop_opt({"crop": crop}),
             "mirror": "1" if mirror else ""}
+    if box and box[0] and box[1]:
+        opts["box"] = f"{int(round(box[0]))}x{int(round(box[1]))}"
     return _media_config("camera", str(device), opts)
 
 
@@ -760,7 +776,8 @@ def render_camera(block: dict, theme: Theme, debug: bool,
     only exists at playback, so exports draw a marked box in its place."""
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
-    config = _camera_config({**block, "_zoomed": True})   # deck.py already turned zoom into crop
+    dims = _embed_dims(avail_w, box_h, block.get("ratio"), _embed_size(block))
+    config = _camera_config({**block, "_zoomed": True}, dims)   # deck.py already turned zoom into crop
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
                      size=_embed_size(block), align=block.get("align", "start"))
@@ -797,7 +814,7 @@ def _camera_overlay(theme: Theme, width: int, height: int, debug: bool):
     mods: list = [{"width": round(w, 2)}, {"height": round(h, 2)}]
     if corner and corner > 0:
         mods.append({"clip": round(float(corner), 2)})
-    node = {"type": "custom", "config": _camera_config(cam), "modifiers": dbg(mods, debug),
+    node = {"type": "custom", "config": _camera_config(cam, (w, h)), "modifiers": dbg(mods, debug),
             "children": []}
     return {"type": "box", "horizontalAlignment": h_align, "verticalAlignment": v_align,
             "modifiers": dbg(["fillMaxSize", {"padding": [round(v, 2) for v in pad]}], debug),

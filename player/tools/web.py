@@ -28,6 +28,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -241,16 +242,140 @@ if __name__ == "__main__":
 '''
 
 
-def export_take(mov: str, takes_dir: str) -> str | None:
+# How many pixels of take to ship per slide unit of the box it is drawn in. A deck designed
+# at 1600 wide shown across a 4800-pixel display is three; beyond that a face in a badge is
+# not what anyone is looking closely at. Never more than the recording has.
+TAKE_OVERSAMPLE = 3
+
+
+def camera_configs(data: bytes) -> list[str]:
+    """Every `camera:...` config string in a slide's bytes. The config says what the box
+    shows — the crop, and (written by refract) the size of the box itself."""
+    out = []
+    at = 0
+    while True:
+        at = data.find(b"camera:", at)
+        if at < 0:
+            return out
+        end = at
+        while end < len(data) and 0x20 <= data[end] < 0x7F:
+            end += 1
+        out.append(data[at:end].decode("ascii", "replace"))
+        at = end
+
+
+# The options that matter here, read out of a config by pattern rather than by splitting it
+# up: a config string found in a slide's bytes has whatever byte followed it stuck on the
+# end, and a device name may have spaces in it, so where the string stops is not something to
+# rely on. What these match is unambiguous wherever it ends.
+BOX_RE = re.compile(r"box=(\d+)x(\d+)")
+CROP_RE = re.compile(r"crop=([\d.]+),([\d.]+),([\d.]+),([\d.]+)")
+FIT_RE = re.compile(r"fit=(fit|fill|native)")
+
+
+def camera_options(config: str) -> dict:
+    """The options this export reads off a camera config: `box`, `crop` and `fit`, each only
+    when it is there and well formed."""
+    out = {}
+    box = BOX_RE.search(config)
+    if box:
+        out["box"] = (int(box.group(1)), int(box.group(2)))
+    crop = CROP_RE.search(config)
+    if crop:
+        try:
+            values = [float(v) for v in crop.groups()]
+        except ValueError:
+            values = []
+        if len(values) == 4 and values[2] > values[0] and values[3] > values[1]:
+            out["crop"] = values
+    fit = FIT_RE.search(config)
+    if fit:
+        out["fit"] = fit.group(1)
+    return out
+
+
+def take_frame_plan(config: str, src_w: int, src_h: int, oversample: int = TAKE_OVERSAMPLE) -> dict | None:
+    """How to ship a take for the box this config describes: the part of the frame that is
+    seen (`crop`, in source pixels) and the size to scale it to (`out`).
+
+    A camera badge is a circle in a corner. The recording behind it is a whole 1080p frame,
+    of which a zoom shows the middle half — so the pixels that reach the page are a fraction
+    of a fraction, and shipping the original is shipping a hundred times what is looked at.
+    Nothing is ever scaled *up*: where the box wants more than the recording has, the
+    recording is what it gets. None when the config says no box, or the numbers make no
+    sense — the caller then ships the take as it is."""
+    opts = camera_options(config)
+    box = opts.get("box")
+    if not box or src_w <= 0 or src_h <= 0:
+        return None
+    box_w, box_h = float(box[0]), float(box[1])
+    if box_w <= 0 or box_h <= 0:
+        return None
+
+    crop = opts.get("crop", [0.0, 0.0, 1.0, 1.0])
+    region_w = (crop[2] - crop[0]) * src_w
+    region_h = (crop[3] - crop[1]) * src_h
+    if region_w < 2 or region_h < 2:
+        return None
+
+    # What the box is worth in pixels, and how the region is scaled into it: `fill` (the
+    # default) covers the box, `fit` sits inside it.
+    want_w, want_h = box_w * oversample, box_h * oversample
+    if opts.get("fit") == "fit":
+        k = min(want_w / region_w, want_h / region_h)
+    elif opts.get("fit") == "native":
+        k = 1.0
+    else:
+        k = max(want_w / region_w, want_h / region_h)
+    k = min(k, 1.0)                     # never upscale: the recording is the ceiling
+
+    def even(v: float) -> int:
+        return max(2, int(round(v / 2.0)) * 2)
+
+    out_w, out_h = even(region_w * k), even(region_h * k)
+    if out_w >= src_w and out_h >= src_h and crop == [0.0, 0.0, 1.0, 1.0]:
+        return None                     # nothing to gain: ship it as it is
+    return {"crop": (int(round(crop[0] * src_w)), int(round(crop[1] * src_h)),
+                     even(region_w), even(region_h)),
+            "out": (out_w, out_h)}
+
+
+def video_size(path: str) -> tuple:
+    """(width, height) of a video, or (0, 0)."""
+    if not shutil.which("ffprobe"):
+        return (0, 0)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                           capture_output=True, text=True)
+    try:
+        w, h = probe.stdout.strip().splitlines()[0].split(",")[:2]
+        return (int(w), int(h))
+    except (ValueError, IndexError):
+        return (0, 0)
+
+
+def export_take(mov: str, takes_dir: str, plan: dict | None = None) -> str | None:
     """A slide's camera take (`voice/NN.mov`) as something a browser plays, under
-    `takes_dir`. The take is already H.264, so this is a remux into MP4 rather than an
-    encode — seconds, not minutes, and not a pixel lost. The sound is dropped: the narration
+    `takes_dir`. With a `plan` (see take_frame_plan) the part of the frame the slide shows is
+    cut out and scaled to the size it is seen at — a hundredth of the pixels for a badge in a
+    corner, and no difference on screen. Without one the take is remuxed as it is: already
+    H.264, so a copy rather than an encode. The sound is dropped either way: the narration
     wav is the sound, and the take is only the picture that went with it."""
     if not shutil.which("ffmpeg"):
         return None
     os.makedirs(takes_dir, exist_ok=True)
     name = os.path.splitext(os.path.basename(mov))[0] + ".mp4"
     dest = os.path.join(takes_dir, name)
+    if plan:
+        x, y, w, h = plan["crop"]
+        out_w, out_h = plan["out"]
+        cut = ["ffmpeg", "-y", "-loglevel", "error", "-i", mov,
+               "-vf", f"crop={w}:{h}:{x}:{y},scale={out_w}:{out_h}:flags=lanczos",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart", dest]
+        if subprocess.run(cut, check=False).returncode == 0 and os.path.isfile(dest):
+            return "media/takes/" + name
+        # Fall through and ship the whole thing rather than nothing.
     remux = ["ffmpeg", "-y", "-loglevel", "error", "-i", mov,
              "-c:v", "copy", "-an", "-movflags", "+faststart", dest]
     if subprocess.run(remux, check=False).returncode != 0 or not os.path.isfile(dest):
@@ -425,6 +550,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
             # slide with a 45 MB GIF in it is a few hundred kilobytes on the web. Decoding
             # GIF frames one by one is the fallback the player keeps for a page built
             # without ffmpeg, and then the GIF bytes stay.
+            cameras = camera_configs(data)
             videos = {}
             swaps = []
             for image_id, offset, length in gifs_in_rc(data):
@@ -465,9 +591,21 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
             mov = os.path.join(voice_dir, number + ".mov")
             if os.path.isfile(mov):
                 progress(done, f"slide {done + 1}/{len(slides)} the camera take")
-                url = export_take(mov, takes_dir)
+                # Cut to what the slide's camera box actually shows, at the size it shows it.
+                # The box (and the crop) come from the slide's own config string, so a badge
+                # in a corner ships a badge in a corner.
+                src = video_size(mov)
+                plan = None
+                for config in cameras:
+                    plan = take_frame_plan(config, src[0], src[1])
+                    if plan:
+                        break
+                url = export_take(mov, takes_dir, plan)
                 if url:
                     entry["take"] = url
+                    # The frame has been cut already; the page must not cut it again.
+                    if plan:
+                        entry["take_framed"] = True
                     have_takes += 1
             words = os.path.join(voice_dir, number + ".words.json")
             if os.path.isfile(words):
@@ -685,7 +823,7 @@ PAGE = r"""<!doctype html>
       handle.player.setBitmapVideos(slide.videos || null);
     // The speaker's own recording for this slide, for any camera box in it. Set before the
     // document is loaded, so the first paint already has it.
-    if (handle.player.setCameraTake) handle.player.setCameraTake(slide.take || null);
+    if (handle.player.setCameraTake) handle.player.setCameraTake(slide.take || null, !!slide.take_framed);
       const bytes = await bytesFor(slide);
       if (index !== Math.max(0, Math.min(i, slides.length - 1))) return;   // moved on meanwhile
       if (!bytes) {

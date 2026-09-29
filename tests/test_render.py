@@ -233,10 +233,12 @@ class RenderBlock(unittest.TestCase):
     def test_camera_custom_component(self):
         out = self.rb({"kind": "camera", "device": ""})
         self.assertEqual(out[0]["type"], "custom")
-        self.assertEqual(out[0]["config"], "camera:default")   # fill is the default: unsaid
+        # fill is the default and goes unsaid; the box it will be drawn in is written out
+        # for the web export, which ships the take at that size.
+        self.assertEqual(out[0]["config"], "camera:default#box=800x400")
         out = self.rb({"kind": "camera", "device": "FaceTime", "fit": "fit", "mirror": True,
                        "crop": [0.1, 0.0, 0.9, 1.0]})
-        self.assertEqual(out[0]["config"], "camera:FaceTime#fit=fit&crop=0.1,0.0,0.9,1.0&mirror=1")
+        self.assertEqual(out[0]["config"], "camera:FaceTime#fit=fit&crop=0.1,0.0,0.9,1.0&mirror=1&box=800x400")
 
     def test_camera_in_a_circle(self):
         # ratio=1:1 frames a square box; clip=circle rounds it fully: a radius of half its side.
@@ -260,7 +262,7 @@ class RenderBlock(unittest.TestCase):
         inner = row["children"][0]
         self.assertIn({"width": 190.66}, inner["modifiers"])
         self.assertIn({"clip": 95.33}, inner["modifiers"])
-        self.assertEqual(inner["config"], "camera:default#crop=0.25,0.25,0.75,0.75")
+        self.assertEqual(inner["config"], "camera:default#crop=0.25,0.25,0.75,0.75&box=191x191")
         out = self.rb({"kind": "camera", "device": "", "height": 200, "ratio": 2.0, "align": "end"})
         self.assertIn({"width": 400.0}, out[0]["children"][0]["modifiers"])
         self.assertEqual(out[0]["horizontalAlignment"], "end")
@@ -274,7 +276,8 @@ class RenderBlock(unittest.TestCase):
         self.assertEqual((badge["horizontalAlignment"], badge["verticalAlignment"]), ("start", "top"))
         self.assertIn({"padding": [957.55, 197.54, 0.0, 0.0]}, badge["modifiers"])
         node = badge["children"][0]
-        self.assertEqual(node["config"], "camera:default#crop=0.1667,0.1667,0.8333,0.8333&mirror=1")
+        self.assertEqual(node["config"],
+                         "camera:default#crop=0.1667,0.1667,0.8333,0.8333&mirror=1&box=506x506")
         self.assertIn({"clip": 252.79}, node["modifiers"])
         self.assertIn({"height": 505.59}, node["modifiers"], "a square when only one side is given")
         # A corner anchor pads from that corner; no camera means no layer.
