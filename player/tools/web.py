@@ -167,6 +167,102 @@ def transcode_gif(gif: bytes, anim_dir: str) -> str | None:
     return "media/anim/" + name
 
 
+# A server for the exported folder. Written into it because `python3 -m http.server` — the
+# obvious way to serve a folder, and what this used to print — answers a Range request with
+# the whole file and HTTP/1.0, and a browser asked to play a video that way waits forever.
+# A camera take is a video, so a page served that way would show an empty circle.
+SERVER = r'''#!/usr/bin/env python3
+"""Serve this exported deck: `python3 serve.py [port]`, then open the address it prints.
+
+Only one thing more than `python3 -m http.server`: it answers Range requests, which is what
+a browser uses to play video — the camera takes in a recorded talk, and any video on a slide.
+"""
+import functools
+import http.server
+import os
+import re
+import sys
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def send_head(self):
+        asked = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        if not asked or not os.path.isfile(path):
+            return super().send_head()
+        size = os.path.getsize(path)
+        match = re.match(r"bytes=(\d*)-(\d*)", asked)
+        if not match:
+            return super().send_head()
+        start = int(match.group(1) or 0)
+        end = min(int(match.group(2) or size - 1), size - 1)
+        if start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return None
+        f = open(path, "rb")
+        f.seek(start)
+        self.send_response(206)
+        self.send_header("Content-type", self.guess_type(path))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        self.left = end - start + 1
+        return f
+
+    def copyfile(self, source, outputfile):
+        left = getattr(self, "left", None)
+        if left is None:
+            return super().copyfile(source, outputfile)
+        self.left = None
+        while left > 0:
+            chunk = source.read(min(64 * 1024, left))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            left -= len(chunk)
+
+
+def main() -> int:
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    here = os.path.dirname(os.path.abspath(__file__))
+    print(f"the deck is at http://localhost:{port}/  (ctrl-C to stop)")
+    http.server.test(HandlerClass=functools.partial(Handler, directory=here),
+                     port=port, bind="127.0.0.1")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def export_take(mov: str, takes_dir: str) -> str | None:
+    """A slide's camera take (`voice/NN.mov`) as something a browser plays, under
+    `takes_dir`. The take is already H.264, so this is a remux into MP4 rather than an
+    encode — seconds, not minutes, and not a pixel lost. The sound is dropped: the narration
+    wav is the sound, and the take is only the picture that went with it."""
+    if not shutil.which("ffmpeg"):
+        return None
+    os.makedirs(takes_dir, exist_ok=True)
+    name = os.path.splitext(os.path.basename(mov))[0] + ".mp4"
+    dest = os.path.join(takes_dir, name)
+    remux = ["ffmpeg", "-y", "-loglevel", "error", "-i", mov,
+             "-c:v", "copy", "-an", "-movflags", "+faststart", dest]
+    if subprocess.run(remux, check=False).returncode != 0 or not os.path.isfile(dest):
+        # Whatever it is, it is not H.264 in a box MP4 will take: encode it.
+        encode = ["ffmpeg", "-y", "-loglevel", "error", "-i", mov,
+                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-an",
+                  "-pix_fmt", "yuv420p", "-movflags", "+faststart", dest]
+        if subprocess.run(encode, check=False).returncode != 0 or not os.path.isfile(dest):
+            return None
+    return "media/takes/" + name
+
+
 def slide_number(filename: str) -> str:
     """The leading digits of a slide's filename — "07_a_graph.rc" -> "07"."""
     stem = os.path.basename(filename)
@@ -289,6 +385,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
     audio_dir = os.path.join(web_dir, "audio")
     entries = []
     have_audio = 0
+    have_takes = 0
     # Narration is recorded as uncompressed wav, which is right for editing and wrong for
     # something to be downloaded: a talk's worth runs to hundreds of megabytes. Compressed
     # on the way out when ffmpeg is around, which every browser plays.
@@ -304,6 +401,7 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
         print(f"progress: {done}/{len(slides)} {what}", file=sys.stderr, flush=True)
 
     anim_dir = os.path.join(web_dir, "media", "anim")
+    takes_dir = os.path.join(web_dir, "media", "takes")
     have_videos = 0
     for done, name in enumerate(slides):
         progress(done, f"slide {done + 1}/{len(slides)} {name}")
@@ -362,6 +460,15 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
                     shutil.copyfile(wav, dest)
                 entry["audio"] = "audio/" + os.path.basename(dest)
                 have_audio += 1
+            # The camera take recorded with that narration, if there is one: a slide with a
+            # camera box plays it rather than asking whoever opens the page for their face.
+            mov = os.path.join(voice_dir, number + ".mov")
+            if os.path.isfile(mov):
+                progress(done, f"slide {done + 1}/{len(slides)} the camera take")
+                url = export_take(mov, takes_dir)
+                if url:
+                    entry["take"] = url
+                    have_takes += 1
             words = os.path.join(voice_dir, number + ".words.json")
             if os.path.isfile(words):
                 with open(words) as f:
@@ -380,16 +487,24 @@ def build(out_dir: str, web_dir: str, bundle: str, keep_wav: bool = False,
     with open(os.path.join(web_dir, "index.html"), "w") as f:
         f.write(PAGE)
 
+    server_path = os.path.join(web_dir, "serve.py")
+    with open(server_path, "w") as f:
+        f.write(SERVER)
+    os.chmod(server_path, 0o755)
+
     size = sum(os.path.getsize(os.path.join(dp, f))
                for dp, _, fs in os.walk(web_dir) for f in fs)
     progress(len(slides), "done")
-    print(f"web: {len(entries)} slides, {have_audio} with narration, {have_videos} GIF(s) as video, "
+    print(f"web: {len(entries)} slides, {have_audio} with narration, {have_takes} camera take(s), "
+          f"{have_videos} GIF(s) as video, "
           f"{size / 1e6:.0f} MB -> {web_dir}" + (" (inline: one page holds it all)" if inline else ""))
     if inline:
         print("     opens straight off the disk (double-click index.html), or serve it:")
     else:
         print("     serve the folder (the slides are fetched as they are played):")
-    print(f"     (cd {web_dir} && python3 -m http.server 8000)")
+    # serve.py rather than `python3 -m http.server`: that one has no Range support, and a
+    # browser will not play a video — a camera take, a clip on a slide — without it.
+    print(f"     (cd {web_dir} && python3 serve.py 8000)")
     return 0
 
 
@@ -568,6 +683,9 @@ PAGE = r"""<!doctype html>
         });
       }
       handle.player.setBitmapVideos(slide.videos || null);
+    // The speaker's own recording for this slide, for any camera box in it. Set before the
+    // document is loaded, so the first paint already has it.
+    if (handle.player.setCameraTake) handle.player.setCameraTake(slide.take || null);
       const bytes = await bytesFor(slide);
       if (index !== Math.max(0, Math.min(i, slides.length - 1))) return;   // moved on meanwhile
       if (!bytes) {
@@ -674,6 +792,10 @@ PAGE = r"""<!doctype html>
       try { handle.player.repaint(); } catch (e) { /* mid-load */ }
     }
 
+    // The camera take runs on the narration's clock, as it did when it was recorded.
+    if (handle && handle.player && handle.player.setCameraTakeTime) {
+      handle.player.setCameraTakeTime(audio.currentTime, !audio.paused && !!audio.src);
+    }
     if (wordSpans.length && !audio.paused) {
       const t = audio.currentTime;
       let current = -1;

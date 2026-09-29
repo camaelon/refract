@@ -1040,7 +1040,8 @@ frames in the same boxes. Where a slide has a wav and no movie, the box shows th
 as before. `--camera-take on` records the camera whether or not the deck has a box for it yet;
 `off` never does. A take is authoring material — a phone on a desk wants every pixel — so it
 is not shrunk at capture; `refract.py <deck> --shrink-camera 360` re-encodes the takes to a
-thumbnail's height once that is all they are for. The web export does not play takes yet.
+thumbnail's height once that is all they are for. The web export plays takes too — see
+**A web player** below.
 
 A recorded talk plays itself back:
 
@@ -1253,13 +1254,24 @@ The whole thing — slides, narration, captions — as a page:
 
 ```sh
 prebuilt/refractplayer mytalk/out --web mytalk/web
-(cd mytalk/web && python3 -m http.server 8000)
+(cd mytalk/web && python3 serve.py 8000)
 ```
+
+`serve.py` is written into the export beside the page, and it is the way to serve it:
+`python3 -m http.server` answers a Range request with the whole file over HTTP/1.0, and a
+browser asked to play a video that way waits forever — so a camera take, or a clip on a
+slide, would never start. The only thing `serve.py` adds is Range.
 
 The slides are the **real `.rc` documents**, rendered by the RemoteCompose TypeScript
 player: animations, shaders, the same documents the desktop player shows — not pictures of
 them. On top of that it plays the recorded narration, lights the captions word by word off
-the audio clock, and advances when a slide's narration ends. A slide with no audio holds for
+the audio clock, and advances when a slide's narration ends. **A camera box plays the take
+recorded with that slide's narration**, not the viewer's own camera: the take is remuxed into
+an MP4 beside the page (a copy of the H.264 the player recorded, not a re-encode) and played
+on the narration's clock, so the speaker's face and their voice stay together as they did
+when it was recorded. It is paused when the deck is, and nudged back into step if it drifts.
+A camera box on a slide with no take falls back to asking the browser for the viewer's own
+camera, which is what a live page — a kiosk, a demo — wants. A slide with no audio holds for
 the time the rehearsal recorded, so a partly-recorded deck still plays end to end.
 
 **One file per slide, fetched as the deck is played.** The slides sit under `slides/` and
