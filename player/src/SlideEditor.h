@@ -23,7 +23,8 @@ struct GLFWwindow;
 namespace refract {
 
 // What the editor is pointed at. A slide is one `---`-separated block and follows the deck;
-// the other two are whole files and stay where they are put.
+// the other two are whole files and stay where they are put. `Deck` is a markdown file: the
+// deck's own `slides.md`, or a sub-deck's — see setTarget.
 enum class EditTarget { Slide, Deck, Settings };
 
 class SlideEditor {
@@ -77,10 +78,15 @@ public:
     // and the menu is exactly where that would be felt.
     void refreshAssets();
 
-    // Point the editor at a slide, the whole of slides.md, or settings.toml. Refused while
-    // there are unsaved changes: the buffer belongs to what it was opened on.
-    void setTarget(EditTarget target);
+    // Point the editor at a slide, a whole markdown file, or settings.toml. Refused while
+    // there are unsaved changes: the buffer belongs to what it was opened on. `file` names
+    // which markdown, relative to the deck — a slide pulled in by `:: include` is written in
+    // a sub-deck's own slides.md, and that file is as editable as the deck's. Empty keeps
+    // whichever was last opened (the deck's own, to begin with).
+    void setTarget(EditTarget target, const std::string& file = std::string());
     EditTarget target() const;
+    // The markdown file the Deck target is on, relative to the deck.
+    const std::string& deckFile() const;
 
     // Show this slide's source. Does nothing while there are unsaved changes — the editor
     // holds its ground rather than throwing away an edit because the deck moved on.

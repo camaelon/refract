@@ -796,13 +796,26 @@ a line with an accent in it, and the frame is drawn over its full column span wi
 where a line stops short washed rather than selected. Option is live: let go and extend again
 and you have an ordinary selection back.
 
-**Three things it can be pointed at**, as tabs along the top:
+**What it can be pointed at**, as tabs along the top:
 
 | | |
 |---|---|
 | **slide** | the block the slide on screen was written in; follows the deck as you move |
-| **slides.md** | the whole deck, end to end — for a change that spans slides |
+| **the markdown** | the whole file, end to end — for a change that spans slides |
 | **settings.toml** | the theme, the size, the transitions, the speakers and the shaders |
+
+A slide pulled in by `:: include` is written in a sub-deck's own `slides.md`, which the
+deck's own included — so the middle tab is not one file but **the chain of files the slide
+sits inside**, read outward from it: `slide ‹ overview/slides.md ‹ slides.md`. That is the
+order you would say it in, and each is a tab of its own, so the file a slide is really
+written in is one click away, and so is the line that included it. A slide of the deck's own markdown has a chain of one, which is the
+single `slides.md` tab it always was. Sub-decks all call their file `slides.md`, so a tab
+carries the folder that tells them apart.
+
+The chain stays on screen while one of its files is open — that row is the way back — and
+the **slide** tab returns to the slide you were editing. A whole file does not follow the
+deck, but the way back from one does: navigate the talk while a file is open and the slide
+tab goes to wherever the deck now is, rather than to an empty window.
 
 `settings.toml` was the last thing that still needed a terminal. A deck that has none opens an
 empty one, and saving it is what creates the file. A theme change touches every slide, and the

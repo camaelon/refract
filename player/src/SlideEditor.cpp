@@ -155,8 +155,21 @@ struct SlideEditor::Impl {
     FileLoader fileLoader;
     FileSaver  fileSaver;
     EditTarget target = EditTarget::Slide;
-    // The tabs, set while drawing and hit-tested on a click.
-    SkRect tabs[3];
+    // The tabs, set while drawing and hit-tested on a click. One for the slide, one per
+    // markdown file leading to it (the deck's own, then any sub-deck it came through), and
+    // one for the settings.
+    struct Tab {
+        SkRect box = SkRect::MakeEmpty();
+        EditTarget target = EditTarget::Slide;
+        std::string file;          // for Deck tabs: which markdown
+    };
+    std::vector<Tab> tabs;
+    // The markdown the Deck target is on. The deck's own to begin with; a click on a tab
+    // moves it to that sub-deck's.
+    std::string deckFile = "slides.md";
+    // Where the deck is, whatever the editor happens to be showing. A whole file does not
+    // follow the deck, but the way back from one does: the slide tab returns to this.
+    int deckSlide = -1;
     std::function<void()> onSaved;
 
     float scrollY = 0.0f;
@@ -547,10 +560,9 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         }
         if (action != GLFW_PRESS) return;
         const float x = static_cast<float>(impl.mouseX), y = static_cast<float>(impl.mouseY);
-        for (int i = 0; i < 3; i++) {
-            if (!impl.tabs[i].contains(x, y)) continue;
-            self->setTarget(i == 0 ? EditTarget::Slide
-                                   : i == 1 ? EditTarget::Deck : EditTarget::Settings);
+        for (const Impl::Tab& tab : impl.tabs) {
+            if (!tab.box.contains(x, y)) continue;
+            self->setTarget(tab.target, tab.file);
             return;
         }
         // The menu is over the text, so it is asked first: a click in it is a choice, not
@@ -692,25 +704,27 @@ void SlideEditor::setFileAccess(FileLoader loader, FileSaver saver) {
 EditTarget SlideEditor::target() const { return mImpl->target; }
 
 namespace {
-// What each target is called, and which file it is.
-const char* targetLabel(EditTarget t) {
+// What a target is called, for a message about it.
+std::string targetLabel(EditTarget t, const std::string& file) {
     switch (t) {
-        case EditTarget::Deck: return "slides.md";
+        case EditTarget::Deck: return file.empty() ? "slides.md" : file;
         case EditTarget::Settings: return "settings.toml";
         default: return "slide";
     }
 }
-const char* targetPath(EditTarget t) {
-    return t == EditTarget::Settings ? "settings.toml" : "slides.md";
-}
 }  // namespace
 
-void SlideEditor::setTarget(EditTarget target) {
+const std::string& SlideEditor::deckFile() const { return mImpl->deckFile; }
+
+void SlideEditor::setTarget(EditTarget target, const std::string& file) {
     Impl& impl = *mImpl;
-    if (target == impl.target) return;
+    const std::string want = target == EditTarget::Settings
+        ? std::string("settings.toml")
+        : (file.empty() ? impl.deckFile : file);
+    // Already there: a click on the tab that is open is not a reason to reload it.
+    if (target == impl.target && (target != EditTarget::Deck || want == impl.deckFile)) return;
     if (impl.buffer.dirty()) {
-        impl.setStatus("save or revert before moving to " + std::string(targetLabel(target)),
-                       true);
+        impl.setStatus("save or revert before moving to " + targetLabel(target, want), true);
         return;
     }
     impl.target = target;
@@ -718,11 +732,17 @@ void SlideEditor::setTarget(EditTarget target) {
     if (target == EditTarget::Slide) {
         impl.buffer.setText("");
         impl.file.clear();
+        impl.setStatus("", false);
+        // Back to the slide that was being edited — or to wherever the deck went while a
+        // file was open. Going to the slide tab and finding an empty window, with the slide
+        // right there on the wall, is not an answer to "show me the slide".
+        if (impl.deckSlide >= 0) showSlide(impl.deckSlide);
         return;
     }
+    if (target == EditTarget::Deck) impl.deckFile = want;
     std::string text, error;
-    if (impl.fileLoader && impl.fileLoader(targetPath(target), &text, &error)) {
-        impl.file = targetPath(target);
+    if (impl.fileLoader && impl.fileLoader(want, &text, &error)) {
+        impl.file = want;
         impl.shared = 1;
         impl.buffer.setText(text);
         impl.scrollY = 0;
@@ -741,7 +761,10 @@ bool SlideEditor::dirty() const { return mImpl->buffer.dirty(); }
 
 void SlideEditor::showSlide(int slide) {
     Impl& impl = *mImpl;
-    if (impl.target != EditTarget::Slide) return;   // a whole file does not follow the deck
+    // Remembered whatever is open: a whole file does not follow the deck, but the slide tab
+    // has to know where to go back to.
+    impl.deckSlide = slide;
+    if (impl.target != EditTarget::Slide) return;
     if (slide == impl.slide) return;
     // An unsaved edit is not thrown away because the deck moved on. The editor stays on the
     // slide being edited and says so; the player's own guard stops the deck moving at all
@@ -794,8 +817,8 @@ void SlideEditor::save() {
     std::string error;
     const bool ok = impl.target == EditTarget::Slide
         ? (impl.saver && impl.saver(impl.slide, impl.buffer.text(), &error))
-        : (impl.fileSaver && impl.fileSaver(targetPath(impl.target), impl.buffer.text(),
-                                            &error));
+        // Whatever file is open: the deck's markdown, a sub-deck's, or the settings.
+        : (impl.fileSaver && impl.fileSaver(impl.file, impl.buffer.text(), &error));
     if (!ok) {
         impl.setStatus(error.empty() ? "the save could not be started" : error, true);
         return;
@@ -1115,28 +1138,72 @@ void SlideEditor::render(App& app) {
     impl.textTop = kHeaderH + lineHeight;
 
     // ── Header ───────────────────────────────────────────────────────
-    // Three things the editor can be pointed at, as tabs: this slide, the whole deck, and
-    // the deck's settings. The theme was the last thing that still needed a terminal.
-    static const struct { EditTarget target; const char* label; } kTabs[] = {
-        {EditTarget::Slide, "slide"},
-        {EditTarget::Deck, "slides.md"},
-        {EditTarget::Settings, "settings.toml"},
-    };
+    // What the editor can be pointed at, as tabs: this slide, the markdown it is written in,
+    // and the deck's settings. A slide pulled in by `:: include` is written in a sub-deck's
+    // own slides.md, which the deck's own included — so the markdown is not one tab but the
+    // chain of files the slide sits inside, each of them editable. It reads outward from the
+    // slide, the way you would say it: this slide, in intro/slides.md, in slides.md. The
+    // theme was the last thing that still needed a terminal.
+    std::vector<Impl::Tab> tabs;
+    tabs.push_back({SkRect::MakeEmpty(), EditTarget::Slide, ""});
+    std::vector<std::string> chain;
+    // The chain belongs to the slide, and stays on screen while one of its files is open —
+    // that row is how you get back.
+    const int chainSlide = impl.slide >= 0 ? impl.slide : impl.deckSlide;
+    if (chainSlide >= 0 && chainSlide < app.deck.size()) {
+        for (const SourceRef& step : app.deck.at(chainSlide).sourcePath()) {
+            if (!step.file.empty() && (chain.empty() || chain.back() != step.file)) {
+                chain.push_back(step.file);
+            }
+        }
+        // The provenance reads root first; the tabs read outward from the slide.
+        std::reverse(chain.begin(), chain.end());
+    }
+    if (chain.empty()) chain.push_back(impl.deckFile.empty() ? "slides.md" : impl.deckFile);
+    // The file being edited is always reachable, even after the deck moved to a slide that
+    // is not in it.
+    if (impl.target == EditTarget::Deck
+        && std::find(chain.begin(), chain.end(), impl.deckFile) == chain.end()) {
+        chain.push_back(impl.deckFile);
+    }
+    for (const std::string& file : chain) tabs.push_back({SkRect::MakeEmpty(), EditTarget::Deck, file});
+    tabs.push_back({SkRect::MakeEmpty(), EditTarget::Settings, "settings.toml"});
+
     SkFont tabFont = uiFont(12, true);
+    SkFont chevronFont = uiFont(12);
+    // A sub-deck's file is named by the folder it lives in: every one of them is called
+    // slides.md, and the path to it is what tells them apart.
+    auto tabLabel = [&](const Impl::Tab& tab) -> std::string {
+        if (tab.target == EditTarget::Slide) return "slide";
+        if (tab.target == EditTarget::Settings) return "settings.toml";
+        const size_t slash = tab.file.find_last_of('/');
+        if (slash == std::string::npos) return tab.file;
+        const std::string dir = tab.file.substr(0, slash);
+        const size_t up = dir.find_last_of('/');
+        return (up == std::string::npos ? dir : dir.substr(up + 1)) + "/" + tab.file.substr(slash + 1);
+    };
     float tabX = pad;
-    for (int i = 0; i < 3; i++) {
-        const bool on = impl.target == kTabs[i].target;
-        const float tw = textWidth(tabFont, kTabs[i].label) + 20;
-        impl.tabs[i] = SkRect::MakeXYWH(tabX, 12, tw, 24);
-        const bool hot = impl.tabs[i].contains(static_cast<float>(impl.mouseX),
-                                               static_cast<float>(impl.mouseY));
-        fillRoundRect(canvas, impl.tabs[i], 12, on ? ui::kPanel : ui::kBg);
-        strokeRoundRect(canvas, impl.tabs[i], 12,
-                        on ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
-        drawTextCentred(canvas, kTabs[i].label, impl.tabs[i], tabFont,
-                        on ? ui::kText : ui::kDim);
+    for (size_t i = 0; i < tabs.size(); i++) {
+        Impl::Tab& tab = tabs[i];
+        // Before each file: "inside", pointing back the way it came — the slide is inside
+        // this markdown, which is inside the next one. Drawn rather than spelled, so the row
+        // reads as a path rather than a list.
+        if (tab.target == EditTarget::Deck && i > 0) {
+            tabX += drawText(canvas, "\u2039", tabX + 1, 29, chevronFont, ui::kLine) + 8;
+        }
+        const std::string label = tabLabel(tab);
+        const bool on = impl.target == tab.target
+                        && (tab.target != EditTarget::Deck || tab.file == impl.deckFile);
+        const float tw = textWidth(tabFont, label) + 20;
+        tab.box = SkRect::MakeXYWH(tabX, 12, tw, 24);
+        const bool hot = tab.box.contains(static_cast<float>(impl.mouseX),
+                                          static_cast<float>(impl.mouseY));
+        fillRoundRect(canvas, tab.box, 12, on ? ui::kPanel : ui::kBg);
+        strokeRoundRect(canvas, tab.box, 12, on ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
+        drawTextCentred(canvas, label, tab.box, tabFont, on ? ui::kText : ui::kDim);
         tabX += tw + 6;
     }
+    impl.tabs = tabs;
     const std::string title = impl.target != EditTarget::Slide
         ? std::string()
         : (impl.slide >= 0
