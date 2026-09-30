@@ -689,7 +689,11 @@ The viewer ships two hosts, both keyed off the `config` string:
   A lone video with no title fills the whole slide instead.
 - **web** (`config: "web:<url>"`, WKWebView) — `<https://url>` embeds a live, clickable
   browser positioned over the component's box; it follows layout and transitions and
-  supports file-open dialogs.
+  supports file-open dialogs. The host also keeps a snapshot of the page, refreshed twice a
+  second, and draws it into the slide under the live view and into the off-screen stills: a
+  native view is in neither the window's pixels nor a still, so without it the presenter's
+  preview and the deck view's cards would show a hole where the demo is. An export, which
+  never loads a page, keeps the dashed frame that names it.
 - **camera** (`config: "camera:<device>#fit=…&crop=…&mirror=1"`, AVFoundation) — `<camera>`
   draws the machine's camera into the box: the speaker beside their slides, in whatever
   frame the layout gives it (the box's clip is the core's, so a `clip=circle` box is a

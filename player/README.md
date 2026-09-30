@@ -160,10 +160,15 @@ button either way: while the talk is paused a slide's wav waits, and starts from
 when the clock does.
 
 Embedded content previews too: `rc:` sub-documents render for real and `video:` embeds show
-a poster frame. An embedded **web page** cannot be drawn off-screen at all — it is a native
-`WKWebView` over the window — so it previews as a dashed frame labelled with where the page
-comes from (the host, or the folder for a local one). The real page is live once the slide
-is up.
+a poster frame. An embedded **web page** is a native `WKWebView` over the window, so it is in
+neither the window's pixels nor an off-screen surface — nothing drawn of a slide would have
+it. The host therefore keeps a picture of each page, a WebKit snapshot taken twice a second
+while the page is on screen, and everything that draws a slide uses it: the live slide draws
+it under the view (invisible on the projector, the page in the presenter's preview of it),
+and the off-screen stills draw it in the deck view's cards and the next-slide pane. Until the
+player has shown a page there is no picture of it, so a page not yet reached — and every page
+in an export, which never loads one — previews as a dashed frame labelled with where it comes
+from (the host, or the folder for a local one).
 
 ### The navigator
 

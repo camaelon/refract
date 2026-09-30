@@ -2612,6 +2612,18 @@ int main(int argc, char* argv[]) {
         // thread — a heavy slide takes over a second, and that used to be a second of frozen
         // window landing exactly when a key was pressed — so this is a lock and a move.
         refract::collectThumbs();
+        // A slide with an embedded page had no picture of it the first time its still was
+        // drawn — a native view cannot be painted into an off-screen surface — so the still
+        // said "web page" and was cached. Once the player has actually shown that page there
+        // is a picture, and the stills that were drawn without it are worth drawing again.
+        {
+            static uint64_t picturedSeen = 0;
+            const uint64_t pictured = WebCustomHost::pagesPictured();
+            if (pictured != picturedSeen) {
+                picturedSeen = pictured;
+                refract::clearThumbCache();
+            }
+        }
     }
 
     // An edit in progress is finished rather than dropped: it is saved on leaving edit mode,
