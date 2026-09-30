@@ -12,6 +12,7 @@ That means usage here cannot drift from usage at build time — they are the sam
 from __future__ import annotations
 
 import os
+from urllib.parse import unquote
 
 from .deck import IMAGE_EXTS, VIDEO_EXTS, load_deck, resolve_blocks
 from .settings import load_settings
@@ -100,6 +101,12 @@ def used_by(deck_dir: str) -> dict:
             note(block.get("path", ""), i)
             # A framed `.rc` embed prefers its sibling `.json`; both are the asset.
             note(block.get("json", "") or "", i)
+            # A page in the deck (`<file://demos/app/index.html>`) is an asset of the slide
+            # that shows it — resolve_blocks has already made the URL absolute — so the
+            # editor's asset list does not call a demo unused.
+            url = block.get("url", "")
+            if url.lower().startswith("file://"):
+                note(unquote(url[len("file://"):].partition("#")[0].partition("?")[0]), i)
 
     # Shaders and background inclusions, which the theme reads rather than a slide.
     settings = load_settings(deck_dir)

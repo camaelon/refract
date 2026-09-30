@@ -200,3 +200,61 @@ class LoadDeck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PagesInTheDeck(unittest.TestCase):
+    """A `file:` page named relative to the deck it travels with."""
+
+    def setUp(self):
+        self.deck = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.deck, "includes", "demo"))
+        open(os.path.join(self.deck, "page.html"), "w").close()
+        open(os.path.join(self.deck, "includes", "demo", "index.html"), "w").close()
+
+    def url_for(self, name):
+        return deck.resolve_page_url(name, self.deck)
+
+    def test_beside_the_slides(self):
+        self.assertEqual(self.url_for("file://page.html"),
+                         "file://" + os.path.join(self.deck, "page.html"))
+        self.assertEqual(self.url_for("file:page.html"), self.url_for("file://page.html"),
+                         "one slash or two, it is the same page")
+
+    def test_in_includes(self):
+        self.assertEqual(self.url_for("file://demo/index.html"),
+                         "file://" + os.path.join(self.deck, "includes", "demo", "index.html"),
+                         "what is not beside the slides is looked for in includes/")
+
+    def test_what_is_left_alone(self):
+        for url in ("https://example.dev/spec", "http://localhost:8000/",
+                    "file:///somewhere/else/page.html", "file://localhost/abs/page.html"):
+            self.assertEqual(self.url_for(url), url)
+
+    def test_a_page_that_is_not_there_names_the_deck(self):
+        # Nowhere to be found: the deck's own path, so the player's complaint names a real
+        # place rather than a URL nobody could have meant.
+        self.assertEqual(self.url_for("file://nope.html"),
+                         "file://" + os.path.join(self.deck, "nope.html"))
+
+    def test_a_sub_deck_can_use_the_main_deck(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "includes"))
+        open(os.path.join(root, "includes", "shared.html"), "w").close()
+        found = deck.resolve_page_url("file://shared.html", self.deck,
+                                      [os.path.join(root, "includes")])
+        self.assertEqual(found, "file://" + os.path.join(root, "includes", "shared.html"))
+
+    def test_the_fragment_and_query_survive(self):
+        self.assertEqual(self.url_for("file://page.html#section-2"),
+                         "file://" + os.path.join(self.deck, "page.html") + "#section-2")
+        self.assertEqual(self.url_for("file://page.html?debug=1"),
+                         "file://" + os.path.join(self.deck, "page.html") + "?debug=1")
+
+    def test_a_slide_gets_the_resolved_page(self):
+        slide = {"base_dir": self.deck,
+                 "blocks": [{"kind": "weblink", "url": "file://page.html", "label": "Demo"}]}
+        out = deck.resolve_blocks(slide)
+        self.assertEqual(out[0]["url"], "file://" + os.path.join(self.deck, "page.html"))
+        self.assertEqual(out[0]["label"], "Demo")
+        again = deck.resolve_blocks({"base_dir": self.deck, "blocks": out})
+        self.assertEqual(again[0]["url"], out[0]["url"], "resolving twice changes nothing")

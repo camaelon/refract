@@ -266,7 +266,7 @@ Use `skip=false` to keep one while leaving the flag in place.
 | camera        | `<camera>` — the presenting machine's **camera feed**, drawn live into the box at playback (a native custom component, like video); `<camera:FaceTime>` names the device. Frames, crops, clips and captions like a video: `<camera \| ratio=1:1 clip=circle mirror>` is a speaker in a circle. Exports show a marked box. |
 | json include  | `<name.json>` — a RemoteCompose JSON document embedded **live** as components |
 | rc include    | `<name.rc>` — a prebuilt RemoteCompose doc embedded **live** in the slide: spliced flat if a sibling `.json` exists, else painted as a nested sub-document (its own id space, animates on its own, and receives mouse drags — e.g. rotate a 3D plot). A lone `.rc` (no title) is a whole-slide passthrough. Scaling via `[embed] fit`. The asset is copied to `out/media/` (not listed as a slide). |
-| web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box |
+| web link      | `<https://url>` (optional `\| label`) — an interactive web page **embedded in the page** (a native custom component, like video); the viewer places a live, clickable browser over its box. `<file://demos/app/index.html>` is a page **in the deck**: a relative path is looked for beside `slides.md`, then in `includes/` (and in the main deck's, for a sub-deck), so a demo travels with the deck instead of being nailed to one machine. `file:///…` is still an absolute path. |
 
 Includes are resolved from `includes/`; the extension may be omitted (`<logo>`
 finds `logo.png`). Speaker accent comes from `[speakers]` (below).

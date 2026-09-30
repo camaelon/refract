@@ -260,7 +260,9 @@ def _parse_section(lines: list[str]) -> dict | None:
             # A URL becomes an interactive web page embedded in the slide (a custom
             # component); optional label after "|": <https://demo.dev | Live demo>. A
             # ``file://`` URL loads a local HTML file (the viewer grants it read access to
-            # its own directory, so linked CSS/JS/images resolve).
+            # its own directory, so linked CSS/JS/images resolve). Where the path is
+            # relative — ``file://demos/app/index.html`` — it names a page inside the deck,
+            # and deck.resolve_page_url finds it: the URL kept here is what was written.
             if re.match(r"(https?|file)://", inner, re.I):
                 url, _, label = inner.partition("|")
                 blocks.append({"kind": "weblink", "url": url.strip(),

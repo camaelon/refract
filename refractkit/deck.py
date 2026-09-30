@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from urllib.parse import unquote
 
 from .markdown import parse_markdown
 
@@ -246,10 +248,54 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     return block
 
 
+def resolve_page_url(url: str, deck_dir: str, extra_dirs: list[str] | None = None) -> str:
+    """A ``file:`` URL pointing at a page in the deck, made absolute.
+
+    A demo that travels with the deck should be named the way everything else in a deck is —
+    by where it sits — so ``<file://demos/app/index.html>`` is the deck's own
+    ``demos/app/index.html``. Anything already absolute (``file:///…``), and anything that is
+    not a ``file:`` URL at all, is left exactly as it was written.
+
+    A relative page is looked for beside ``slides.md`` first, then in ``includes/``, then
+    wherever else includes come from — a sub-deck's page can live in the main deck. When it
+    is nowhere, the deck's own path is what comes back, so the player names a real file when
+    it says the page is missing rather than something that was never looked for."""
+    if not url or not url.lower().startswith("file:"):
+        return url
+    rest = url[len("file:"):]
+    if rest.startswith("///"):
+        return url                              # file:///abs/path
+    if rest.startswith("//"):
+        rest = rest[2:]
+        host, _, _after = rest.partition("/")
+        if host.lower() == "localhost":         # file://localhost/abs/path: already absolute
+            return url
+    # What is left is a relative path: file://demos/x.html, file:demos/x.html, file://./x.html
+    rest = rest.lstrip("/")
+    if not rest:
+        return url
+    path, sep, tail = rest.partition("#")       # a fragment belongs to the URL, not the path
+    query, qsep, after_query = "", "", ""
+    if "?" in path:
+        path, qsep, query = path.partition("?")
+    path = unquote(path)
+    candidates = [os.path.join(deck_dir, path), os.path.join(deck_dir, "includes", path)]
+    for extra in extra_dirs or []:
+        candidates.append(os.path.join(extra, path))
+        # includes/ dirs are the usual `extra`; their deck is worth a look too.
+        candidates.append(os.path.join(os.path.dirname(extra), path))
+    found = next((c for c in candidates if os.path.exists(c)), candidates[0])
+    return Path(os.path.abspath(found)).as_uri() + (qsep + query if qsep else "") + (sep + tail if sep else "")
+
+
 def _resolve_block_list(blocks: list[dict], includes_dir: str,
-                       extra_dirs: list[str] | None = None) -> list[dict]:
-    """Replace ``include`` blocks with resolved image/json/rc/missing blocks (others pass
-    through). Idempotent — re-resolving already-resolved blocks is a no-op."""
+                       extra_dirs: list[str] | None = None,
+                       deck_dir: str | None = None) -> list[dict]:
+    """Replace ``include`` blocks with resolved image/json/rc/missing blocks, and point a
+    relative ``file:`` page at the deck it lives in (others pass through). Idempotent —
+    re-resolving already-resolved blocks is a no-op."""
+    if deck_dir is None:
+        deck_dir = os.path.dirname(includes_dir) or "."
     resolved = []
     for block in blocks:
         if block["kind"] == "include":
@@ -257,6 +303,8 @@ def _resolve_block_list(blocks: list[dict], includes_dir: str,
             if block.get("opts"):
                 r = _apply_include_opts(r, block["opts"])
             resolved.append(r)
+        elif block["kind"] == "weblink":
+            resolved.append({**block, "url": resolve_page_url(block["url"], deck_dir, extra_dirs)})
         else:
             resolved.append(block)
     return resolved
@@ -282,5 +330,5 @@ def resolve_blocks(slide: dict) -> list[dict]:
             os.path.join(base, "themes", "includes"),
         ]
     for sec in slide.get("sections", []):
-        sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir, extra_dirs)
-    return _resolve_block_list(slide["blocks"], includes_dir, extra_dirs)
+        sec["blocks"] = _resolve_block_list(sec["blocks"], includes_dir, extra_dirs, deck_dir)
+    return _resolve_block_list(slide["blocks"], includes_dir, extra_dirs, deck_dir)
