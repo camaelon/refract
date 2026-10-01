@@ -1360,6 +1360,9 @@ void openSlideEditor() {
                                    std::string* error) {
         return source.scanAssets(out, dir, error);
     });
+    slideEditor->setThemeLister([](std::vector<refract::ThemePreset>* out, std::string* error) {
+        return source.listThemes(out, error);
+    });
     slideEditor->refreshAssets();
     // What may be written on a `::` line. Read once — the grammar does not change while the
     // player runs — and quietly skipped if the tools are not there.

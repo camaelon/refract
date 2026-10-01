@@ -25,7 +25,7 @@ namespace refract {
 // What the editor is pointed at. A slide is one `---`-separated block and follows the deck;
 // the other two are whole files and stay where they are put. `Deck` is a markdown file: the
 // deck's own `slides.md`, or a sub-deck's — see setTarget.
-enum class EditTarget { Slide, Deck, Settings };
+enum class EditTarget { Slide, Deck, Settings, Theme };
 
 class SlideEditor {
 public:
@@ -69,6 +69,17 @@ public:
     using AssetLister = std::function<bool(std::vector<Asset>* out, std::string* deckDir,
                                            std::string* error)>;
     void setAssetLister(AssetLister lister);
+
+    // The deck's theme presets, for the theme panel: every `theme/<name>.toml` a `:: as:`
+    // could name, with the colours a swatch is drawn from. Asked for when the editor opens
+    // and after a rebuild, like the assets.
+    using ThemeLister = std::function<bool(std::vector<ThemePreset>* out, std::string* error)>;
+    void setThemeLister(ThemeLister lister);
+    // Show or hide the theme panel. The button in the footer does the same.
+    void showThemes(bool shown);
+    bool themesShown() const;
+    // The theme file the Theme target is on, relative to the deck.
+    const std::string& themeFile() const;
 
     // What may be written on a `::` line — refract's own vocabulary, read once at startup.
     // Without it the editor still completes includes; the `::` menu simply never appears.

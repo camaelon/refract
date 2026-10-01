@@ -97,6 +97,7 @@ set(REFRACTPLAYER_SOURCES
     src/Pointer.cpp
     src/Ink.cpp
     src/DroppedAsset.cpp
+    src/SlideMeta.cpp
     src/SlideNotes.cpp
     src/SlideSelection.cpp
     src/Sync.cpp

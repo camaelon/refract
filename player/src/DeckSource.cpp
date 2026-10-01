@@ -227,6 +227,34 @@ bool DeckSource::metaVocabulary(MetaVocabulary* out, std::string* error) {
 
 // ── Assets ───────────────────────────────────────────────────────────
 
+bool DeckSource::listThemes(std::vector<ThemePreset>* out, std::string* error) {
+    if (!available()) {
+        *error = "a zip bundle carries no themes to choose from";
+        return false;
+    }
+    nlohmann::json doc;
+    if (!ask("themes.py", {mOutDir}, &doc, "cannot read this deck's themes", error)) return false;
+    out->clear();
+    for (const auto& rec : doc["themes"]) {
+        ThemePreset preset;
+        preset.name = rec.value("name", std::string());
+        preset.file = rec.value("file", std::string());
+        preset.type = rec.value("type", std::string("content"));
+        preset.background = rec.value("bg", std::string());
+        preset.titleColor = rec.value("title_color", std::string());
+        preset.bodyColor = rec.value("body_color", std::string());
+        preset.accent = rec.value("accent", std::string());
+        preset.titleSize = rec.value("title_size", 0.0);
+        preset.bodySize = rec.value("body_size", 0.0);
+        preset.keys = rec.value("keys", 0);
+        if (rec.contains("slides") && rec["slides"].is_array()) {
+            for (const auto& n : rec["slides"]) preset.slides.push_back(n.get<int>());
+        }
+        if (!preset.name.empty()) out->push_back(std::move(preset));
+    }
+    return true;
+}
+
 bool DeckSource::scanAssets(std::vector<Asset>* out, std::string* dir, std::string* error) {
     if (!available()) {
         *error = "a zip bundle carries no includes/ to look at";

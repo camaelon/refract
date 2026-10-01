@@ -464,6 +464,7 @@ in the same write and as one undoable edit — see the note on recordings under
 [Rehearsing](#rehearsing).
 | `tools/captions.py` | transcribe the narration and align it into per-word timings |
 | `tools/sync.py` | the sync point in Python, for a machine that is not a player (`--sync-serve` hosts it in the player) |
+| `tools/themes.py` | the deck's theme presets, what each looks like and which slides are on them, for the editor's theme panel |
 | `tools/web.py` | assemble the deck, its audio and its captions into a web page |
 
 ## The deck view
@@ -818,6 +819,33 @@ by itself: a slide change, from the arrows or a double-click in the deck view, b
 editor back to that slide and to its own chain, since moving the deck is asking to see
 slides. An unsaved edit stops it, as it stops everything else here: the file stays open and
 says so.
+
+**A theme panel**, from the *themes* button in the footer. Down the side it lists every
+preset the deck has — each `theme/<name>.toml` a `:: as:` could name — and each one is drawn
+as the slide it would make: its background, a bar of title in the title's colour at the
+title's size, a line of body, a dot of accent, with what it is and what it is on underneath
+("content · 4 slides"). A name on its own says nothing about what it looks like, and a real
+deck accumulates two dozen of them; a preset nothing uses is worth seeing as such too.
+
+**Clicking one applies it** to the slide being edited: the `::` line gains or changes its
+`as:` and the slide is saved, so a rebuild later the deck itself is the preview — on the
+wall, in the deck view, wherever you are looking. Everything else on that line is left where
+it was: a pane ratio, an override, a flag, an author. **none** at the top takes the theme off
+again, and the one the slide is on is marked. It is one edit like any other, so the deck
+view's undo takes it back.
+
+**`edit` on a row opens the preset itself**, `theme/hero.toml`, in the editor — coloured as
+TOML, saved with `cmd`+`S`, rebuilt like anything else, and a change to a preset reaches
+every slide that uses it. It gets a tab of its own while it is open, so the slide, the
+markdown, the settings and the preset are all one click apart, and the panel stays up to move
+between presets. With a whole file open rather than a slide, a row opens the preset instead
+of applying it: there is nothing to apply it to.
+
+The list is the deck's own `theme/` and `themes/` directories, read by
+[`tools/themes.py`](tools/themes.py) — the colours are resolved the way refract resolves
+them, the preset's own where it sets them and the deck's where it does not, so a swatch shows
+what a slide would actually look like rather than half of it, and the usage comes from the
+manifest, which records the theme every slide was built with.
 
 `settings.toml` was the last thing that still needed a terminal. A deck that has none opens an
 empty one, and saving it is what creates the file. A theme change touches every slide, and the
@@ -1534,7 +1562,7 @@ is set before `project()` — after it, it is too late.
 
 ### Tests
 
-Twenty-four C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
+Twenty-five C++ suites, none of which needs a window or a GPU. Eighteen of them need nothing but their
 own source and configure on their own, which is what CI builds — configuring the player pulls
 in the engine and fetches Skia, and none of that is needed to check that a click lands on the
 line it is over:
@@ -1569,6 +1597,7 @@ ctest --test-dir player/build --output-on-failure
 | `sync` | the lines two players in step exchange (slide, blank, laser), and how a server address is read |
 | `ink` | what the laser draws: strokes per slide, kept for the run, cleared one slide at a time |
 | `slide_notes` | the `???` block inside a slide's markdown: reading it, replacing it, adding to the content above it, and a transcript laid out as notes |
+| `slide_meta` | the `::` line: the theme preset it names, and setting one without disturbing the overrides, ratio, flags or author on it |
 | `dropped_asset` | a file dropped on a slide: whether it can be included, and what it is called in includes/ |
 | `pointer` | when the arrow hides over the slide, and what the laser's trail holds |
 | `voice_dir` | where a deck's narration lives, and the one-time move of an old out/voice up beside the slides |

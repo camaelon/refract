@@ -1,5 +1,7 @@
 #include "SlideEditor.h"
 
+#include "SlideMeta.h"
+
 #include "Completion.h"
 #include "Meta.h"
 #include "Scrolling.h"
@@ -76,6 +78,22 @@ bool togglesFence(const std::string& text) {
     return text.compare(i, 3, "```") == 0;
 }
 
+// A colour as refract writes them: #AARRGGBB, or #RRGGBB. `fallback` for anything else.
+SkColor parseColor(const std::string& text, SkColor fallback) {
+    if (text.size() != 7 && text.size() != 9) return fallback;
+    if (text[0] != '#') return fallback;
+    unsigned value = 0;
+    for (size_t i = 1; i < text.size(); i++) {
+        const char c = text[i];
+        const int digit = (c >= '0' && c <= '9') ? c - '0'
+                        : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                        : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (digit < 0) return fallback;
+        value = (value << 4) | static_cast<unsigned>(digit);
+    }
+    return text.size() == 7 ? (0xFF000000u | value) : value;
+}
+
 }  // namespace
 
 struct SlideEditor::Impl {
@@ -120,6 +138,16 @@ struct SlideEditor::Impl {
     std::string itemsFor;
 
     AssetLister assetLister;
+    ThemeLister themeLister;
+    // The deck's presets, and the panel that shows them.
+    std::vector<ThemePreset> themes;
+    bool themesOpen = false;
+    float themeScroll = 0.0f;
+    SkRect themePanel = SkRect::MakeEmpty();
+    SkRect themeToggle = SkRect::MakeEmpty();
+    std::vector<SkRect> themeRows;       // one per preset, in `themes` order; empty when hidden
+    std::vector<SkRect> themeEdits;      // the "edit" button on each row, alongside them
+    SkRect themeNone = SkRect::MakeEmpty();
     // The `::` vocabulary. Types and flags insert a word; a key inserts `key=` and opens
     // again on its values.
     std::vector<Item> metaTypes, metaFlags, metaKeys;
@@ -167,6 +195,8 @@ struct SlideEditor::Impl {
     // The markdown the Deck target is on. The deck's own to begin with; a click on a tab
     // moves it to that sub-deck's.
     std::string deckFile = "slides.md";
+    // The preset the Theme target is on: `theme/<name>.toml`, opened from the panel.
+    std::string themeFile;
     // Where the deck is, whatever the editor happens to be showing. A whole file does not
     // follow the deck, but the way back from one does: the slide tab returns to this.
     int deckSlide = -1;
@@ -546,9 +576,17 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
     glfwSetScrollCallback(window, [](GLFWwindow* w, double, double dy) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
         if (!self || !self->mImpl) return;
-        self->mImpl->scrollY =
-            std::max(0.0f, self->mImpl->scrollY - scrollPixels(dy, self->mImpl->lineHeight));
-        self->mImpl->lastScrollAt = glfwGetTime();
+        Impl& impl = *self->mImpl;
+        // The wheel belongs to whatever it is over: a deck's worth of presets is a list of
+        // its own, and scrolling the markdown behind it would be the wrong answer.
+        if (impl.themesOpen && impl.themePanel.contains(static_cast<float>(impl.mouseX),
+                                                        static_cast<float>(impl.mouseY))) {
+            impl.themeScroll = std::max(0.0f, impl.themeScroll - scrollPixels(dy, 52.0f));
+            impl.lastScrollAt = glfwGetTime();
+            return;
+        }
+        impl.scrollY = std::max(0.0f, impl.scrollY - scrollPixels(dy, impl.lineHeight));
+        impl.lastScrollAt = glfwGetTime();
     });
     glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int mods) {
         auto* self = static_cast<SlideEditor*>(glfwGetWindowUserPointer(w));
@@ -578,6 +616,46 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
             return;
         }
         if (impl.autoButton.contains(x, y)) { impl.autoSave = !impl.autoSave; return; }
+        if (impl.themeToggle.contains(x, y)) { self->showThemes(!impl.themesOpen); return; }
+        // A preset: the slide's `::` line is rewritten and saved, so what the panel shows is
+        // what the deck does a rebuild later. The deck view's undo takes it back, like any
+        // other edit.
+        if (impl.themesOpen && impl.themePanel.contains(x, y)) {
+            // The way into the preset's own file: the panel browses, this edits.
+            for (size_t i = 0; i < impl.themeEdits.size(); i++) {
+                if (!impl.themeEdits[i].contains(x, y)) continue;
+                self->setTarget(EditTarget::Theme, impl.themes[i].file);
+                return;
+            }
+            if (impl.target != EditTarget::Slide) {
+                // Not editing a slide: a row opens the preset rather than applying it, since
+                // there is nothing to apply it to.
+                for (size_t i = 0; i < impl.themeRows.size(); i++) {
+                    if (!impl.themeRows[i].contains(x, y)) continue;
+                    self->setTarget(EditTarget::Theme, impl.themes[i].file);
+                    return;
+                }
+                return;
+            }
+            std::string chosen;
+            bool hit = impl.themeNone.contains(x, y);
+            for (size_t i = 0; i < impl.themeRows.size() && !hit; i++) {
+                if (!impl.themeRows[i].contains(x, y)) continue;
+                hit = true;
+                chosen = impl.themes[i].name;
+            }
+            if (!hit) return;                       // the panel's background: nothing to do
+            const std::string had = themeOf(impl.buffer.text());
+            if (had == chosen) {
+                impl.setStatus(chosen.empty() ? "this slide has no theme" : chosen + " already",
+                               false);
+                return;
+            }
+            impl.buffer.setText(withTheme(impl.buffer.text(), chosen));
+            impl.setStatus(chosen.empty() ? "theme removed" : "theme: " + chosen, false);
+            self->save();
+            return;
+        }
         if (impl.saveButton.contains(x, y)) { self->save(); return; }
         if (impl.revertButton.contains(x, y)) { self->revert(); return; }
         if (y < impl.textTop - impl.lineHeight || impl.lineHeight <= 0) return;
@@ -647,6 +725,30 @@ void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); 
 void SlideEditor::setSaver(Saver saver) { mImpl->saver = std::move(saver); }
 void SlideEditor::setSplitter(Splitter splitter) { mImpl->splitter = std::move(splitter); }
 
+void SlideEditor::setThemeLister(ThemeLister lister) {
+    Impl& impl = *mImpl;
+    impl.themeLister = std::move(lister);
+    if (impl.themeLister) {
+        std::string error;
+        std::vector<ThemePreset> found;
+        if (impl.themeLister(&found, &error)) impl.themes = std::move(found);
+    }
+}
+
+void SlideEditor::showThemes(bool shown) {
+    Impl& impl = *mImpl;
+    impl.themesOpen = shown;
+    impl.themeScroll = 0.0f;         // opened again: at the top, where "none" is
+    if (shown && impl.themes.empty() && impl.themeLister) {
+        std::string error;
+        std::vector<ThemePreset> found;
+        if (impl.themeLister(&found, &error)) impl.themes = std::move(found);
+        else impl.setStatus(error.empty() ? "this deck has no themes to choose from" : error, true);
+    }
+}
+
+bool SlideEditor::themesShown() const { return mImpl->themesOpen; }
+
 void SlideEditor::setAssetLister(AssetLister lister) {
     mImpl->assetLister = std::move(lister);
 }
@@ -694,6 +796,12 @@ void SlideEditor::refreshAssets() {
     impl.namesReady = false;     // the names are worked out again for whatever is open
     impl.assetNames.clear();
     impl.itemsFor.clear();
+    // A rebuild can add a preset, or change what one looks like.
+    if (impl.themeLister) {
+        std::vector<ThemePreset> found;
+        std::string error;
+        if (impl.themeLister(&found, &error)) impl.themes = std::move(found);
+    }
 }
 
 void SlideEditor::setFileAccess(FileLoader loader, FileSaver saver) {
@@ -709,20 +817,38 @@ std::string targetLabel(EditTarget t, const std::string& file) {
     switch (t) {
         case EditTarget::Deck: return file.empty() ? "slides.md" : file;
         case EditTarget::Settings: return "settings.toml";
+        case EditTarget::Theme: return file.empty() ? "a theme" : file;
         default: return "slide";
     }
+}
+
+// The name a theme file goes by: `theme/hero.toml` is "hero".
+std::string themeNameOf(const std::string& file) {
+    size_t from = file.find_last_of('/');
+    from = from == std::string::npos ? 0 : from + 1;
+    const size_t dot = file.find_last_of('.');
+    return file.substr(from, dot == std::string::npos || dot < from ? std::string::npos : dot - from);
 }
 }  // namespace
 
 const std::string& SlideEditor::deckFile() const { return mImpl->deckFile; }
+const std::string& SlideEditor::themeFile() const { return mImpl->themeFile; }
 
 void SlideEditor::setTarget(EditTarget target, const std::string& file) {
     Impl& impl = *mImpl;
     const std::string want = target == EditTarget::Settings
         ? std::string("settings.toml")
+        : target == EditTarget::Theme ? (file.empty() ? impl.themeFile : file)
         : (file.empty() ? impl.deckFile : file);
+    if (target == EditTarget::Theme && want.empty()) return;   // no preset to open
     // Already there: a click on the tab that is open is not a reason to reload it.
-    if (target == impl.target && (target != EditTarget::Deck || want == impl.deckFile)) return;
+    if (target == impl.target
+        && (target == EditTarget::Settings
+            || (target == EditTarget::Deck && want == impl.deckFile)
+            || (target == EditTarget::Theme && want == impl.themeFile)
+            || target == EditTarget::Slide)) {
+        return;
+    }
     if (impl.buffer.dirty()) {
         impl.setStatus("save or revert before moving to " + targetLabel(target, want), true);
         return;
@@ -740,6 +866,7 @@ void SlideEditor::setTarget(EditTarget target, const std::string& file) {
         return;
     }
     if (target == EditTarget::Deck) impl.deckFile = want;
+    if (target == EditTarget::Theme) impl.themeFile = want;
     std::string text, error;
     if (impl.fileLoader && impl.fileLoader(want, &text, &error)) {
         impl.file = want;
@@ -1068,9 +1195,10 @@ void SlideEditor::render(App& app) {
     // "what have I got?" is answered straight away.
     constexpr double kIncludeIdleSec = 0.5;
     {
-        // `<>` is markdown's include; settings.toml has no such thing, so nothing is offered
-        // there rather than something of the wrong shape.
-        const bool markdown = impl.target != EditTarget::Settings;
+        // `<>` is markdown's include; a TOML file — the settings, a theme preset — has no
+        // such thing, so nothing is offered there rather than something of the wrong shape.
+        const bool markdown = impl.target != EditTarget::Settings
+                              && impl.target != EditTarget::Theme;
         const Include include = impl.includeAt();
         const Caret caretNow = impl.buffer.caret();
         const MetaContext meta =
@@ -1177,6 +1305,11 @@ void SlideEditor::render(App& app) {
     }
     for (const std::string& file : chain) tabs.push_back({SkRect::MakeEmpty(), EditTarget::Deck, file});
     tabs.push_back({SkRect::MakeEmpty(), EditTarget::Settings, "settings.toml"});
+    // The preset being edited, while one is: opened from the panel, and a tab from then on so
+    // it is as reachable as anything else the editor holds.
+    if (!impl.themeFile.empty()) {
+        tabs.push_back({SkRect::MakeEmpty(), EditTarget::Theme, impl.themeFile});
+    }
 
     SkFont tabFont = uiFont(12, true);
     SkFont chevronFont = uiFont(16, true);   // the hierarchy should be legible, not implied
@@ -1185,6 +1318,7 @@ void SlideEditor::render(App& app) {
     auto tabLabel = [&](const Impl::Tab& tab) -> std::string {
         if (tab.target == EditTarget::Slide) return "slide";
         if (tab.target == EditTarget::Settings) return "settings.toml";
+        if (tab.target == EditTarget::Theme) return themeNameOf(tab.file) + ".toml";
         const size_t slash = tab.file.find_last_of('/');
         if (slash == std::string::npos) return tab.file;
         const std::string dir = tab.file.substr(0, slash);
@@ -1202,7 +1336,8 @@ void SlideEditor::render(App& app) {
         }
         const std::string label = tabLabel(tab);
         const bool on = impl.target == tab.target
-                        && (tab.target != EditTarget::Deck || tab.file == impl.deckFile);
+                        && (tab.target != EditTarget::Deck || tab.file == impl.deckFile)
+                        && (tab.target != EditTarget::Theme || tab.file == impl.themeFile);
         const float tw = textWidth(tabFont, label) + 20;
         tab.box = SkRect::MakeXYWH(tabX, 12, tw, 24);
         const bool hot = tab.box.contains(static_cast<float>(impl.mouseX),
@@ -1293,7 +1428,7 @@ void SlideEditor::render(App& app) {
         const std::string& text = impl.buffer.line(row.line);
         if (row.first) {
             const bool fenceLine = togglesFence(text);
-            tone = impl.target == EditTarget::Settings
+            tone = (impl.target == EditTarget::Settings || impl.target == EditTarget::Theme)
                        ? tomlTone(text)
                        : lineTone(text, inFence && !fenceLine);
             if (fenceLine) inFence = !inFence;
@@ -1395,6 +1530,22 @@ void SlideEditor::render(App& app) {
     drawTextCentred(canvas, "Revert", impl.revertButton, buttonFont,
                     impl.buffer.dirty() ? ui::kText : ui::kDim);
 
+    // The theme panel, as a toggle beside them: what a slide looks like is chosen here now,
+    // and the presets are a list nobody can be expected to remember.
+    {
+        SkFont themeFont = uiFont(11, true);
+        const std::string label = impl.themes.empty() ? "no themes" : "themes";
+        impl.themeToggle = SkRect::MakeXYWH(w - pad - textWidth(themeFont, "themes") - 24,
+                                            viewBottom + 10, textWidth(themeFont, "themes") + 24, 24);
+        const bool hot = impl.themeToggle.contains(static_cast<float>(impl.mouseX),
+                                                   static_cast<float>(impl.mouseY));
+        fillRoundRect(canvas, impl.themeToggle, 12, impl.themesOpen ? ui::kPanel : ui::kBg);
+        strokeRoundRect(canvas, impl.themeToggle, 12,
+                        impl.themesOpen ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
+        drawTextCentred(canvas, label, impl.themeToggle, themeFont,
+                        impl.themesOpen ? ui::kText : ui::kDim);
+    }
+
     // Auto-save, as a toggle rather than a checkbox: it sits with the two buttons it acts
     // for, and its state is the whole label.
     SkFont autoFont = uiFont(11, true);
@@ -1415,7 +1566,125 @@ void SlideEditor::render(App& app) {
                  from, viewBottom + 26, uiFont(12),
                  impl.statusError ? ui::kOver : ui::kAhead);
     }
-    drawTextRight(canvas, "cmd+S saves", w - pad, viewBottom + 26, uiFont(11), ui::kDim);
+    drawTextRight(canvas, "cmd+S saves", impl.themeToggle.left() - 12, viewBottom + 26,
+                  uiFont(11), ui::kDim);
+
+    // ── The theme panel ──────────────────────────────────────────────
+    // Every preset the deck has, down the side, each drawn as the slide it would make: its
+    // background, a bar of title in the title's colour at the title's size, a line of body,
+    // a dot of accent. A name on its own says nothing about what it looks like, and the
+    // names are what a deck accumulates — two dozen of them in a real one.
+    impl.themeRows.clear();
+    impl.themeEdits.clear();
+    impl.themeNone = SkRect::MakeEmpty();
+    if (impl.themesOpen) {
+        const float panelW = std::min(248.0f, w * 0.42f);
+        impl.themePanel = SkRect::MakeLTRB(w - panelW, viewTop, w, viewBottom);
+        fillRect(canvas, impl.themePanel, ui::kBg);
+        fillRect(canvas, SkRect::MakeXYWH(impl.themePanel.left(), viewTop, 1, impl.themePanel.height()),
+                 ui::kLine);
+
+        const float rowH = 52, rowPad = 10;
+        const std::string current = impl.target == EditTarget::Slide
+            ? themeOf(impl.buffer.text())
+            : impl.target == EditTarget::Theme ? themeNameOf(impl.themeFile) : std::string();
+        const float contentH = (static_cast<float>(impl.themes.size()) + 1) * rowH + 34;
+        const float maxScroll = std::max(0.0f, contentH - impl.themePanel.height());
+        impl.themeScroll = std::clamp(impl.themeScroll, 0.0f, maxScroll);
+
+        canvas->save();
+        canvas->clipRect(impl.themePanel);
+        float y = viewTop + 8 - impl.themeScroll;
+        SkFont head = uiFont(11, true);
+        drawText(canvas, impl.target == EditTarget::Slide ? "THEME FOR THIS SLIDE" : "THEMES",
+                 impl.themePanel.left() + rowPad, y + 12, head, ui::kDim);
+        drawTextRight(canvas, impl.target == EditTarget::Slide ? "click to apply · edit to open"
+                                                               : "click to open",
+                      impl.themePanel.right() - rowPad, y + 12, uiFont(10), ui::kLine);
+        y += 26;
+
+        // "none" first: a slide with no preset is the deck's own look, and taking one off
+        // has to be as easy as putting it on.
+        {
+            impl.themeNone = SkRect::MakeXYWH(impl.themePanel.left() + 6, y, panelW - 12, rowH - 8);
+            const bool on = current.empty();
+            const bool hot = impl.themeNone.contains(static_cast<float>(impl.mouseX),
+                                                     static_cast<float>(impl.mouseY));
+            fillRoundRect(canvas, impl.themeNone, 6, on ? ui::kPanel : ui::kBg);
+            strokeRoundRect(canvas, impl.themeNone, 6,
+                            on ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
+            drawText(canvas, "none", impl.themeNone.left() + 12, impl.themeNone.centerY() + 2,
+                     uiFont(13, true), on ? ui::kText : ui::kDim);
+            drawText(canvas, "the deck's own look", impl.themeNone.left() + 12,
+                     impl.themeNone.centerY() + 16, uiFont(10), ui::kDim);
+            y += rowH;
+        }
+
+        for (size_t i = 0; i < impl.themes.size(); i++) {
+            const ThemePreset& preset = impl.themes[i];
+            SkRect row = SkRect::MakeXYWH(impl.themePanel.left() + 6, y, panelW - 12, rowH - 8);
+            impl.themeRows.push_back(row);
+            y += rowH;
+            if (row.bottom() < viewTop || row.top() > viewBottom) continue;   // off the panel
+            const bool on = preset.name == current;
+            const bool hot = row.contains(static_cast<float>(impl.mouseX),
+                                          static_cast<float>(impl.mouseY));
+            fillRoundRect(canvas, row, 6, on ? ui::kPanel : ui::kBg);
+            strokeRoundRect(canvas, row, 6, on ? ui::kAccent : (hot ? ui::kDim : ui::kLine), 1.0f);
+
+            // The swatch: the slide this preset would make, at a thumbnail's worth of detail.
+            const SkRect swatch = SkRect::MakeXYWH(row.left() + 8, row.top() + 8, 56, 28);
+            fillRoundRect(canvas, swatch, 3, parseColor(preset.background, ui::kBg));
+            strokeRoundRect(canvas, swatch, 3, ui::kLine, 1.0f);
+            const SkColor title = parseColor(preset.titleColor, ui::kText);
+            // The title bar's height follows the preset's title size, so a statement slide
+            // reads as one and a caption reads as a caption.
+            const float titleH = std::clamp(static_cast<float>(preset.titleSize) / 190.0f * 9.0f, 2.0f, 9.0f);
+            fillRect(canvas, SkRect::MakeXYWH(swatch.left() + 5, swatch.top() + 6, 34, titleH), title);
+            fillRect(canvas, SkRect::MakeXYWH(swatch.left() + 5, swatch.top() + 9 + titleH, 24, 2),
+                     parseColor(preset.bodyColor, ui::kDim));
+            SkPaint dot;
+            dot.setAntiAlias(true);
+            dot.setColor(parseColor(preset.accent, ui::kAccent));
+            canvas->drawCircle(swatch.right() - 7, swatch.bottom() - 7, 3, dot);
+
+            // The way into the file itself. On a row that is already open it is the row's
+            // own highlight that says so, and the button is what opened it.
+            SkFont editFont = uiFont(10, true);
+            const float editW = textWidth(editFont, "edit") + 16;
+            SkRect edit = SkRect::MakeXYWH(row.right() - editW - 8, row.centerY() - 10, editW, 20);
+            impl.themeEdits.push_back(edit);
+            const bool editHot = edit.contains(static_cast<float>(impl.mouseX),
+                                               static_cast<float>(impl.mouseY));
+            const bool open = impl.target == EditTarget::Theme
+                              && themeNameOf(impl.themeFile) == preset.name;
+            fillRoundRect(canvas, edit, 10, open ? ui::kPanel : ui::kBg);
+            strokeRoundRect(canvas, edit, 10, open ? ui::kAccent : (editHot ? ui::kDim : ui::kLine), 1.0f);
+            drawTextCentred(canvas, "edit", edit, editFont,
+                            open || editHot ? ui::kText : ui::kDim);
+
+            const float textLeft = swatch.right() + 10;
+            const float textRight = edit.left() - 8;
+            drawText(canvas, ellipsize(preset.name, uiFont(13, true), textRight - textLeft),
+                     textLeft, row.top() + 20, uiFont(13, true), on ? ui::kText : ui::kDim);
+            // What it is, and what it is on: a preset nothing uses is worth seeing as such.
+            std::string under = preset.type;
+            if (!preset.slides.empty()) {
+                under += preset.slides.size() == 1
+                    ? "  ·  slide " + std::to_string(preset.slides.front())
+                    : "  ·  " + std::to_string(preset.slides.size()) + " slides";
+            }
+            drawText(canvas, ellipsize(under, uiFont(10), textRight - textLeft), textLeft,
+                     row.top() + 34, uiFont(10), ui::kDim);
+        }
+        canvas->restore();
+        if (impl.target != EditTarget::Slide) {
+            drawText(canvas, "open a slide to apply one", impl.themePanel.left() + rowPad,
+                     viewBottom - 10, uiFont(10), ui::kDim);
+        }
+    } else {
+        impl.themePanel = SkRect::MakeEmpty();
+    }
 
     // ── The include menu ─────────────────────────────────────────────
     // Drawn last so nothing is over it, and anchored to the `<` rather than to the caret:

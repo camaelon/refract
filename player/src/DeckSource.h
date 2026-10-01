@@ -82,6 +82,11 @@ public:
     // What is in includes/ and which slides use it. `deckDir` comes back with them: the
     // window reads the image files themselves to draw a thumbnail.
     bool scanAssets(std::vector<Asset>* out, std::string* deckDir, std::string* error);
+    // ── Themes ───────────────────────────────────────────────────────
+    // The deck's theme presets, for the editor's theme panel. One short Python run: the
+    // grammar and the colour resolution are refract's.
+    bool listThemes(std::vector<ThemePreset>* out, std::string* error);
+
     // Move one to out/.trash/. Refused by the tool while something uses it, unless forced —
     // the window asks first, and says what uses it.
     bool removeAsset(const std::string& path, bool force, std::string* status);

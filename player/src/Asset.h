@@ -9,6 +9,23 @@
 
 namespace refract {
 
+// One of the deck's theme presets (`theme/<name>.toml`, named by `:: as: <name>`), as the
+// editor's theme panel lists them: what it is called and what it looks like, so a swatch can
+// be drawn without reading TOML.
+struct ThemePreset {
+    std::string name;
+    std::string file;          // relative to the deck
+    std::string type;          // the slide type it makes: content, title, section, …
+    std::string background;    // #AARRGGBB, as refract writes colours
+    std::string titleColor;
+    std::string bodyColor;
+    std::string accent;
+    double titleSize = 0.0;
+    double bodySize = 0.0;
+    int keys = 0;              // how much the preset actually sets
+    std::vector<int> slides;   // the slides it is on, 1-based
+};
+
 struct Asset {
     std::string path;              // relative to the deck
     std::string name;
