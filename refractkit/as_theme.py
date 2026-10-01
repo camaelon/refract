@@ -180,6 +180,11 @@ def parse_theme_toml(data: dict) -> dict:
                         overrides[f"h{lvl}_bg_doc"] = str(val)
                     elif prop_str == "bg_color":
                         overrides[f"h{lvl}_bg_color"] = str(val)
+                    else:
+                        # A key nobody reads changes nothing, and silence makes that look
+                        # like a renderer bug rather than a typo. Say so.
+                        print(f"warning: theme [heading.{lvl}]: unknown key '{prop}' "
+                              f"(ignored)", file=sys.stderr)
 
     # 6. [background] table
     bg = data.get("background")

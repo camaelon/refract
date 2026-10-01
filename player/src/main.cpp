@@ -132,6 +132,11 @@ refract::Ink ink;
 // here rather than in the loop because a drag out of the presenter wants exactly this
 // picture, and it starts from a callback.
 sk_sp<SkImage> liveFrame;
+// What the caption window was last drawn with: a redraw mid-resize has no event to
+// take them from, and the audio clock is the only thing that puts the highlight on
+// the right word.
+double lastCaptionAt = 0.0;
+bool lastCaptionPlaying = false;
 // The camera take: recorded beside the narration when the deck has a camera box (or
 // --camera-take says so), as the wav's .mov; played back in the camera boxes under the voice.
 bool deckHasCamera = false;
@@ -184,6 +189,14 @@ void dropOnSlide(const std::vector<std::string>& paths);
 void dragSlideOut();
 void dragTextOut();
 void saveSessionIfChanged();
+// Draw one window now, from a GLFW callback, while a resize is in progress. See the
+// definition below for why a window has to draw itself from there at all.
+void redrawForResize(GLFWwindow* w);
+void installResizeRedraw(GLFWwindow* w);
+void drawSlideInk(int winW, int winH);
+void drawSlideCovers(int winW, int winH);
+// True only while the loop is inside glfwPollEvents, which is where a live resize runs.
+bool pumpingEvents = false;
 fs::path voiceFileFor(int slide, const char* extension = ".wav");
 void refreshVoicePresence();
 void toggleSlideRecording();
@@ -609,6 +622,7 @@ void openPresenter() {
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
     session.restore("presenter", presenter->window());
+    installResizeRedraw(presenter->window());
     presenter->setOnTranscribeSlide([] {
         transcribe(true);
         // The result is wanted where the button is: the captions tab shows it as it lands.
@@ -700,6 +714,7 @@ void openCaptions() {
     });
 
     session.restore("captions", captionWindow->window());
+    installResizeRedraw(captionWindow->window());
     captionWindow->setOnEditingChanged(captionEditingChanged);
 }
 
@@ -793,6 +808,7 @@ void openProcessing() {
     processingWindow = refract::ProcessingWindow::Create(460, 260);
     if (!processingWindow) return;
     glfwSetKeyCallback(processingWindow->window(), playerKeyCallback);
+    installResizeRedraw(processingWindow->window());
 }
 
 void toggleProcessing() {
@@ -1186,6 +1202,7 @@ void openDeckView() {
     });
     deckView->setFoldedRuns(session.folded);
     session.restore("deckView", deckView->window());
+    installResizeRedraw(deckView->window());
     deckView->setOnDuplicateSlide([](int slide, std::string* status) {
         return source.duplicateSlide(slide, status);
     });
@@ -1254,6 +1271,90 @@ void captureSession() {
 // Not only on the way out: the way out is not always taken. A player killed from the terminal
 // or caught by a crash would otherwise forget the whole arrangement, which is the arrangement
 // somebody just spent a minute making.
+// What the laser drew on this slide, then the dots on top of it.
+void drawSlideInk(int winW, int winH) {
+    if (!(pointer.laser() || remotePointer.laser() || ink.any(g.currentIndex))) return;
+    SkCanvas* canvas = g.backend ? g.backend->canvas() : nullptr;
+    if (!canvas) return;
+    if (ink.any(g.currentIndex)) refract::drawInk(canvas, ink.strokes(g.currentIndex), winW, winH);
+    if (remotePointer.laser()) refract::drawLaser(canvas, remotePointer, glfwGetTime(), kRemoteLaserColor);
+    if (pointer.laser()) refract::drawLaser(canvas, pointer, glfwGetTime());
+}
+
+// What goes over the slide last: the blanking, and the overlays when there is no presenter
+// window to put them on — a navigator or a help card projected onto the wall defeats the
+// point of having them.
+void drawSlideCovers(int winW, int winH) {
+    SkCanvas* canvas = g.backend ? g.backend->canvas() : nullptr;
+    if (!canvas) return;
+    if (app.blank) {
+        refract::fillRect(canvas, SkRect::MakeWH(winW, winH),
+                          app.blank == 1 ? SK_ColorBLACK : SK_ColorWHITE);
+    }
+    if (!presenter) refract::drawOverlays(canvas, app, winW, winH);
+}
+
+// A window resized by dragging its edge is resized inside Cocoa's own event loop: GLFW's
+// glfwPollEvents does not return until the mouse is let go, so the main loop draws nothing
+// for the whole drag and the window server stretches the last frame to the new size. GLFW
+// does deliver the size and refresh callbacks from inside that loop, so a window draws
+// itself from there, at its new size, once per step of the drag.
+//
+// Only from the event pump, and never inside another redraw: a window that resizes itself
+// while it draws (the build panel follows its host's height) would otherwise call back into
+// its own render. Those resizes are drawn by the loop on its next pass anyway.
+void redrawForResize(GLFWwindow* w) {
+    static bool redrawing = false;
+    if (!w || redrawing || !pumpingEvents) return;
+    redrawing = true;
+    GLFWwindow* previous = glfwGetCurrentContext();
+    if (w == slideWindow) {
+        glfwMakeContextCurrent(w);
+        int winW = 0, winH = 0, fbW = 0, fbH = 0;
+        glfwGetWindowSize(w, &winW, &winH);
+        glfwGetFramebufferSize(w, &fbW, &fbH);
+        if (winW > 0 && winH > 0 && g.backend) {
+            g.backend->onFramebufferResize(fbW, fbH);
+            ensureSurface(winW, winH);
+            renderFrame(0.0);
+            drawSlideInk(winW, winH);
+            drawSlideCovers(winW, winH);
+            g.backend->present();
+            glfwSwapBuffers(w);
+        }
+    } else if (presenter && w == presenter->window()) {
+        presenter->render(app, liveFrame);
+    } else if (captionWindow && w == captionWindow->window()) {
+        captionWindow->render(app, captions, lastCaptionAt, lastCaptionPlaying);
+    } else if (deckView && w == deckView->window()) {
+        deckView->render(app);
+    } else if (buildPanel && w == buildPanel->window()) {
+        buildPanel->render(app);
+    } else if (slideEditor && w == slideEditor->window()) {
+        slideEditor->render(app);
+    } else if (assetWindow && w == assetWindow->window()) {
+        assetWindow->render(app);
+    } else if (processingWindow && w == processingWindow->window()) {
+        processingWindow->render(backgroundTasks());
+    }
+    // A docked build panel follows its host's height; the loop that moves it is stalled for
+    // the drag, so it follows from here.
+    if (buildPanel && w != buildPanel->window()) buildPanel->render(app);
+    if (previous && glfwGetCurrentContext() != previous) glfwMakeContextCurrent(previous);
+    redrawing = false;
+}
+
+void installResizeRedraw(GLFWwindow* w) {
+    if (!w) return;
+    glfwSetWindowRefreshCallback(w, redrawForResize);
+    glfwSetWindowSizeCallback(w, [](GLFWwindow* win, int width, int height) {
+        // The slide window keeps the viewer's handling (the surface and the document's size
+        // follow the window) and draws on top of it.
+        if (win == slideWindow) rcplayer::windowSizeCallback(win, width, height);
+        redrawForResize(win);
+    });
+}
+
 void saveSessionIfChanged() {
     if (deckInput.empty()) return;
     captureSession();
@@ -1284,6 +1385,7 @@ void openAssetWindow() {
     });
     assetWindow->refresh();
     session.restore("assets", assetWindow->window());
+    installResizeRedraw(assetWindow->window());
     glfwSetKeyCallback(assetWindow->window(),
                        [](GLFWwindow* w, int key, int scancode, int action, int mods) {
         if (assetWindow && assetWindow->handleKey(key, action, mods)) return;
@@ -1319,6 +1421,7 @@ void openBuildPanel() {
     });
     buildPanel->setWatching(session.buildWatch);
     session.restore("build", buildPanel->window());
+    installResizeRedraw(buildPanel->window());
     glfwSetKeyCallback(buildPanel->window(),
                        [](GLFWwindow* w, int key, int scancode, int action, int mods) {
         if (buildPanel && buildPanel->handleKey(key, action, mods)) return;
@@ -1382,6 +1485,7 @@ void openSlideEditor() {
         });
     slideEditor->setAutoSave(session.editorAutoSave);
     session.restore("editor", slideEditor->window());
+    installResizeRedraw(slideEditor->window());
     slideEditor->showSlide(g.currentIndex);
     // The editor takes the whole keyboard while it has focus — every key is a character in
     // there, and "b" must not blank the projector mid-sentence.
@@ -2054,6 +2158,8 @@ int main(int argc, char* argv[]) {
     // Pointer, resize and framebuffer handling are the viewer's — documents are interactive
     // and should behave identically here. Only the keys are ours.
     installDefaultCallbacks(window);
+    // ...and a redraw while the window is being resized, on top of the viewer's size handling.
+    installResizeRedraw(window);
     glfwSetKeyCallback(window, playerKeyCallback);
     // Something dragged onto the slide from the Finder: into the deck, and onto this slide.
     glfwSetDropCallback(window, [](GLFWwindow*, int count, const char** paths) {
@@ -2209,7 +2315,9 @@ int main(int argc, char* argv[]) {
     constexpr double kCaptureInterval = 1.0 / 12.0;
 
     while (!glfwWindowShouldClose(window)) {
+        pumpingEvents = true;
         glfwPollEvents();
+        pumpingEvents = false;
 
         // A panel asked for from the menu bar.
         if (menuRequest != MenuPanel::None) {
@@ -2409,14 +2517,7 @@ int main(int argc, char* argv[]) {
             glfwGetWindowSize(window, &winW, &winH);
             ensureSurface(winW, winH);
             renderFrame(dt);
-            // What the laser drew on this slide, then the dots on top of it.
-            if (pointer.laser() || remotePointer.laser() || ink.any(g.currentIndex)) {
-                if (SkCanvas* canvas = g.backend->canvas()) {
-                    if (ink.any(g.currentIndex)) refract::drawInk(canvas, ink.strokes(g.currentIndex), winW, winH);
-                    if (remotePointer.laser()) refract::drawLaser(canvas, remotePointer, glfwGetTime(), kRemoteLaserColor);
-                    if (pointer.laser()) refract::drawLaser(canvas, pointer, glfwGetTime());
-                }
-            }
+            drawSlideInk(winW, winH);
 
             // Grab the frame for the presenter *before* blanking. Blanking is for the room;
             // the presenter should keep seeing the slide it is about to bring back.
@@ -2429,16 +2530,7 @@ int main(int argc, char* argv[]) {
                 lastCapturedSlide = g.currentIndex;
             }
 
-            SkCanvas* canvas = g.backend->canvas();
-            if (canvas && app.blank) {
-                refract::fillRect(canvas, SkRect::MakeWH(winW, winH),
-                                  app.blank == 1 ? SK_ColorBLACK : SK_ColorWHITE);
-            }
-            // Overlays go on the presenter window when there is one — a navigator or a help
-            // card projected onto the wall defeats the point of having them.
-            if (canvas && !presenter) {
-                refract::drawOverlays(canvas, app, winW, winH);
-            }
+            drawSlideCovers(winW, winH);
 
             g.backend->present();
             glfwSwapBuffers(window);
@@ -2606,7 +2698,9 @@ int main(int argc, char* argv[]) {
                 // The audio clock, not the frame clock: the highlight has to sit on the word
                 // coming out of the speakers, and the two drift.
                 const double at = voice ? voice->currentTime() : 0.0;
-                captionWindow->render(app, captions, at, voice && voice->isPlaying());
+                lastCaptionAt = at;
+                lastCaptionPlaying = voice && voice->isPlaying();
+                captionWindow->render(app, captions, at, lastCaptionPlaying);
                 lastCaptionDraw = elapsed;
             }
         }
