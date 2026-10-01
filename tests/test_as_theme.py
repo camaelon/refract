@@ -104,6 +104,15 @@ gap = 47
         self.assertEqual(ov["h3_color"], "#FF5F6368")
         self.assertEqual(ov["h3_gap"], "47")
 
+    def test_heading_align_becomes_a_level_override(self):
+        data = {"type": "content", "align": "center",
+                "heading": {"1": {"align": "left", "pad_left": 40}}}
+        parsed = as_theme.parse_theme_toml(data)
+        ov = parsed["overrides"]
+        self.assertEqual(ov["align"], "center")      # the slide centres…
+        self.assertEqual(ov["h1_align"], "left")     # …the title ranges itself
+        self.assertEqual(ov["h1_pad_left"], "40")
+
     def test_camera_table_becomes_one_option_string(self):
         data = {"type": "content", "camera": {"x": 957.55, "y": 197.54, "width": 505.59,
                                               "clip": "circle", "zoom": 1.5, "mirror": True,

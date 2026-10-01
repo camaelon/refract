@@ -52,7 +52,7 @@ from refractkit.render import (build_doc, build_graph_transition_doc, build_push
                                scroll_spec, slide_type, split_left_metrics, split_panes,
                                PUSH_DELAY, PUSH_DURATION)
 from refractkit.settings import load_settings
-from refractkit.theme import build_theme
+from refractkit.theme import build_theme, norm_align
 
 
 def slug(slide: dict, index: int, total: int = 0) -> str:
@@ -691,6 +691,11 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".", fallback_dirs=(
                     pass
             elif prop in ("color", "family", "bg_color"):
                 cur[prop] = str(v)
+            elif prop in ("align", "h_align"):
+                # This heading level alone aligns itself, whatever the slide does.
+                a = norm_align(v)
+                if a:
+                    cur["align"] = a
     if headings is not None:
         changes["headings"] = headings
     return changes

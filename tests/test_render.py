@@ -501,6 +501,45 @@ class SlideRoot(unittest.TestCase):
         gap = next(m["height"] for m in root["children"][1]["modifiers"] if "height" in m)
         self.assertEqual(gap, 99.0)
 
+    def test_heading_align_ranges_the_title_alone(self):
+        """`[heading.1] align = "left"` on a centred slide: the title claims the full width
+        and ranges itself left, while the body keeps the slide's centring."""
+        from refractkit.theme import build_theme
+        theme = build_theme({"heading": {"1": {"align": "left"}}})
+        theme.h_align = "center"
+        theme.v_align = "center"
+        root = render.build_slide_root({"title": "T"}, [{"kind": "text", "text": "b"}],
+                                       theme, 1600, 900, 0, False, [0])
+        title = root["children"][0]
+        self.assertEqual(title["type"], "box")
+        self.assertEqual(title["horizontalAlignment"], "start")
+        self.assertIn("fillMaxWidth", title["modifiers"])
+        self.assertEqual(title["children"][0]["value"], "T")
+        self.assertNotIn("textAlign", title["children"][0])
+        # …the body is still centred by the root column.
+        self.assertEqual(root["horizontalAlignment"], "center")
+
+    def test_title_follows_the_slide_without_a_heading_align(self):
+        from refractkit.theme import build_theme
+        theme = build_theme({})
+        theme.h_align = "center"
+        theme.v_align = "center"
+        root = render.build_slide_root({"title": "T"}, [], theme, 1600, 900, 0, False, [0])
+        self.assertEqual(root["children"][0]["value"], "T")
+        self.assertEqual(root["children"][0]["textAlign"], "center")
+
+    def test_heading_align_with_pad_left_indents_and_ranges(self):
+        from refractkit.theme import build_theme
+        theme = build_theme({"heading": {"1": {"align": "left", "pad_left": 40}}})
+        theme.h_align = "center"
+        theme.v_align = "center"
+        root = render.build_slide_root({"title": "T"}, [], theme, 1600, 900, 0, False, [0])
+        wrap = root["children"][0]
+        self.assertEqual(wrap["type"], "column")
+        self.assertIn("fillMaxWidth", wrap["modifiers"])
+        self.assertNotIn("horizontalAlignment", wrap)  # start is the column default
+        self.assertIn({"padding": [40.0, 0.0, 0.0, 0.0]}, wrap["modifiers"])
+
     def test_image_above_title_for_centered(self):
         d = tempfile.mkdtemp()
         import struct

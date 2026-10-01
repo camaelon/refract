@@ -627,6 +627,23 @@ shader / accent can also be overridden per slide via `key=value` metadata
 with `pad_left=` / `pad_top=` / `pad_right=` / `pad_bottom=` (px, added to the slide type's
 base margin), or `pad=` for all four — e.g. `:: outline pad_left=160` to indent an outline.
 
+`align=` / `valign=` set the slide's own horizontal / vertical alignment, and both the
+title and the content follow them. A **heading level can range itself**, whatever the
+slide does, with `align` in its `[heading.<N>]` table (`left` / `center` / `right`, or
+`start` / `end`) — a left-ranged title over centred content, say:
+
+```toml
+align  = "center"               # the content centres
+valign = "center"
+
+[heading.1]
+align    = "left"               # …the title alone ranges left
+pad_left = 40                   # and sits 40px in from the margin
+```
+
+Per slide that is `h1_align=left` (`h2_align=` … `h6_align=` for subheadings), next to the
+`h1_pad_left=` / `h1_size=` / `h1_color=` overrides that already exist.
+
 ### Background shaders
 
 A slide background can be an animated SkSL shader (`iResolution`, `iTime` uniforms;

@@ -286,11 +286,15 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
     t_color = hcfg["color"]
     t_family = hcfg["family"] or theme.title_font
     t_weight = hcfg["weight"] or theme.title_weight
-    is_centered = centered or getattr(theme, "h_align", None) == "center"
+    # The title normally follows the slide's alignment, but `[heading.1] align = "left"`
+    # (or `h1_align=` on the slide) ranges the title on its own — a left-ranged title over
+    # centred content, say. ``t_align`` is what the title does; the content is untouched.
+    slide_align = "center" if (centered or getattr(theme, "h_align", None) == "center") else "start"
+    t_align = hcfg.get("align") or slide_align
+    is_centered = t_align == "center"
     if hcfg["has_bg"] and stype not in theme.shaders and stype not in theme.bg_docs:
         disp = f"{num}. {slide['title']}" if num else slide["title"]
-        node, band_h = _heading_bg_box(disp, 1, hcfg, content_w, theme,
-                                       debug, "center" if is_centered else "start")
+        node, band_h = _heading_bg_box(disp, 1, hcfg, content_w, theme, debug, t_align)
         title_h = int(band_h + gap)
     elif num:
         node = _numbered_title_row(num, slide["title"], t_size, theme, debug, t_color)
@@ -353,9 +357,16 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
         wrap = {"type": "column",
                 "modifiers": dbg(["fillMaxWidth", {"padding": [t_pad_l, 0.0, t_pad_r, 0.0]}], debug),
                 "children": [node]}
-        if is_centered:
-            wrap["horizontalAlignment"] = "center"
+        if t_align != "start":
+            wrap["horizontalAlignment"] = t_align
         node = wrap
+    elif t_align != slide_align:
+        # The slide's root column aligns every child, so a title that disagrees with it has
+        # to claim the full width and place itself inside.
+        node = {"type": "box",
+                "modifiers": dbg(["fillMaxWidth"], debug),
+                "horizontalAlignment": t_align, "verticalAlignment": "top",
+                "children": [node]}
     return [node, vspacer(gap)], title_h
 
 
@@ -880,6 +891,10 @@ def render_heading(block: dict, body_size: float, theme: Theme, debug: bool,
         hcfg["pad_bottom"] = round(hcfg["pad_bottom"] * scale, 2)
         hcfg["pad_top"] = round(hcfg["pad_top"] * scale, 2)
     raw_text = block.get("text", "").replace("<br>", "\n").replace("<br/>", "\n")
+    # `[heading.2] align = ...` ranges that level on its own, whatever the slide does.
+    own_align = hcfg.get("align")
+    if own_align:
+        align = own_align
     if hcfg["has_bg"]:
         node, _ = _heading_bg_box(raw_text, level, hcfg, avail_w, theme, debug, align)
     else:
@@ -891,6 +906,11 @@ def render_heading(block: dict, body_size: float, theme: Theme, debug: bool,
         )
         node = _styled(raw_text, hcfg["font_size"], hcfg["color"],
                        txt_theme, debug, align)
+    if own_align:
+        node = {"type": "box",
+                "modifiers": dbg(["fillMaxWidth"], debug),
+                "horizontalAlignment": own_align, "verticalAlignment": "top",
+                "children": [node]}
     out = [node]
     if hcfg.get("pad_top", 0.0) > 0:
         out.insert(0, vspacer(hcfg["pad_top"]))

@@ -66,6 +66,19 @@ PRESETS = {
 }
 
 
+_ALIGN_WORDS = {"left": "start", "start": "start", "right": "end", "end": "end",
+                "center": "center", "centre": "center", "middle": "center",
+                "justify": "start"}
+
+
+def norm_align(val) -> str | None:
+    """A written alignment ("left", "centre", "end", ...) as a component alignment
+    ("start"/"center"/"end"), or None when it names nothing recognisable."""
+    if val is None:
+        return None
+    return _ALIGN_WORDS.get(str(val).strip().lower())
+
+
 @dataclass
 class Theme:
     background: str = "#FF0D1B2A"
@@ -280,6 +293,10 @@ class Theme:
             "line_height": float(cfg.get("line_height", 0.0)),
             "band_height": float(cfg["band_height"]) if cfg.get("band_height") is not None else None,
             "fill_width": bool(cfg.get("fill_width", True)),
+            # Alignment for this heading level alone ("start"/"center"/"end"), overriding
+            # the slide's own: a left-ranged title over centred content, say. None = follow
+            # the slide.
+            "align": norm_align(cfg.get("align")),
             "has_bg": has_bg,
         }
 
@@ -513,6 +530,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
                 cur[k] = str(cfg[k])
         if "fill_width" in cfg:
             cur["fill_width"] = bool(cfg["fill_width"])
+        for k in ("align", "h_align"):
+            a = norm_align(cfg.get(k))
+            if a:
+                cur["align"] = a
         ts = cfg.get("shader")
         sh_src = _shader_source({"file": ts} if isinstance(ts, str) else (ts or {}), deck_dir)
         if sh_src:

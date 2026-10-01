@@ -172,6 +172,8 @@ def parse_theme_toml(data: dict) -> dict:
                         overrides[f"h{lvl}_pad_bottom"] = str(val)
                     elif prop_str == "band_height":
                         overrides[f"h{lvl}_band_height"] = str(val)
+                    elif prop_str in ("align", "h_align"):
+                        overrides[f"h{lvl}_align"] = str(val)
                     elif prop_str in ("line_height", "line_spacing"):
                         overrides[f"h{lvl}_line_height"] = str(val)
                     elif prop_str in ("background", "bg_doc"):

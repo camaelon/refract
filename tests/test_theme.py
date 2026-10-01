@@ -19,6 +19,28 @@ class ThemeDefaults(unittest.TestCase):
         self.assertEqual(t.syntax_color("nonexistent"), t.code_foreground)
 
 
+class HeadingAlign(unittest.TestCase):
+    def test_heading_align_words(self):
+        from refractkit.theme import norm_align
+        self.assertEqual(norm_align("left"), "start")
+        self.assertEqual(norm_align("Right"), "end")
+        self.assertEqual(norm_align("centre"), "center")
+        self.assertIsNone(norm_align("sideways"))
+        self.assertIsNone(norm_align(None))
+
+    def test_heading_table_align(self):
+        t = build_theme({"heading": {"1": {"align": "left"}, "2": {"align": "center"}}})
+        self.assertEqual(t.heading_config(1)["align"], "start")
+        self.assertEqual(t.heading_config(2)["align"], "center")
+        self.assertIsNone(t.heading_config(3)["align"])
+
+    def test_slide_override_align(self):
+        import refract
+        t = build_theme({})
+        changes = refract.theme_overrides({"h1_align": "right"}, t)
+        self.assertEqual(changes["headings"][1]["align"], "end")
+
+
 class ThemeSettings(unittest.TestCase):
     def test_theme_colors(self):
         t = build_theme({"theme": {"background": "#FF111111", "title_color": "#FF222222"}})
