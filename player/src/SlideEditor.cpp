@@ -761,10 +761,19 @@ bool SlideEditor::dirty() const { return mImpl->buffer.dirty(); }
 
 void SlideEditor::showSlide(int slide) {
     Impl& impl = *mImpl;
-    // Remembered whatever is open: a whole file does not follow the deck, but the slide tab
-    // has to know where to go back to.
+    // Remembered whatever is open: the slide tab has to know where to go back to.
     impl.deckSlide = slide;
-    if (impl.target != EditTarget::Slide) return;
+    // Moving the deck is asking to see slides. A whole file was opened from here and is a
+    // click away again, so the editor comes back to the slide rather than sitting on a file
+    // while the deck walks away from it — unless there is an edit in that file, which is
+    // nobody's to throw away.
+    if (impl.target != EditTarget::Slide) {
+        if (impl.buffer.dirty()) return;
+        impl.target = EditTarget::Slide;
+        impl.slide = -1;
+        impl.file.clear();
+        impl.setStatus("", false);
+    }
     if (slide == impl.slide) return;
     // An unsaved edit is not thrown away because the deck moved on. The editor stays on the
     // slide being edited and says so; the player's own guard stops the deck moving at all
@@ -1170,7 +1179,7 @@ void SlideEditor::render(App& app) {
     tabs.push_back({SkRect::MakeEmpty(), EditTarget::Settings, "settings.toml"});
 
     SkFont tabFont = uiFont(12, true);
-    SkFont chevronFont = uiFont(12);
+    SkFont chevronFont = uiFont(16, true);   // the hierarchy should be legible, not implied
     // A sub-deck's file is named by the folder it lives in: every one of them is called
     // slides.md, and the path to it is what tells them apart.
     auto tabLabel = [&](const Impl::Tab& tab) -> std::string {
@@ -1189,7 +1198,7 @@ void SlideEditor::render(App& app) {
         // this markdown, which is inside the next one. Drawn rather than spelled, so the row
         // reads as a path rather than a list.
         if (tab.target == EditTarget::Deck && i > 0) {
-            tabX += drawText(canvas, "\u2039", tabX + 1, 29, chevronFont, ui::kLine) + 8;
+            tabX += drawText(canvas, "\u2039", tabX + 2, 30, chevronFont, ui::kDim) + 10;
         }
         const std::string label = tabLabel(tab);
         const bool on = impl.target == tab.target

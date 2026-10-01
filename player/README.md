@@ -813,9 +813,11 @@ single `slides.md` tab it always was. Sub-decks all call their file `slides.md`,
 carries the folder that tells them apart.
 
 The chain stays on screen while one of its files is open — that row is the way back — and
-the **slide** tab returns to the slide you were editing. A whole file does not follow the
-deck, but the way back from one does: navigate the talk while a file is open and the slide
-tab goes to wherever the deck now is, rather than to an empty window.
+the **slide** tab returns to the slide you were editing. Moving the deck does the same thing
+by itself: a slide change, from the arrows or a double-click in the deck view, brings the
+editor back to that slide and to its own chain, since moving the deck is asking to see
+slides. An unsaved edit stops it, as it stops everything else here: the file stays open and
+says so.
 
 `settings.toml` was the last thing that still needed a terminal. A deck that has none opens an
 empty one, and saving it is what creates the file. A theme change touches every slide, and the
