@@ -234,10 +234,12 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
             block["device"] = str(opts["device"])
     # Slide-driven embedded documents: ``persist`` keeps the document alive across slides on
     # its own clock; ``step=N`` hands it this slide's number and ``stepid``/``timeid`` name
-    # the document's float ids that receive the step and the host's slide time. Passed
-    # through to the embedded-document host untouched.
+    # the document's float ids that receive the step and the host's slide time. Or, for a
+    # document that knows nothing about slides, ``from``/``to`` (seconds of its own timeline) and
+    # ``speed``: the slide plays that window and holds at ``to``. Passed through to the
+    # embedded-document host untouched.
     if block["kind"] == "rc_include":
-        for k in ("persist", "step", "stepid", "timeid"):
+        for k in ("persist", "step", "stepid", "timeid", "from", "to", "speed"):
             if k in opts:
                 block[k] = "1" if opts[k] is True else str(opts[k])
     # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):

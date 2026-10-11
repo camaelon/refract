@@ -845,7 +845,7 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     box_h = avail_h - cap_h
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
     opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block)}
-    for k in ("persist", "step", "stepid", "timeid"):      # slide-driven documents, see deck.py
+    for k in ("persist", "step", "stepid", "timeid", "from", "to", "speed"):      # slide-driven documents, see deck.py
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)
     box = _embed_box({"type": "custom", "config": config, "children": []},
