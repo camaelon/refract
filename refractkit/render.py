@@ -1220,6 +1220,14 @@ def _section_overrides(section: dict) -> dict:
     return (meta.get("overrides") or {}) if meta else {}
 
 
+def _pane_valign(ov: dict) -> str | None:
+    """``pane_valign=center|top|bottom`` on a ``::`` line: how ``+++`` panes of different
+    heights line up in their row. Unset keeps the row's default (tops aligned) — an icon beside
+    a two-line title then centres only by hand-tuned padding, which a font change undoes."""
+    v = str(ov.get("pane_valign", "")).lower()
+    return {"center": "center", "middle": "center", "top": "top", "bottom": "bottom"}.get(v)
+
+
 def _section_num(section: dict, key: str, default: float | None = None) -> float | None:
     """One numeric section override, or ``default`` when it is absent or unreadable."""
     raw = _section_overrides(section).get(key)
@@ -1314,8 +1322,11 @@ def _section_nodes(section: dict, theme: Theme, stype: str, width: float, avail_
             if align in ("center", "end"):
                 col["horizontalAlignment"] = align
             pane_nodes.append(col)
-        nodes.append({"type": "row", "modifiers": dbg(["fillMaxWidth"], debug),
-                      "children": pane_nodes})
+        prow = {"type": "row", "modifiers": dbg(["fillMaxWidth"], debug), "children": pane_nodes}
+        pv = _pane_valign(ov)
+        if pv:
+            prow["verticalAlignment"] = pv
+        nodes.append(prow)
     if pad_l or pad_r:
         wrap = {"type": "column",
                 "modifiers": dbg(["fillMaxWidth", {"padding": [pad_l, 0.0, pad_r, 0.0]}], debug),
@@ -1494,11 +1505,11 @@ def build_slide_root(slide: dict, blocks: list[dict], theme: Theme, width: int, 
                 "modifiers": dbg([{"width": round(pane_w, 2)}, {"padding": float(PANE_GAP / 2)}], debug),
                 "children": pane_children,
             })
-        children.append({
-            "type": "row",
-            "modifiers": dbg(["fillMaxWidth"], debug),
-            "children": pane_nodes,
-        })
+        prow = {"type": "row", "modifiers": dbg(["fillMaxWidth"], debug), "children": pane_nodes}
+        pv = _pane_valign(((slide.get("meta") or {}).get("overrides")) or {})
+        if pv:
+            prow["verticalAlignment"] = pv
+        children.append(prow)
 
     return frame_slide(children, spec, theme, slide_type(slide), width, height, debug, bg)
 
