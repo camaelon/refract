@@ -239,7 +239,7 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # ``speed``: the slide plays that window and holds at ``to``. Passed through to the
     # embedded-document host untouched.
     if block["kind"] == "rc_include":
-        for k in ("persist", "step", "stepid", "timeid", "from", "to", "speed"):
+        for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):
             if k in opts:
                 block[k] = "1" if opts[k] is True else str(opts[k])
     # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):
