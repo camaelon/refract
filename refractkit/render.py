@@ -851,7 +851,8 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
-    opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block)}
+    opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block),
+            "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or [])}
     for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):      # slide-driven documents, see deck.py
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)

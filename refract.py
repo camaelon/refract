@@ -1175,7 +1175,7 @@ def run_once(args) -> int:
         #   • rc/json with a crop/fit   → *frame* it (crop/scale need a fixed-size document, so
         #     we embed rather than splice flat): copy the .rc, or compile the .json via json2rc.
         for b in media_blocks:
-            framed = b.get("crop") or b.get("fit")
+            framed = b.get("crop") or b.get("fit") or b.get("zooms")
             if b["kind"] == "rc_include" and not b.get("json"):
                 base = os.path.basename(b["path"])
                 copies.append((b["path"], os.path.join(out_dir, "media", base)))

@@ -41,6 +41,10 @@ class LoopAndZoom(unittest.TestCase):
                          [(1.0, 0.3, 0.4, 2.0), (4.0, 0.7, 0.5, 3.0), (9.0, 0.5, 0.5, 1.0)])
         self.assertIsNone(parse_zooms(None))
         self.assertEqual(parse_zooms("2@1.5,-1,0.5"), [(2.0, 1.0, 0.0, 1.0)])   # clamped, z >= 1
+        # a chain's settled key one second before the slide, then its own key at 0: order kept
+        self.assertEqual(parse_zooms("-1@0.7,0.5,2.5;0@0.5,0.5,1"),
+                         [(-1.0, 0.7, 0.5, 2.5), (0.0, 0.5, 0.5, 1.0)])
+        self.assertEqual(parse_zooms("@0.2,0.3,2"), [(0.0, 0.2, 0.3, 2.0)])
 
     def test_config(self):
         from refractkit.theme import Theme

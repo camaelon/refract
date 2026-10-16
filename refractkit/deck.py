@@ -182,6 +182,7 @@ def parse_ratio(value) -> float | None:
 
 
 _FRAMEABLE = ("video", "rc_include", "json_include", "camera")
+_ZOOMABLE = ("video", "image", "rc_include", "json_include")
 _CAPTIONABLE = _FRAMEABLE + ("image",)
 
 
@@ -211,7 +212,12 @@ def parse_zooms(raw) -> list[tuple] | None:
         if "@" not in part:
             continue
         t_raw, _, rest = part.strip().partition("@")
-        t = parse_clip_time(t_raw.strip())
+        t_raw = t_raw.strip()
+        # A negative time is a key the slide opens already settled on (chains use one).
+        neg = t_raw.startswith("-")
+        t = parse_clip_time(t_raw.lstrip("-")) if t_raw.lstrip("-") else 0.0
+        if t is not None and neg:
+            t = -t
         try:
             vals = [float(v) for v in rest.replace(" ", "").split(",")]
         except ValueError:
@@ -221,7 +227,7 @@ def parse_zooms(raw) -> list[tuple] | None:
         x, y = vals[0], vals[1]
         z = max(1.0, vals[2]) if len(vals) > 2 else 1.0
         keys.append((t, min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0), z))
-    return sorted(keys) or None
+    return sorted(keys, key=lambda k: k[0]) or None     # by time; ties keep the written order
 
 
 def _apply_include_opts(block: dict, opts: dict) -> dict:
@@ -229,8 +235,8 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     source ``crop``, a ``fit`` override, and a ``title`` caption drawn below the embed. Crop
     and fit apply to video and rc/json embeds (for a spliced json/rc, a crop/fit reframes it
     as a nested document); the caption applies to those plus images."""
-    # ``zoom=T@x,y,z`` on a video is one zoom keyframe (see ``zooms``), not the static zoom.
-    if block["kind"] == "video" and "@" in str(opts.get("zoom") or ""):
+    # ``zoom=T@x,y,z`` is one zoom keyframe (see ``zooms``), not the static zoom.
+    if block["kind"] in _ZOOMABLE and "@" in str(opts.get("zoom") or ""):
         opts = {**opts, "zooms": opts["zoom"]}
         opts.pop("zoom")
     crop = parse_crop(opts.get("crop"))
@@ -254,10 +260,21 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         loop = opts.get("loop")
         if opts.get("once") or (isinstance(loop, str) and loop.lower() in ("0", "false", "off", "no", "once")):
             block["loop"] = False
-        # ``zooms=T@x,y,z; …`` — keyframed zoom into the clip, eased from one view to the next.
+    # ``zooms=T@x,y,z; …`` — keyframed zoom, eased from one view to the next: on the clip's clock
+    # for a video, on the slide's (seconds since it opened) for an image or a document.
+    if block["kind"] in _ZOOMABLE:
         zooms = parse_zooms(opts.get("zooms"))
         if zooms:
             block["zooms"] = zooms
+    # An image's static ``zoom=N`` (``focus=x,y``): the same view, already settled as the slide opens.
+    if block["kind"] == "image" and opts.get("zoom") and not block.get("zooms"):
+        try:
+            z = max(1.0, float(opts["zoom"]))
+        except (TypeError, ValueError):
+            z = 0.0
+        if z:
+            fx, fy = parse_focus(opts.get("focus")) or (0.5, 0.5)
+            block["zooms"] = [(-1.0, fx, fy, z)]
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
     # ``clip=circle`` | ``clip=<px>`` | ``clip=none`` rounds (or fully rounds, or squares) the

@@ -333,6 +333,13 @@ mirror = true
   view eases, snappily, from wherever it is to the new centre and zoom (about half a second);
   `z` = 1 zooms back out, and the view never leaves the frame. A `still`/`cue` frame is framed
   as the playing clip is at that time. `<demo.mov | zooms="0:05@0.7,0.3,2.5; 0:12@0.5,0.5,1">`.
+- **Zooming images and documents.** `zooms=` and `zoom=T@x,y,z` work on images and embedded
+  `.rc`/`.json` documents too, with `T` counted from when the slide opened (`@x,y,z` alone is
+  0): `<photo.png | zooms="0.5@0.75,0.55,2.5; 2@0.3,0.3,2">` drifts in and across. A plain
+  `zoom=2 focus=0.3,0.2` on an image shows that view from the start. Consecutive slides of the
+  same image or document with `zoom=@x,y,z` chain like a clip does: each slide eases from the
+  previous slide's view to its own. An image's zoom is built into the slide (it works the same in
+  every player and export); a document's is applied by the player's document host.
 - `until=T` (video) — play from `start` to `T` once and hold there.
 - **A walk through a clip, one slide per zoom.** Consecutive slides on the same clip, the later
   ones each with a single keyframe `zoom=T@x,y,z`, are chained: each slide starts at its own

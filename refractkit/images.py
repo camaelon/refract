@@ -130,6 +130,59 @@ def _rounded_rect_path(path: str, l: float, t: float, r: float, b: float,
     ]
 
 
+ZOOM_DUR = 0.55      # seconds a zoom keyframe takes to settle — as rcskia/MediaZoom.h
+
+
+def _zoom_vars(keys: list, prefix: str, clock: str = "animTime") -> tuple[list, dict]:
+    """Expressions for a keyframed zoom on the slide's clock: the variables to declare and the
+    names holding the view's centre (``cx``, ``cy``, fractions) and zoom (``z``).
+
+    The same motion as rcskia/MediaZoom.h: before the first key the whole frame; at each key
+    an ease (quart out, ZOOM_DUR) from wherever the view is to the key's centre and zoom, zoom
+    in log space; the view clamped inside the frame. Each key's starting point is known when the
+    slide is built (the keys' times are fixed), so the view is the first key's start plus, per
+    key, its change times its ease — each ease stopping where the next key takes over."""
+    import math
+    ease = lambda u: 1.0 - (1.0 - min(max(u, 0.0), 1.0)) ** 4
+    frm = to = (0.5, 0.5, 0.0)
+    t0 = -1e9
+    segs = []
+    for t, x, y, z in keys:
+        e = ease((t - t0) / ZOOM_DUR)
+        frm = tuple(a + (b - a) * e for a, b in zip(frm, to))
+        to = (x, y, math.log(max(z, 1.0)))
+        segs.append((t, frm, to))
+        t0 = t
+    vs, names = [], {}
+    V = lambda n, v: vs.append({"type": "variable", "name": n, "vtype": "float", "value": v})
+    terms = {0: [], 1: [], 2: []}
+    for i, (t, frm, to) in enumerate(segs):
+        end = segs[i + 1][0] if i + 1 < len(segs) else None
+        tt = "min(%s,%g)" % (clock, end) if end is not None else clock
+        V(f"{prefix}U{i}", "clamp((%s-%g)*%g,1.0,0.0)" % (tt, t, 1.0 / ZOOM_DUR))
+        V(f"{prefix}N{i}", f"1.0-{prefix}U{i}")
+        V(f"{prefix}E{i}", f"1.0-{prefix}N{i}*{prefix}N{i}*{prefix}N{i}*{prefix}N{i}")
+        for a in range(3):
+            d = to[a] - frm[a]
+            if abs(d) > 1e-6:
+                terms[a].append("%g*%sE%d" % (d, prefix, i))
+    base = (0.5, 0.5, 0.0)
+    for a, nm in ((0, "X"), (1, "Y"), (2, "L")):
+        prev = "%g" % base[a]
+        ts = terms[a]
+        for c in range(0, max(len(ts), 1), 3):
+            chunk = ts[c:c + 3]
+            name = f"{prefix}{nm}{c // 3}"
+            V(name, prev + ("+" + "+".join(chunk) if chunk else "+0.0"))
+            prev = name
+        names[nm] = prev
+    V(f"{prefix}Z", f"exp({names['L']})")
+    V(f"{prefix}H", f"0.5/{prefix}Z")
+    V(f"{prefix}CX", f"clamp({names['X']},1.0-{prefix}H,{prefix}H)")
+    V(f"{prefix}CY", f"clamp({names['Y']},1.0-{prefix}H,{prefix}H)")
+    return vs, {"cx": f"{prefix}CX", "cy": f"{prefix}CY", "z": f"{prefix}Z", "h": f"{prefix}H"}
+
+
 def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float,
                  counter: list, align: str = "center") -> list[dict]:
     """A fixed-size canvas that draws the image contained within (avail_w, avail_h),
@@ -173,6 +226,20 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
     draw = {"type": "drawbitmap", "image": "$" + var,
             "left": left, "top": top, "right": right, "bottom": bottom}
     commands = [{"type": "addbitmap", "image": img_path, "varName": var}]
+    # Zoom keyframes (``zooms``, or a static ``zoom``/``focus``): the bitmap drawn larger and
+    # shifted so the view's window fills the image's own box, clipped to it, on the slide's clock.
+    zvars: list = []
+    if block.get("zooms"):
+        zvars, zn = _zoom_vars(block["zooms"], f"__z{counter[0]}_")
+        L = f"{left}-({zn['cx']}-{zn['h']})*{dw:.2f}*{zn['z']}"
+        T = f"{top}-({zn['cy']}-{zn['h']})*{dh:.2f}*{zn['z']}"
+        zvars += [{"type": "variable", "name": f"__z{counter[0]}_L", "vtype": "float", "value": L},
+                  {"type": "variable", "name": f"__z{counter[0]}_T", "vtype": "float", "value": T}]
+        zl, zt = f"__z{counter[0]}_L", f"__z{counter[0]}_T"
+        draw = {"type": "save", "commands": [
+            {"type": "cliprect", "left": left, "top": top, "right": right, "bottom": bottom},
+            {"type": "drawbitmap", "image": "$" + var, "left": zl, "top": zt,
+             "right": f"{zl}+{dw:.2f}*{zn['z']}", "bottom": f"{zt}+{dh:.2f}*{zn['z']}"}]}
     raw_rad = opts.get("radius", opts.get("corner_radius", opts.get("clip", theme.image_corner_radius)))
     if str(raw_rad).lower() in ("circle", "ellipse", "round"):
         rad = min(dw / 2.0, dh / 2.0)
@@ -188,8 +255,12 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
             {"type": "clippath", "path": clip}, draw]})
     else:
         commands.append(draw)
-    return [{
+    canvas = {
         "type": "canvas",
         "modifiers": dbg([{"width": cw}, {"height": ch}], debug),
         "commands": commands,
-    }]
+    }
+    if zvars:
+        return [{"type": "box", "modifiers": dbg([{"width": cw}, {"height": ch}], debug),
+                 "children": zvars + [canvas]}]
+    return [canvas]
