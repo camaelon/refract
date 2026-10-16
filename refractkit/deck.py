@@ -185,6 +185,21 @@ _FRAMEABLE = ("video", "rc_include", "json_include", "camera")
 _CAPTIONABLE = _FRAMEABLE + ("image",)
 
 
+def parse_clip_time(raw) -> float | None:
+    """A time in a clip: seconds (``12``, ``12.5``) or a timestamp (``1:23``, ``1:02:03.5``).
+    None when absent or unreadable."""
+    if raw is None or raw is True:
+        return None
+    try:
+        parts = [float(p) for p in str(raw).strip().split(":")]
+    except ValueError:
+        return None
+    t = 0.0
+    for p in parts:
+        t = t * 60.0 + p
+    return max(0.0, t)
+
+
 def _apply_include_opts(block: dict, opts: dict) -> dict:
     """Apply per-include options (from ``<name | key=val …>``) to a resolved media block: a
     source ``crop``, a ``fit`` override, and a ``title`` caption drawn below the embed. Crop
@@ -200,6 +215,13 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     ratio = parse_ratio(opts.get("ratio"))
     if ratio and block["kind"] in _FRAMEABLE:
         block["ratio"] = ratio
+    # A video: ``start=`` begins playback there (and loops back to it); ``still=`` shows that one
+    # frame, frozen. ``cue`` (see refract.py ``expand_video_cue``) puts a still slide in front.
+    if block["kind"] == "video":
+        for k in ("start", "still"):
+            t = parse_clip_time(opts.get(k))
+            if t is not None:
+                block[k] = t
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
     # ``clip=circle`` | ``clip=<px>`` | ``clip=none`` rounds (or fully rounds, or squares) the

@@ -741,7 +741,11 @@ def render_video(block: dict, theme: Theme, debug: bool,
     _, _, cap_h = _caption_metrics(block, theme)
     box_h = avail_h - cap_h
     src = block.get("src") or block["path"].rsplit("/", 1)[-1]
-    config = _media_config("video", src, {"crop": _crop_opt(block)})
+    config = _media_config("video", src, {
+        "crop": _crop_opt(block),
+        "start": ("%g" % block["start"]) if block.get("start") else "",
+        "still": ("%g" % block["still"]) if block.get("still") is not None else "",
+    })
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
                      size=_embed_size(block), align=block.get("align", "start"))

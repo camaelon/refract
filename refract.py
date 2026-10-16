@@ -226,6 +226,46 @@ def expand_embed_stagger(slides: list) -> list:
     return out
 
 
+def _cue_time(opts: dict) -> float | None:
+    """The still a ``cue`` asks for: ``cue=T`` names it; a bare ``cue`` means where the clip
+    will start (``start=``), else its first frame. None when the include has no cue."""
+    from refractkit.deck import parse_clip_time
+    val = opts.get("cue")
+    if val is None or (isinstance(val, str) and val.lower() in ("off", "false", "no", "0")):
+        return None
+    t = parse_clip_time(val) if val is not True else None
+    if t is None:
+        t = parse_clip_time(opts.get("start")) or 0.0
+    return t
+
+
+def expand_video_cue(slides: list) -> list:
+    """A slide whose video carries ``cue`` (``<demo.mp4 | start=12 cue>``) becomes two: first
+    the same slide with that clip frozen on a frame (its ``still``), then the slide itself, the
+    clip playing. Advancing from the first starts the video — the presenter decides when it
+    plays rather than the slide deciding on arrival. The playing slide renders like a reveal
+    step (``stagger_step``): nothing else on it animates in again, so the only change on screen
+    is the video starting."""
+    out = []
+    for slide in slides:
+        blocks = slide.get("blocks", [])
+        cues = [(i, _cue_time(b.get("opts") or {})) for i, b in enumerate(blocks)
+                if b.get("kind") == "include"]
+        cues = [(i, t) for i, t in cues if t is not None]
+        if not cues:
+            out.append(slide)
+            continue
+        still_blocks, play_blocks = [dict(b) for b in blocks], [dict(b) for b in blocks]
+        for i, t in cues:
+            opts = {k: v for k, v in (blocks[i].get("opts") or {}).items() if k != "cue"}
+            play_blocks[i]["opts"] = opts
+            still_blocks[i]["opts"] = {**{k: v for k, v in opts.items() if k != "start"}, "still": "%g" % t}
+        out.append({**slide, "blocks": still_blocks})
+        out.append({**slide, "meta": {**(slide.get("meta") or {}), "stagger_step": True},
+                    "blocks": play_blocks})
+    return out
+
+
 def resolve_same_types(slides: list) -> list:
     """``:: same`` means "same layout as the previous slide, animate the diff". Resolve each
     such slide's *type* to the previous (non-same) slide's type — so a `:: same` following a
@@ -914,7 +954,7 @@ def run_once(args) -> int:
     # Drop slides marked `skip` before anything numbers or expands them.
     slides = [s for s in slides if not is_skipped(s)]
     slides = resolve_same_types(slides)
-    slides = apply_agenda(expand_embed_stagger(expand_fragments(slides, theme.reveal_steps)))
+    slides = apply_agenda(expand_video_cue(expand_embed_stagger(expand_fragments(slides, theme.reveal_steps))))
     if not slides:
         print("no slides found", file=sys.stderr)
         return 1
@@ -993,7 +1033,10 @@ def run_once(args) -> int:
         # A lone video (no title, nothing else) is a whole-slide passthrough the viewer
         # plays directly. Otherwise videos are embedded in the page (custom component).
         videos = [b for b in blocks if b["kind"] == "video"]
-        if videos and not slide.get("title") and len(blocks) == 1:
+        # ...unless it asks for a start or a still: those are options of the embedded player,
+        # which a bare movie file handed to the viewer cannot carry.
+        if videos and not slide.get("title") and len(blocks) == 1 \
+                and not videos[0].get("start") and videos[0].get("still") is None:
             v = videos[0]
             dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
             copies.append((v["path"], dst))

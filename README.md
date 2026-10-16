@@ -322,6 +322,16 @@ mirror = true
   N+1 generated slides: the first shows none of them, each later slide reveals one more (the
   newest fades in) while already-revealed embeds stay put and not-yet-revealed ones sit
   invisible so the layout never shifts. Great for building up a grid of demos one at a time.
+- `start=T` (video) — begin playback at `T` instead of the first frame, and loop back to `T`.
+  Seconds or a timestamp: `start=12.5`, `start=1:23`.
+- `still=T` (video) — show the clip's frame at `T`, frozen; nothing plays.
+- `cue` / `cue=T` (video) — put a still slide in front: the slide expands into two, the first
+  showing the clip frozen at `T` (bare `cue`: where `start` is, else the first frame), the
+  second the slide itself with the clip playing. Advancing from the first starts the video, so
+  you can switch to a demo and talk over it before it runs: `<demo.mov | start=0:12 cue>`.
+  The playing slide doesn't re-animate the rest of the page; only the video starts. A video
+  that is alone on its slide normally plays as the file itself; with any of these options it is
+  embedded instead, since a bare movie file can't carry them.
 
 A `crop`/`fit` on a **`.json` or `.rc` include** *frames* it: instead of splicing it flat
 into the slide (which re-lays-it-out to fill), refract embeds it as a nested document at its
