@@ -325,6 +325,31 @@ mirror = true
 - `start=T` (video) — begin playback at `T` instead of the first frame, and loop back to `T`.
   Seconds or a timestamp: `start=12.5`, `start=1:23`.
 - `still=T` (video) — show the clip's frame at `T`, frozen; nothing plays.
+- `once` (or `loop=0`) (video) — play through once, from `start`, and hold on the last frame.
+  Videos loop by default.
+- `zooms="T@x,y,z; T@x,y,z…"` (video) — zoom into the clip as it plays. Each keyframe is a clip
+  time (seconds or `m:ss`), the centre `x,y` as fractions of the frame (of the `crop`, when one
+  is set) and a zoom factor `z`. Before the first keyframe the whole frame shows; at each one the
+  view eases, snappily, from wherever it is to the new centre and zoom (about half a second);
+  `z` = 1 zooms back out, and the view never leaves the frame. A `still`/`cue` frame is framed
+  as the playing clip is at that time. `<demo.mov | zooms="0:05@0.7,0.3,2.5; 0:12@0.5,0.5,1">`.
+- `until=T` (video) — play from `start` to `T` once and hold there.
+- **A walk through a clip, one slide per zoom.** Consecutive slides on the same clip, the later
+  ones each with a single keyframe `zoom=T@x,y,z`, are chained: each slide starts at its own
+  time, plays until the next slide's time and holds there, and eases from the previous slide's
+  view to its own — so advancing moves the zoom on and lets the clip carry on from where it
+  paused (advance early and it skips ahead to the next slide's time). The first slide starts at
+  its `start` (or its own keyframe); the last plays on to the end, looping or `once`. The slides
+  after the first render like reveal steps: only the clip and the zoom move.
+  ```
+  <demo.mov | zoom=0:05@0.7,0.3,2.5>
+  ---
+  <demo.mov | zoom=0:12@0.2,0.6,3>
+  ---
+  <demo.mov | zoom=0:20@0.5,0.5,1 once>
+  ```
+  Or let a keyframe list do it: `zooms="…" steps` expands the slide into an opening slide (the
+  clip from its start to the first keyframe) and one slide per keyframe, chained the same way.
 - `cue` / `cue=T` (video) — put a still slide in front: the slide expands into two, the first
   showing the clip frozen at `T` (bare `cue`: where `start` is, else the first frame), the
   second the slide itself with the clip playing. Advancing from the first starts the video, so

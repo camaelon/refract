@@ -266,6 +266,115 @@ def expand_video_cue(slides: list) -> list:
     return out
 
 
+def _truthy_opt(val) -> bool:
+    return val is True or (isinstance(val, str) and val.lower() not in ("off", "false", "no", "0", ""))
+
+
+def _zoom_key(opts: dict):
+    """A slide's single zoom keyframe, ``zoom=T@x,y,z``, as (t, x, y, z) — or None."""
+    from refractkit.deck import parse_zooms
+    raw = opts.get("zoom")
+    if not raw or "@" not in str(raw):
+        return None
+    keys = parse_zooms(raw)
+    return keys[0] if keys else None
+
+
+def expand_video_steps(slides: list) -> list:
+    """``<demo.mov | zooms="T@x,y,z; …" steps>``: one slide per keyframe instead of a zoom that
+    follows the clip's own clock. The slide expands into an opening slide (the clip from its
+    start) and one slide per keyframe, ``zoom=T@x,y,z`` — the explicit form, which
+    ``resolve_video_chains`` then turns into a walk through the clip: each slide pauses where
+    the next one picks up, and advancing moves the zoom on."""
+    out = []
+    for slide in slides:
+        blocks = slide.get("blocks", [])
+        idx = next((i for i, b in enumerate(blocks) if b.get("kind") == "include"
+                    and _truthy_opt((b.get("opts") or {}).get("steps"))
+                    and (b.get("opts") or {}).get("zooms")
+                    and "still" not in (b.get("opts") or {})), None)
+        if idx is None:
+            out.append(slide)
+            continue
+        from refractkit.deck import parse_zooms
+        opts = dict(blocks[idx]["opts"])
+        keys = parse_zooms(opts.pop("zooms")) or []
+        opts.pop("steps", None)
+        first = [dict(b) for b in blocks]
+        first[idx]["opts"] = opts
+        out.append({**slide, "blocks": first})
+        for t, x, y, z in keys:
+            nb = [dict(b) for b in blocks]
+            nb[idx]["opts"] = {**{k: v for k, v in opts.items() if k not in ("start", "cue")},
+                               "zoom": "%g@%g,%g,%g" % (t, x, y, z)}
+            out.append({**slide, "blocks": nb})
+    return out
+
+
+def resolve_video_chains(slides: list) -> list:
+    """Consecutive slides showing the same clip, the later ones each with a zoom keyframe
+    ``zoom=T@x,y,z``, are one walk through it. Each slide starts at its keyframe's time (the
+    first: at its ``start``, or its own keyframe), plays until the next slide's time and holds
+    there (``until``), and eases from the previous slide's view to its own — so advancing
+    moves the zoom on and lets the clip continue from where it paused. The slides after the
+    first render like reveal steps (nothing else on them animates in again)."""
+    from refractkit.deck import parse_clip_time
+
+    def video(slide):
+        incs = [(i, b) for i, b in enumerate(slide.get("blocks", [])) if b.get("kind") == "include"]
+        if len(incs) != 1:
+            return None
+        i, b = incs[0]
+        if "still" in (b.get("opts") or {}):
+            return None
+        return i, b
+
+    out = [dict(s) for s in slides]
+    n = len(out)
+    j = 0
+    while j < n:
+        head = video(out[j])
+        k = j + 1
+        while head and k < n:
+            nxt = video(out[k])
+            if not nxt or nxt[1].get("name") != head[1].get("name") or not _zoom_key(nxt[1].get("opts") or {}):
+                break
+            k += 1
+        if not head or k - j < 2:
+            j += 1
+            continue
+        run = list(range(j, k))
+        info = []
+        for m in run:
+            i, b = video(out[m])
+            o = b.get("opts") or {}
+            key = _zoom_key(o)
+            t = key[0] if key else (parse_clip_time(o.get("start")) or 0.0)
+            view = (key[1], key[2], key[3]) if key else (0.5, 0.5, 1.0)
+            info.append((m, i, o, t, view))
+        for n_, (m, i, o, t, view) in enumerate(info):
+            opts = {kk: v for kk, v in o.items() if kk not in ("zoom", "start", "until", "zooms")}
+            opts["start"] = "%g" % t
+            if n_ + 1 < len(info) and info[n_ + 1][3] > t:
+                opts["until"] = "%g" % info[n_ + 1][3]
+            keys = []
+            if n_ > 0:
+                px, py, pz = info[n_ - 1][4]
+                keys.append("%g@%g,%g,%g" % (t - 1.0, px, py, pz))     # settled on the last view...
+            if n_ > 0 or view != (0.5, 0.5, 1.0):
+                keys.append("%g@%g,%g,%g" % (t, *view))                # ...then eases to this one
+            if keys:
+                opts["zooms"] = ";".join(keys)
+            blocks = [dict(bb) for bb in out[m]["blocks"]]
+            blocks[i] = {**blocks[i], "opts": opts}
+            meta = dict(out[m].get("meta") or {})
+            if n_ > 0:
+                meta["stagger_step"] = True
+            out[m] = {**out[m], "meta": meta, "blocks": blocks}
+        j = k
+    return out
+
+
 def resolve_same_types(slides: list) -> list:
     """``:: same`` means "same layout as the previous slide, animate the diff". Resolve each
     such slide's *type* to the previous (non-same) slide's type — so a `:: same` following a
@@ -954,7 +1063,8 @@ def run_once(args) -> int:
     # Drop slides marked `skip` before anything numbers or expands them.
     slides = [s for s in slides if not is_skipped(s)]
     slides = resolve_same_types(slides)
-    slides = apply_agenda(expand_video_cue(expand_embed_stagger(expand_fragments(slides, theme.reveal_steps))))
+    slides = expand_video_cue(expand_embed_stagger(expand_fragments(slides, theme.reveal_steps)))
+    slides = apply_agenda(resolve_video_chains(expand_video_steps(slides)))
     if not slides:
         print("no slides found", file=sys.stderr)
         return 1

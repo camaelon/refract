@@ -200,11 +200,39 @@ def parse_clip_time(raw) -> float | None:
     return max(0.0, t)
 
 
+def parse_zooms(raw) -> list[tuple] | None:
+    """Zoom keyframes ``T@x,y,z; T@x,y,z`` — T a clip time (seconds or ``m:ss``), x,y the
+    centre as fractions of the (cropped) frame, z the zoom factor (1 = whole frame). Returns
+    [(t, x, y, z)] sorted by time, or None when absent or nothing reads."""
+    if not raw or raw is True:
+        return None
+    keys = []
+    for part in str(raw).replace("\n", ";").split(";"):
+        if "@" not in part:
+            continue
+        t_raw, _, rest = part.strip().partition("@")
+        t = parse_clip_time(t_raw.strip())
+        try:
+            vals = [float(v) for v in rest.replace(" ", "").split(",")]
+        except ValueError:
+            continue
+        if t is None or len(vals) < 2:
+            continue
+        x, y = vals[0], vals[1]
+        z = max(1.0, vals[2]) if len(vals) > 2 else 1.0
+        keys.append((t, min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0), z))
+    return sorted(keys) or None
+
+
 def _apply_include_opts(block: dict, opts: dict) -> dict:
     """Apply per-include options (from ``<name | key=val …>``) to a resolved media block: a
     source ``crop``, a ``fit`` override, and a ``title`` caption drawn below the embed. Crop
     and fit apply to video and rc/json embeds (for a spliced json/rc, a crop/fit reframes it
     as a nested document); the caption applies to those plus images."""
+    # ``zoom=T@x,y,z`` on a video is one zoom keyframe (see ``zooms``), not the static zoom.
+    if block["kind"] == "video" and "@" in str(opts.get("zoom") or ""):
+        opts = {**opts, "zooms": opts["zoom"]}
+        opts.pop("zoom")
     crop = parse_crop(opts.get("crop"))
     if crop and block["kind"] in _FRAMEABLE:
         block["crop"] = crop
@@ -218,10 +246,18 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # A video: ``start=`` begins playback there (and loops back to it); ``still=`` shows that one
     # frame, frozen. ``cue`` (see refract.py ``expand_video_cue``) puts a still slide in front.
     if block["kind"] == "video":
-        for k in ("start", "still"):
+        for k in ("start", "still", "until"):
             t = parse_clip_time(opts.get(k))
             if t is not None:
                 block[k] = t
+        # ``once`` (or ``loop=0``) plays the clip through and holds its last frame; it loops by default.
+        loop = opts.get("loop")
+        if opts.get("once") or (isinstance(loop, str) and loop.lower() in ("0", "false", "off", "no", "once")):
+            block["loop"] = False
+        # ``zooms=T@x,y,z; …`` — keyframed zoom into the clip, eased from one view to the next.
+        zooms = parse_zooms(opts.get("zooms"))
+        if zooms:
+            block["zooms"] = zooms
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
     # ``clip=circle`` | ``clip=<px>`` | ``clip=none`` rounds (or fully rounds, or squares) the
