@@ -2356,6 +2356,7 @@ int main(int argc, char* argv[]) {
 
     double perfPollMs = 0.0, perfSwapMs = 0.0;     // since the last frame / the last swap
     int preloadedFor = -1;                         // the slide whose successor was last prepared
+    int perfShotFor = -1;                          // RC_PERF_SHOTS: the slide last captured
     while (!glfwWindowShouldClose(window)) {
         const auto pollStart = std::chrono::steady_clock::now();
         pumpingEvents = true;
@@ -2593,6 +2594,21 @@ int main(int argc, char* argv[]) {
                 lastCapturedSlide = g.currentIndex;
             }
 
+            // RC_PERF_SHOTS=<dir>: a screenshot of each slide 0.15 s in, mid-transition, to see
+            // what a timing run showed.
+            if (perf.active() && app.sinceSlideChange >= 0.15 && perfShotFor != g.currentIndex) {
+                if (const char* dir = std::getenv("RC_PERF_SHOTS")) {
+                    perfShotFor = g.currentIndex;
+                    if (sk_sp<SkImage> shot = captureLiveFrame()) {
+                        char name[64];
+                        std::snprintf(name, sizeof(name), "/%02d.png", g.currentIndex + 1);
+                        if (sk_sp<SkData> png = SkPngEncoder::Encode(nullptr, shot.get(), {})) {
+                            SkFILEWStream out((std::string(dir) + name).c_str());
+                            out.write(png->data(), png->size());
+                        }
+                    }
+                }
+            }
             drawSlideCovers(winW, winH);
 
             g.backend->present();
