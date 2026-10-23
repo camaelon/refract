@@ -1166,7 +1166,7 @@ def run_once(args) -> int:
         # Lone prebuilt .rc (no title / other content): whole-slide passthrough.
         if (not slide.get("title") and len(blocks) == 1
                 and blocks[0]["kind"] == "rc_include" and not blocks[0].get("json")
-                and not blocks[0].get("frame")):
+                and not blocks[0].get("frame") and not blocks[0].get("events")):
             copies.append((blocks[0]["path"], rc_path))
             prev = None; prev_theme = None
             continue
@@ -1177,7 +1177,7 @@ def run_once(args) -> int:
         #   • rc/json with a crop/fit   → *frame* it (crop/scale need a fixed-size document, so
         #     we embed rather than splice flat): copy the .rc, or compile the .json via json2rc.
         for b in media_blocks:
-            framed = b.get("crop") or b.get("fit") or b.get("zooms") or b.get("frame")
+            framed = b.get("crop") or b.get("fit") or b.get("zooms") or b.get("frame") or b.get("events")
             if b["kind"] == "rc_include" and not b.get("json"):
                 base = os.path.basename(b["path"])
                 copies.append((b["path"], os.path.join(out_dir, "media", base)))

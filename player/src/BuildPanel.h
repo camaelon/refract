@@ -3,10 +3,6 @@
 // Editing a deck means going back to a terminal to re-run refract, and then back to the
 // player to see it. This closes that loop: the options refract was given are on screen, one
 // button re-runs it, and the deck reloads underneath the slides when it is done.
-//
-// It is deliberately a *column*. Given a deck view or a presenter window to attach to it sits
-// flush against its right edge and matches its height, so the two read as one panel — GLFW
-// has no docking, but a window that tracks another one is close enough at this size.
 #pragma once
 
 #include "App.h"
@@ -40,10 +36,6 @@ public:
     // watching is the app's, which is where the deck's files are known.
     bool watching() const;
     void setWatching(bool watch);
-
-    // The window to sit against, or null to float free. Passed every frame because the
-    // window it attaches to can be opened and closed while the panel is up.
-    void setHost(GLFWwindow* host);
 
     bool handleKey(int key, int action, int mods);
     void render(App& app);

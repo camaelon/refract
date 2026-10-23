@@ -134,7 +134,7 @@ std::string usageText() {
         "                     deck is reordered (drag a slide; the markdown is rewritten\n"
         "                     and the deck rebuilt)\n"
         "  --build            open the build panel: refract's options and a rebuild\n"
-        "                     button, attached alongside the deck view\n"
+        "                     button\n"
         "  --editor           open the slide editor: the markdown behind the slide on\n"
         "                     screen, edited in place and rebuilt on save\n"
         "  --assets           open the asset window: what is in includes/, which\n"

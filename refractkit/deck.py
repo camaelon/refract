@@ -321,6 +321,12 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):
             if k in opts:
                 block[k] = "1" if opts[k] is True else str(opts[k])
+        # ``events="1@click(588,542) wait(2) click(312,542) …"`` — a touch script the host plays
+        # on the document (see render_rc_embed); it loops unless ``once``.
+        if opts.get("events"):
+            block["events"] = " ".join(str(opts["events"]).split())
+            if opts.get("once") or str(opts.get("loop", "")).lower() in ("0", "false", "off", "no", "once"):
+                block["once"] = "1"
     # Stagger reveal state (set by refract's expand_embed_stagger on generated step slides):
     # "shown" | "fade" | "hidden" — the renderer alpha-gates the embed accordingly.
     if opts.get("_reveal") and block["kind"] in _CAPTIONABLE:

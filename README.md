@@ -366,6 +366,14 @@ mirror = true
   The playing slide doesn't re-animate the rest of the page; only the video starts. A video
   that is alone on its slide normally plays as the file itself; with any of these options it is
   embedded instead, since a bare movie file can't carry them.
+- `events="…"` (document) — a touch script played on the embedded document, so an
+  interactive demo runs itself: `<stopwatch.rc | events="1@click(588,542) wait(1.5) click(312,542)">`.
+  Actions are `click(x,y)` (press, release, click), `touchdown(x,y)`, `touchup(x,y)` (a
+  release, which also clicks) and `drag(x,y)`, in the document's own coordinates. `T@` puts an
+  action at T seconds; one without follows the step before it, and `wait(s)` moves on. The
+  script runs on the document's clock from the moment the slide opens and loops (its length is
+  its last moment, a trailing `wait` included) unless the include says `once`. Each touch shows
+  as a fading fingertip, so the audience sees what is pressed.
 - `frame=<name>` (video, document, image, camera) — show it inside a device frame the theme
   defines. A `[frames.<name>]` table in settings.toml names the frame image and three things in
   that image's own pixels: `bounds`, the device (fitted to the box, so the box takes its

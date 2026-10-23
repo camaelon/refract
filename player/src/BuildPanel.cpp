@@ -41,17 +41,10 @@ struct BuildPanel::Impl {
     BuildState   state;
     std::function<bool(const BuildOptions&)> onBuild;
 
-    GLFWwindow* host = nullptr;
-    bool attached = true;
     bool watch = false;
 
     double mouseX = 0, mouseY = 0;
     std::vector<Hit> hits;
-
-    // Where the panel sat before it was attached, so unchecking "attach" puts it back rather
-    // than leaving it wherever the host happened to drag it.
-    int freeX = 0, freeY = 0, freeH = 0;
-    bool freeSaved = false;
 
     const Hit* hitAt(double x, double y) const {
         for (const auto& hit : hits) {
@@ -141,8 +134,6 @@ void BuildPanel::setOptions(const BuildOptions& options) { mImpl->options = opti
 
 void BuildPanel::setState(const BuildState& state) { mImpl->state = state; }
 
-void BuildPanel::setHost(GLFWwindow* host) { mImpl->host = host; }
-
 bool BuildPanel::watching() const { return mImpl->watch; }
 
 void BuildPanel::setWatching(bool watch) { mImpl->watch = watch; }
@@ -210,33 +201,6 @@ std::string plural(int n, const char* one, const char* many) {
 void BuildPanel::render(App& app) {
     if (!mWindow || !mImpl) return;
     Impl& impl = *mImpl;
-
-    // ── Attach ───────────────────────────────────────────────────────
-    // Tracked every frame rather than once: the host can be moved, resized, or closed while
-    // the panel is up, and a column that drifts off its window is worse than one that floats.
-    if (impl.attached && impl.host) {
-        if (!impl.freeSaved) {
-            glfwGetWindowPos(mWindow, &impl.freeX, &impl.freeY);
-            int fw = 0;
-            glfwGetWindowSize(mWindow, &fw, &impl.freeH);
-            impl.freeSaved = true;
-        }
-        int hx = 0, hy = 0, hw = 0, hh = 0;
-        glfwGetWindowPos(impl.host, &hx, &hy);
-        glfwGetWindowSize(impl.host, &hw, &hh);
-        int px = 0, py = 0, pw = 0, ph = 0;
-        glfwGetWindowPos(mWindow, &px, &py);
-        glfwGetWindowSize(mWindow, &pw, &ph);
-        const int wantX = hx + hw, wantY = hy;
-        if (px != wantX || py != wantY) glfwSetWindowPos(mWindow, wantX, wantY);
-        if (ph != hh) glfwSetWindowSize(mWindow, pw, hh);
-    } else if (!impl.attached && impl.freeSaved) {
-        glfwSetWindowPos(mWindow, impl.freeX, impl.freeY);
-        int pw = 0, ph = 0;
-        glfwGetWindowSize(mWindow, &pw, &ph);
-        glfwSetWindowSize(mWindow, pw, impl.freeH);
-        impl.freeSaved = false;
-    }
 
     glfwMakeContextCurrent(mWindow);
     int w = 0, h = 0;
@@ -358,12 +322,6 @@ void BuildPanel::render(App& app) {
             y += 6;
         }
     }
-
-    // ── Attach ───────────────────────────────────────────────────────
-    const float footer = h - 34;
-    fillRect(canvas, SkRect::MakeXYWH(pad, footer - 14, colW, 1), ui::kLine);
-    drawOption(canvas, impl.hits, pad, footer, colW, "attach to the panel", nullptr,
-               &impl.attached, impl.host != nullptr);
 
     impl.backend.present();
     glfwSwapBuffers(mWindow);

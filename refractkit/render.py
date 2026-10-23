@@ -928,7 +928,8 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
     opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block),
             "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or [])}
-    for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):      # slide-driven documents, see deck.py
+    for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed",
+              "events", "once"):      # slide-driven documents and touch scripts, see deck.py
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)
     frame = _frame_of(block, theme)
@@ -1094,7 +1095,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
         # the prebuilt .rc live as a nested document via the rc-document host. A ``ratio`` frames
         # the embed in a fixed-aspect box, which needs the live custom-component path.
-        if block.get("json") and not block.get("ratio") and not block.get("frame"):
+        if block.get("json") and not block.get("ratio") and not block.get("frame") and not block.get("events"):
             return _apply_reveal(_clipped_splice(block["json"], theme, debug, avail_h, block), block)
         return _apply_reveal(render_rc_embed(block, theme, debug, avail_w, avail_h), block)
 

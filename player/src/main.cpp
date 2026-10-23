@@ -2782,10 +2782,6 @@ int main(int argc, char* argv[]) {
                 } else if (!buildPanel->watching()) {
                     watchedMtime = 0.0;
                 }
-                // The column sits against whichever panel window is open, and floats free
-                // when neither is.
-                buildPanel->setHost(deckView ? deckView->window()
-                                             : presenter ? presenter->window() : nullptr);
                 if (elapsed - lastBuildDraw >= kPresenterInterval) {
                     buildPanel->render(app);
                     lastBuildDraw = elapsed;
