@@ -6,7 +6,7 @@
 
 For every slide it looks at two windows: the transition (the first --transition seconds after
 the slide change — the push, the content reveal) and the rest of the dwell. In each it reports
-the longest gap between frames, how many frames missed the display (a gap longer than 1.5 ×
+the longest gap between frames (a stall while a slide holds counts too), how many frames missed the display (a gap longer than 1.5 ×
 the refresh interval, which the eye reads as a stutter), and the CPU time the player spent per
 frame (render + present). The slide change itself — loading the next slide, before its first
 frame — is reported on its own: a long one is the hitch you see as you press the key.
@@ -75,7 +75,8 @@ def analyse(rec, transition):
                      # the run's first slide opens with the window: its first frame is startup
                      "run_start": idx == first_slide,
                      # one number to rank by: the worst stall the audience sees around the change
-                     "worst_ms": round(max(0.0 if idx == first_slide else first, t["max_gap_ms"]), 1)})
+                     "worst_ms": round(max(0.0 if idx == first_slide else first, t["max_gap_ms"],
+                                           s["max_gap_ms"]), 1)})
     return {"refresh_ms": round(refresh, 2), "miss_ms": round(miss, 2), "transition_s": transition,
             "slides": rows}
 
@@ -98,11 +99,11 @@ def main(argv=None):
     hz = 1000.0 / res["refresh_ms"] if res["refresh_ms"] else 0
     print(f"{len(rows)} slides, refresh {res['refresh_ms']} ms (~{hz:.0f} Hz); a frame counts as missed past {res['miss_ms']} ms\n")
     worst = sorted(rows, key=lambda r: -r["worst_ms"])[:a.top]
-    print(f"{'slide':>5}  {'worst':>7}  {'switch':>7}  {'first':>7}  {'tr gap':>7}  {'tr miss':>7}  {'tr cpu95':>8}  {'st miss':>7}  {'st cpu95':>8}  title")
+    print(f"{'slide':>5}  {'worst':>7}  {'switch':>7}  {'first':>7}  {'tr gap':>7}  {'tr miss':>7}  {'tr cpu95':>8}  {'st gap':>7}  {'st miss':>7}  {'st cpu95':>8}  title")
     for r in worst:
         t, s = r["transition"], r["steady"]
         print(f"{r['slide']:>5}  {r['worst_ms']:>7.1f}  {r['switch_ms']:>7.1f}  {r['first_frame_ms']:>7.1f}  "
-              f"{t['max_gap_ms']:>7.1f}  {t['missed']:>7}  {t['cpu_p95_ms']:>8.1f}  {s['missed']:>7}  {s['cpu_p95_ms']:>8.1f}  {r['title'][:48]}"
+              f"{t['max_gap_ms']:>7.1f}  {t['missed']:>7}  {t['cpu_p95_ms']:>8.1f}  {s['max_gap_ms']:>7.1f}  {s['missed']:>7}  {s['cpu_p95_ms']:>8.1f}  {r['title'][:48]}"
               + ("  (run start: its first frame is the window opening)" if r["run_start"] else ""))
     print("\nwhere the worst frame of each went (ms): gap = previous render + swap + events + other loop work")
     for r in worst:

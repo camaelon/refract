@@ -2355,6 +2355,7 @@ int main(int argc, char* argv[]) {
     constexpr double kCaptureInterval = 1.0 / 12.0;
 
     double perfPollMs = 0.0, perfSwapMs = 0.0;     // since the last frame / the last swap
+    int preloadedFor = -1;                         // the slide whose successor was last prepared
     while (!glfwWindowShouldClose(window)) {
         const auto pollStart = std::chrono::steady_clock::now();
         pumpingEvents = true;
@@ -2546,6 +2547,18 @@ int main(int argc, char* argv[]) {
         }
         app.clock.tick(dt);
         app.sinceSlideChange += dt;
+        // A slide program goes to the next slide: once this one has settled (its transition and
+        // reveal are done), prepare the next on a worker — parsed, images decoded, laid out — so
+        // the key press only swaps it in.
+        if (app.sinceSlideChange >= kTransitionQuietSec && preloadedFor != g.currentIndex && !app.deck.empty()) {
+            preloadedFor = g.currentIndex;
+            int next = g.currentIndex + 1;
+            if (perf.active()) {
+                auto at = std::find(perfSlides.begin(), perfSlides.end(), g.currentIndex);
+                next = (at != perfSlides.end() && at + 1 != perfSlides.end()) ? *(at + 1) : -1;
+            }
+            if (next >= 0 && next < static_cast<int>(g.files.size())) rcplayer::preloadFile(g.files[next]);
+        }
         startRunIfArmed();
         app.timing.tick(app.clock.elapsed);
 
