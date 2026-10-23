@@ -2595,13 +2595,24 @@ int main(int argc, char* argv[]) {
             }
 
             // RC_PERF_SHOTS=<dir>: a screenshot of each slide 0.15 s in, mid-transition, to see
-            // what a timing run showed.
-            if (perf.active() && app.sinceSlideChange >= 0.15 && perfShotFor != g.currentIndex) {
+            // what a timing run showed. RC_PERF_SHOTS_FRAMES=N instead saves its first N frames
+            // (NN_fFF.png), for what happens in the frames right after a switch.
+            static const int perfShotFrames = std::getenv("RC_PERF_SHOTS_FRAMES")
+                                                  ? std::atoi(std::getenv("RC_PERF_SHOTS_FRAMES")) : 0;
+            static int perfShotFrame = 0;
+            if (perfShotFor != g.currentIndex) perfShotFrame = 0;
+            const bool shotDue = perfShotFrames > 0 ? perfShotFrame < perfShotFrames
+                                                    : app.sinceSlideChange >= 0.15 && perfShotFor != g.currentIndex;
+            if (perf.active() && shotDue) {
                 if (const char* dir = std::getenv("RC_PERF_SHOTS")) {
                     perfShotFor = g.currentIndex;
                     if (sk_sp<SkImage> shot = captureLiveFrame()) {
                         char name[64];
-                        std::snprintf(name, sizeof(name), "/%02d.png", g.currentIndex + 1);
+                        if (perfShotFrames > 0)
+                            std::snprintf(name, sizeof(name), "/%02d_f%02d.png", g.currentIndex + 1, perfShotFrame);
+                        else
+                            std::snprintf(name, sizeof(name), "/%02d.png", g.currentIndex + 1);
+                        perfShotFrame++;
                         if (sk_sp<SkData> png = SkPngEncoder::Encode(nullptr, shot.get(), {})) {
                             SkFILEWStream out((std::string(dir) + name).c_str());
                             out.write(png->data(), png->size());
