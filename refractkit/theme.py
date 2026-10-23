@@ -215,6 +215,9 @@ class Theme:
     section_numbered: bool = True
     # Image corner radius in px (0 = square). Rounds embedded images.
     image_corner_radius: float = 0.0
+    # What ``clip=roundrect`` rounds to: ``[image] roundrect_radius``, else the corner radius
+    # above when the theme has one, else 28 — so asking for rounded corners always gets some.
+    roundrect_radius: float = 0.0
     # Embedded prebuilt `.rc` documents: how the nested doc is scaled into its box.
     embed_fit: str = "fit"          # fit (aspect, centred) | fill (cover) | native (1:1)
     # Graph (graphviz) rendering colours.
@@ -517,6 +520,8 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.image_corner_radius = float(image["corner_radius"])
     elif image.get("rounded"):
         t.image_corner_radius = 28.0
+    if "roundrect_radius" in image:
+        t.roundrect_radius = float(image["roundrect_radius"])
 
     t.embed_fit = str(settings.get("embed", {}).get("fit", t.embed_fit)).lower()
 

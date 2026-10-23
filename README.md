@@ -277,9 +277,11 @@ and rc/json embeds:
   scaled to fill the box. Handy to remove black bars around a portrait recording, e.g.
   `<phone.mp4 | crop=0.28,0,0.72,1>`, or to zoom into part of an embedded doc.
 - `fit=fit|fill|native` — override the `[embed] fit` for this embed (a camera fills by default).
-- `clip=circle|<px>|none` — the shape of the box: fully round (a circle, with `ratio=1:1`), a
-  corner radius in pixels, or square corners, over the theme's `[image] corner_radius`. Works
-  on video, rc/json embeds and the camera.
+- `clip=roundrect|circle|<px>|none` — the shape of the box: rounded corners (`roundrect`:
+  `[image] roundrect_radius`, else `[image] corner_radius`, else 28 px), fully round (a circle,
+  with `ratio=1:1`), a corner radius in pixels, or square corners. With no `clip` the box takes
+  `[image] corner_radius` (0 — square — unless set, or 28 with `rounded = true`). Works on
+  video, rc/json embeds, the camera and images.
 - `mirror` — flip the camera left-right, the way a speaker expects to see themselves.
   `device=…` picks a camera by a substring of its name or by index (the same as `<camera:…>`).
 - `width=` / `height=` — size the box outright in px, as for an image, instead of filling

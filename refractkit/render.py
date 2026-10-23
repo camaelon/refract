@@ -651,14 +651,25 @@ def _with_caption(content, block: dict, theme: Theme, debug: bool, avail_h: floa
              "children": [*children, node]}]
 
 
+# ``clip=roundrect`` names the theme's corner radius outright — the default, said explicitly.
+ROUNDRECT_CLIP = ("roundrect", "roundedrect", "rounded", "rrect")
+
+
+def roundrect_radius(theme) -> float:
+    """The radius ``clip=roundrect`` asks for (see Theme.roundrect_radius)."""
+    return (getattr(theme, "roundrect_radius", 0.0) or theme.image_corner_radius or 28.0)
+
+
 def _embed_corner(block: dict, theme: Theme):
     """The corner radius an embed's box is clipped to: the theme's image radius unless the
     include said ``clip=circle`` (fully round — a circle on a square box), ``clip=<px>`` or
-    ``clip=none``."""
+    ``clip=none``; ``clip=roundrect`` is the theme's radius, by name."""
     raw = block.get("clip")
     if raw is None:
         return theme.image_corner_radius
     raw = str(raw).lower()
+    if raw in ROUNDRECT_CLIP:
+        return roundrect_radius(theme)
     if raw in ("circle", "ellipse", "round"):
         return "circle"
     if raw in ("none", "no", "off", "0", "square"):

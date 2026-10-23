@@ -242,6 +242,9 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
             {"type": "drawbitmap", "image": "$" + var, "left": zl, "top": zt,
              "right": f"{zl}+{dw:.2f}*{zn['z']}", "bottom": f"{zt}+{dh:.2f}*{zn['z']}"}]}
     raw_rad = opts.get("radius", opts.get("corner_radius", opts.get("clip", theme.image_corner_radius)))
+    if str(raw_rad).lower() in ("roundrect", "roundedrect", "rounded", "rrect"):
+        from .render import roundrect_radius
+        raw_rad = roundrect_radius(theme)              # the theme's rounded-rect radius, by name
     if str(raw_rad).lower() in ("circle", "ellipse", "round"):
         rad = min(dw / 2.0, dh / 2.0)
     else:
