@@ -182,6 +182,7 @@ void startRunIfArmed();
 bool captionsEditing();
 void captionEditingChanged(bool editing);
 void toggleTalkClock();
+void resetTalkClock();
 void playSlideAudio(double startAt = 0.0);
 void openCaptions();
 void captureSession();
@@ -568,6 +569,19 @@ void toggleTalkClock() {
     }
 }
 
+// Back to zero and stopped — shift+T and the presenter's reset button. The talk starts again
+// the way it first did (T, or advancing off the opening slide), and what follows the clock
+// pauses with it, as it would on a pause.
+void resetTalkClock() {
+    if (captionsEditing()) return;
+    app.clock.reset();
+    app.slideEnteredAt = 0.0;
+    app.autoStartClock = true;
+    if (recorder) recorder->setPaused(true);
+    g.cameraHost.pauseTake(true);
+    if (voice) voice->setPaused(true);
+}
+
 // End a recorded run where the presenter says to: the slide's wav is closed, the trace is
 // written, and playback comes back so the takes can be heard straight away.
 void stopRun() {
@@ -629,6 +643,7 @@ void openPresenter() {
     presenter = refract::PresenterWindow::Create(1100, 760);
     if (!presenter) return;
     presenter->setOnToggleClock(toggleTalkClock);
+    presenter->setOnResetClock(resetTalkClock);
     session.restore("presenter", presenter->window());
     installResizeRedraw(presenter->window());
     presenter->setOnTranscribeSlide([] {
@@ -1657,9 +1672,7 @@ void playerKeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action
         // ── Timer ────────────────────────────────────────────────────
         case GLFW_KEY_T:
             if (shift) {
-                app.clock.reset();
-                app.slideEnteredAt = 0.0;
-                app.autoStartClock = true;
+                resetTalkClock();
             } else {
                 toggleTalkClock();
             }

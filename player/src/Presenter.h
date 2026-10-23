@@ -34,6 +34,8 @@ public:
 
     // What the play/pause button does. Set once, after Create.
     void setOnToggleClock(std::function<void()> action);
+    // What the reset button beside the timer does: back to zero, stopped (shift+T).
+    void setOnResetClock(std::function<void()> action);
 
     // The record button: start a take over this slide's narration, then keep it. `discard`
     // drops the take in progress and leaves the old one alone. Both are the app's, which

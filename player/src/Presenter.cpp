@@ -36,6 +36,7 @@ struct PresenterWindow::Impl {
     int fbWidth = 0, fbHeight = 0;
 
     std::function<void()> onToggleClock;
+    std::function<void()> onResetClock;
     std::function<void()> onRecordSlide;
     std::function<void()> onDiscardTake;
     std::function<void()> onStopRun;
@@ -79,6 +80,7 @@ struct PresenterWindow::Impl {
     double playbackTime = 0.0;
     bool playing = false;
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
+    SkRect resetButton = SkRect::MakeEmpty();   // only while there is time to reset
     SkRect recordButton = SkRect::MakeEmpty();
     SkRect discardButton = SkRect::MakeEmpty();
     bool buttonHot = false;                     // pointer is over it
@@ -192,6 +194,7 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
             if (impl.captionView.click(static_cast<float>(impl.mouseX), static_cast<float>(impl.mouseY), shift)) return;
         }
         if (impl.over(impl.clockButton) && impl.onToggleClock) impl.onToggleClock();
+        else if (impl.over(impl.resetButton) && impl.onResetClock) impl.onResetClock();
         else if (impl.over(impl.recordButton) && impl.onRecordSlide) impl.onRecordSlide();
         else if (impl.over(impl.discardButton) && impl.onDiscardTake) impl.onDiscardTake();
         else if (impl.over(impl.stopButton) && impl.onStopRun) impl.onStopRun();
@@ -231,6 +234,10 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
 
 void PresenterWindow::setOnToggleClock(std::function<void()> action) {
     mImpl->onToggleClock = std::move(action);
+}
+
+void PresenterWindow::setOnResetClock(std::function<void()> action) {
+    mImpl->onResetClock = std::move(action);
 }
 
 void PresenterWindow::setOnRecordSlide(std::function<void()> record,
@@ -447,6 +454,49 @@ void drawClockButton(SkCanvas* canvas, const SkRect& box, bool running, bool hot
     }
 }
 
+// Reset, the play button's twin on the other side of the timer: a circular arrow, open at the
+// top, its head pointing anticlockwise (↺) — drawn as shapes, like play/pause.
+void drawResetButton(SkCanvas* canvas, const SkRect& box, bool hot) {
+    const float r = box.width() * 0.5f;
+    SkPaint fill;
+    fill.setAntiAlias(true);
+    fill.setColor(hot ? 0xFF2A3140 : 0xFF1E2430);
+    canvas->drawCircle(box.centerX(), box.centerY(), r, fill);
+
+    SkPaint ring;
+    ring.setAntiAlias(true);
+    ring.setStyle(SkPaint::kStroke_Style);
+    ring.setStrokeWidth(1.5f);
+    ring.setColor(hot ? ui::kText : ui::kLine);
+    canvas->drawCircle(box.centerX(), box.centerY(), r - 0.75f, ring);
+
+    const float a = r * 0.46f;                       // the arrow's radius
+    SkPaint arc;
+    arc.setAntiAlias(true);
+    arc.setStyle(SkPaint::kStroke_Style);
+    arc.setStrokeWidth(std::max(1.5f, r * 0.12f));
+    arc.setStrokeCap(SkPaint::kRound_Cap);
+    arc.setColor(hot ? ui::kText : ui::kDim);
+    const SkRect oval = SkRect::MakeLTRB(box.centerX() - a, box.centerY() - a,
+                                         box.centerX() + a, box.centerY() + a);
+    canvas->drawArc(oval, -60.0f, 300.0f, false, arc);   // from 1 o'clock round to 11
+
+    // The head at the arc's 1 o'clock end, pointing anticlockwise: winding back.
+    const float end = -60.0f * 3.14159265f / 180.0f;
+    const float ex = box.centerX() + a * std::cos(end), ey = box.centerY() + a * std::sin(end);
+    const float tx = std::sin(end), ty = -std::cos(end);          // anticlockwise tangent
+    const float nx = std::cos(end), ny = std::sin(end);           // outward normal
+    const float hs = r * 0.3f;
+    SkPathBuilder head;
+    head.moveTo(ex + tx * hs, ey + ty * hs);
+    head.lineTo(ex + nx * hs * 0.8f, ey + ny * hs * 0.8f);
+    head.lineTo(ex - nx * hs * 0.8f, ey - ny * hs * 0.8f);
+    head.close();
+    SkPaint headPaint(arc);
+    headPaint.setStyle(SkPaint::kFill_Style);
+    canvas->drawPath(head.detach(), headPaint);
+}
+
 // The input level over the last few seconds, as a waveform mirrored about a centre line,
 // newest at the right. Silence reads as a flat line, which is the failure this is here to
 // catch — a talk recorded with the microphone muted looks exactly like one that worked until
@@ -535,6 +585,13 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
     clockButton = SkRect::MakeXYWH(timerX - buttonSize - 18,
                                           barY - buttonSize * 0.72f, buttonSize, buttonSize);
     drawClockButton(canvas, clockButton, app.clock.running, buttonHot);
+    // Reset, on the timer's other side: only once there is time on it, and not during a
+    // recorded run, whose trace is measured against that time.
+    resetButton = SkRect::MakeEmpty();
+    if (app.clock.elapsed > 0.0 && !app.timing.recording()) {
+        resetButton = SkRect::MakeXYWH(timerX + timerW + 18, clockButton.top(), buttonSize, buttonSize);
+        drawResetButton(canvas, resetButton, over(resetButton));
+    }
     // Under the timer: what the big number is not saying. Recording takes the line, since
     // knowing the microphone is live matters more than any of it.
     float subX = timerX;
