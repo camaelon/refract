@@ -88,6 +88,7 @@ set(REFRACTPLAYER_SOURCES
     src/App.cpp
     src/AssetWindow.cpp
     src/Options.cpp
+    src/PerfTrace.cpp
     src/DeckSource.cpp
     src/Windowing.cpp
     src/BuildRunner.cpp

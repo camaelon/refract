@@ -28,6 +28,10 @@ struct Options {
     double duration = 0.0;          // planned talk length, seconds; 0 = no timer target
 
     double autoAdvanceSec = 0.0;    // 0 = stay on the slide
+    // --perf <out.json>: run the deck through on a timer in the real window, timing every
+    // frame and every slide change, write the record and exit (tools/perf_report.py reads it).
+    std::string perf;
+    double perfDwell = 3.0;         // --perf-dwell: how long each slide is shown
     bool autoVoice = false;
     bool sound = true;              // --no-sound clears it
     std::string sync;               // --sync host[:port]: follow and drive the slide with other players

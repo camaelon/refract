@@ -10,7 +10,7 @@ const std::vector<std::string>& optionFlags() {
         "--presenter", "--deck-view", "--build", "--editor", "--assets", "--captions", "--sync-serve",
         "--install-transcriber",
         "--fullscreen", "-f", "--display", "--duration", "--cpu", "--metal",
-        "--auto", "--auto-voice", "--no-sound",
+        "--auto", "--auto-voice", "--no-sound", "--perf", "--perf-dwell",
         "--record", "--record-audio",
         "--pdf", "--images", "--export-delay", "--pdf-delay",
         "--web", "--transcribe", "--caption-model", "--caption-lang",
@@ -60,6 +60,8 @@ Options parseOptions(int argc, char* argv[]) {
             if (o.autoAdvanceSec <= 0) o.autoAdvanceSec = 5.0;
         }
         else if (arg == "--auto-voice") o.autoVoice = true;
+        else if (arg == "--perf") o.perf = next("--perf");
+        else if (arg == "--perf-dwell") o.perfDwell = std::atof(next("--perf-dwell").c_str());
         else if (arg == "--no-sound") o.sound = false;
         else if (arg == "--sync") o.sync = next("--sync");
         else if (arg == "--sync-name") o.syncName = next("--sync-name");
@@ -146,6 +148,11 @@ std::string usageText() {
         "  --auto-voice       advance when a slide's voice-over finishes (plays the\n"
         "                     wavs a --record-audio run captured)\n"
         "  --no-sound         never play a slide's voice-over, even where one exists\n"
+        "  --perf <out.json>  run the deck through in the window, every slide for\n"
+        "                     --perf-dwell seconds (default 3), timing every frame and\n"
+        "                     slide change; writes the record and exits (read it with\n"
+        "                     tools/perf_report.py)\n"
+        "  --perf-dwell <s>   how long --perf shows each slide\n"
         "  --sync <host[:port]>  keep the slide, blank screen and laser in step with other\n"
         "                     players through the sync point at host (a player started\n"
         "                     with --sync-serve, or tools/sync.py) — any of them may move\n"

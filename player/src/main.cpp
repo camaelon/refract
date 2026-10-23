@@ -34,6 +34,7 @@
 #include "AudioRecorder.h"
 #include "Navigator.h"
 #include "Options.h"
+#include "PerfTrace.h"
 #include "Ink.h"
 #include "Pointer.h"
 #include "Presenter.h"
@@ -170,6 +171,8 @@ std::vector<std::string> changedOutputs;
 
 int  presenterMonitor = -1;   // --display for the presenter window, -1 = wherever it lands
 bool wantPresenter = false;
+refract::PerfTrace perf;          // --perf
+std::vector<int> perfSlides;      // --perf --slides: the slides the run visits, in order
 bool wantDeckView = false;
 bool wantBuildPanel = false;
 bool wantEditor = false;
@@ -296,8 +299,13 @@ void goToSlide(int index) {
     g.timeSinceSwitch = 0.0;
     app.slideEnteredAt = app.clock.elapsed;
     app.sinceSlideChange = 0.0;
+    const auto switchStart = std::chrono::steady_clock::now();
     playSlideAudio();
     loadCurrentFile();
+    if (perf.active()) {
+        perf.slideChanged(target, app.deck.at(target).title,
+                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - switchStart).count());
+    }
     noteSlideShown();
     if (!applyingRemoteSlide) slideSync.announce(g.currentIndex);
     if (slideEditor) slideEditor->showSlide(g.currentIndex);
@@ -1356,6 +1364,7 @@ void installResizeRedraw(GLFWwindow* w) {
 }
 
 void saveSessionIfChanged() {
+    if (perf.active()) return;       // a timing run leaves the presenter's setup as it was
     if (deckInput.empty()) return;
     captureSession();
     const std::string now = session.serialise();
@@ -1778,6 +1787,13 @@ int main(int argc, char* argv[]) {
     g.autoAdvanceSec = options.autoAdvanceSec;
     g.autoAdvanceOnVoice = options.autoVoice;
     g.voiceOverEnabled = options.sound;
+    if (!options.perf.empty()) {
+        // A timing run: every slide for the same time, nothing but the deck — no narration,
+        // no panels the session remembers — so the numbers are the deck's.
+        g.autoAdvanceSec = options.perfDwell > 0 ? options.perfDwell : 3.0;
+        g.voiceOverEnabled = false;
+        g.autoAdvanceOnVoice = false;
+    }
     wantPresenter = options.presenter;
     wantDeckView = options.deckView;
     wantBuildPanel = options.buildPanel;
@@ -2190,12 +2206,13 @@ int main(int argc, char* argv[]) {
     }
     // A flag on the command line still opens a panel the session had closed — asking for
     // something explicitly outranks a memory of not having wanted it.
-    if (wantPresenter || session.presenter) openPresenter();
-    if (options.captions || session.captions) openCaptions();
-    if (wantDeckView || session.deckView) openDeckView();
-    if (wantBuildPanel || session.build) openBuildPanel();
-    if (wantEditor || session.editor) openSlideEditor();
-    if (options.assets || session.assets) openAssetWindow();
+    const bool remembered = options.perf.empty();   // a timing run opens only what it is asked for
+    if (wantPresenter || (remembered && session.presenter)) openPresenter();
+    if (options.captions || (remembered && session.captions)) openCaptions();
+    if (wantDeckView || (remembered && session.deckView)) openDeckView();
+    if (wantBuildPanel || (remembered && session.build)) openBuildPanel();
+    if (wantEditor || (remembered && session.editor)) openSlideEditor();
+    if (options.assets || (remembered && session.assets)) openAssetWindow();
 
     // The panels, in the menu bar. Chosen from a menu they arrive on Cocoa's thread of
     // control rather than GLFW's, in the middle of the event pump — so the item only asks,
@@ -2275,12 +2292,35 @@ int main(int argc, char* argv[]) {
             say(app.playVoice ? "narration on \u00b7 N turns it off" : "narration off \u00b7 N turns it on", 6.0);
         }
     }
-    loadCurrentFile();
+    if (!options.perf.empty()) {
+        // From the first slide (of --slides, when given), whatever the session was left on.
+        std::string error;
+        perfSlides = refract::parseSlideSelection(options.slides, app.deck.size(), &error);
+        if (perfSlides.empty()) {
+            std::cerr << "refractplayer: --slides: " << error << "\n";
+            return 1;
+        }
+        g.currentIndex = perfSlides.front();
+        perf.start(options.perf, g.autoAdvanceSec, app.deck.size());
+        std::cerr << "perf: " << perfSlides.size() << " slides, " << g.autoAdvanceSec << "s each\n";
+    }
+    {
+        const auto loadStart = std::chrono::steady_clock::now();
+        loadCurrentFile();
+        if (perf.active() && !app.deck.empty())
+            perf.slideChanged(g.currentIndex, app.deck.at(g.currentIndex).title,
+                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - loadStart).count());
+    }
     app.slideEnteredAt = 0.0;
     playSlideAudio();
     noteSlideShown();
 
     // ── Loop ─────────────────────────────────────────────────────────
+    // Live, a slide's video is opened (and its first frame decoded) off the render thread:
+    // done inside the first draw it stalls that frame by 40–110 ms. Exports run in their own
+    // process and stay synchronous.
+    g.videoHost.setAsync(true);
+    auto perfLastFrame = std::chrono::steady_clock::now();
     auto startTime = std::chrono::steady_clock::now();
     double lastFrame = 0.0;
     double lastCapture = -1.0;
@@ -2314,10 +2354,13 @@ int main(int argc, char* argv[]) {
     // real work, and nobody reads their own slide at 60.
     constexpr double kCaptureInterval = 1.0 / 12.0;
 
+    double perfPollMs = 0.0, perfSwapMs = 0.0;     // since the last frame / the last swap
     while (!glfwWindowShouldClose(window)) {
+        const auto pollStart = std::chrono::steady_clock::now();
         pumpingEvents = true;
         glfwPollEvents();
         pumpingEvents = false;
+        perfPollMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pollStart).count();
 
         // A panel asked for from the menu bar.
         if (menuRequest != MenuPanel::None) {
@@ -2464,7 +2507,13 @@ int main(int argc, char* argv[]) {
                     // Reset here too: at the last slide step() has nowhere to go, and
                     // without this the timer would sit expired and retry every frame.
                     g.timeSinceSwitch = 0.0;
-                    step(1);
+                    if (perf.active()) {
+                        // a timing run goes through the slides it was given
+                        auto at = std::find(perfSlides.begin(), perfSlides.end(), g.currentIndex);
+                        if (at != perfSlides.end() && at + 1 != perfSlides.end()) goToSlide(*(at + 1));
+                    } else {
+                        step(1);
+                    }
                 }
             }
             if (holdForEdit) {
@@ -2513,6 +2562,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (g.needsRedraw) {
+            const auto frameStart = std::chrono::steady_clock::now();
             glfwMakeContextCurrent(window);
             glfwGetWindowSize(window, &winW, &winH);
             ensureSurface(winW, winH);
@@ -2533,8 +2583,26 @@ int main(int argc, char* argv[]) {
             drawSlideCovers(winW, winH);
 
             g.backend->present();
+            if (perf.active()) {
+                const auto presented = std::chrono::steady_clock::now();
+                using ms = std::chrono::duration<double, std::milli>;
+                perf.frame(g.currentIndex, app.sinceSlideChange,
+                           ms(frameStart - perfLastFrame).count(), ms(presented - frameStart).count(),
+                           perfPollMs, perfSwapMs);
+                perfLastFrame = frameStart;
+                perfPollMs = 0.0;
+            }
+            const auto swapStart = std::chrono::steady_clock::now();
             glfwSwapBuffers(window);
+            perfSwapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swapStart).count();
             g.needsRedraw = false;
+            // The run ends once the last slide has had its time.
+            if (perf.active() && g.currentIndex == perfSlides.back() && app.sinceSlideChange >= perf.dwell()) {
+                std::string error;
+                if (perf.write(&error)) std::cerr << "perf: written " << options.perf << "\n";
+                else std::cerr << "perf: " << error << "\n";
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
 
             char title[256];
             std::snprintf(title, sizeof(title), "refract — %s  [%d/%d]  %s",
