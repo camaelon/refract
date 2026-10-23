@@ -134,6 +134,10 @@ class Theme:
     # The camera badge a template (or settings.toml's [camera]) puts on every slide: the
     # same keys as `<camera | …>` plus x/y/anchor — see render._camera_overlay. None: no badge.
     camera_overlay: dict | None = None
+    # Device frames an include can be put in (``<clip.mp4 | frame=android>``): ``[frames.<name>]``
+    # tables — the frame image, the part of it that is the device (``bounds``), where the content
+    # goes (``screen``) and that screen's corner ``radius``, all in the image's own pixels.
+    frames: dict = field(default_factory=dict)
     chrome_color: str = "#66FFFFFF"     # deprecated (kept for back-compat); use chrome_alpha
     chrome_alpha: float = 0.55          # translucency of the whole chrome overlay
     # Progress bar: mark section starts with a small circle above the bar, and colour the
@@ -343,6 +347,40 @@ def _shader_source(cfg: dict, deck_dir: str) -> str | None:
     return None
 
 
+def _frame_spec(spec: dict, deck_dir: str) -> dict:
+    """A ``[frames.<name>]`` table made usable: the image found (beside settings.toml or in
+    includes/), ``bounds`` defaulting to the whole image, and the rest as floats.
+
+        image  = "android-case-edges.png"
+        bounds = [l, t, r, b]   # the device within the image (what is fitted to the box)
+        screen = [l, t, r, b]   # where the content goes; it is drawn under the frame
+        radius = 100            # the screen's corner radius
+        fit    = "fill"         # how a clip or picture meets the screen: fill (cover) | fit
+        screen_color = "#FF000000"   # behind content that does not cover the screen"""
+    import os
+    from .images import image_size
+    img = str(spec["image"])
+    path = img
+    if not os.path.isabs(img):
+        for base in (deck_dir, os.path.join(deck_dir, "includes")):
+            cand = os.path.join(base, img)
+            if os.path.isfile(cand):
+                path = os.path.abspath(cand)
+                break
+    iw, ih = image_size(path) if os.path.isfile(path) else (1, 1)
+    def rect(key, default):
+        v = spec.get(key)
+        try:
+            return [float(x) for x in v][:4] if v and len(v) >= 4 else default
+        except (TypeError, ValueError):
+            return default
+    bounds = rect("bounds", [0.0, 0.0, float(iw), float(ih)])
+    return {"image": path, "bounds": bounds, "screen": rect("screen", bounds),
+            "radius": float(spec.get("radius", 0.0) or 0.0),
+            "fit": str(spec.get("fit", "fill")).lower(),
+            "screen_color": str(spec.get("screen_color", "#FF000000"))}
+
+
 def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     """Build a Theme from a parsed settings.toml dict.
 
@@ -373,6 +411,10 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.table_header_bg = th.get("table_header_bg", t.table_header_bg)
     if "table_corner_radius" in th:
         t.table_corner_radius = float(th["table_corner_radius"])
+
+    for name, spec in (settings.get("frames") or {}).items():
+        if isinstance(spec, dict) and spec.get("image"):
+            t.frames[str(name).lower()] = _frame_spec(spec, deck_dir)
 
     cam = settings.get("camera")
     if isinstance(cam, dict) and cam:

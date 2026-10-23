@@ -1146,7 +1146,8 @@ def run_once(args) -> int:
         # ...unless it asks for a start or a still: those are options of the embedded player,
         # which a bare movie file handed to the viewer cannot carry.
         if videos and not slide.get("title") and len(blocks) == 1 \
-                and not videos[0].get("start") and videos[0].get("still") is None:
+                and not videos[0].get("start") and videos[0].get("still") is None \
+                and not videos[0].get("frame"):
             v = videos[0]
             dst = os.path.join(out_dir, name + os.path.splitext(v["path"])[1].lower())
             copies.append((v["path"], dst))
@@ -1164,7 +1165,8 @@ def run_once(args) -> int:
 
         # Lone prebuilt .rc (no title / other content): whole-slide passthrough.
         if (not slide.get("title") and len(blocks) == 1
-                and blocks[0]["kind"] == "rc_include" and not blocks[0].get("json")):
+                and blocks[0]["kind"] == "rc_include" and not blocks[0].get("json")
+                and not blocks[0].get("frame")):
             copies.append((blocks[0]["path"], rc_path))
             prev = None; prev_theme = None
             continue
@@ -1175,7 +1177,7 @@ def run_once(args) -> int:
         #   • rc/json with a crop/fit   → *frame* it (crop/scale need a fixed-size document, so
         #     we embed rather than splice flat): copy the .rc, or compile the .json via json2rc.
         for b in media_blocks:
-            framed = b.get("crop") or b.get("fit") or b.get("zooms")
+            framed = b.get("crop") or b.get("fit") or b.get("zooms") or b.get("frame")
             if b["kind"] == "rc_include" and not b.get("json"):
                 base = os.path.basename(b["path"])
                 copies.append((b["path"], os.path.join(out_dir, "media", base)))

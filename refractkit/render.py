@@ -724,6 +724,59 @@ def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
             "children": [inner]}
 
 
+def _frame_of(block: dict, theme: Theme):
+    """The device frame an include asked for (``frame=<name>``) from the theme, or None."""
+    name = block.get("frame")
+    if not name:
+        return None
+    return (getattr(theme, "frames", None) or {}).get(str(name).lower())
+
+
+def _frame_box(content: dict, frame: dict, block: dict, avail_w: float, box_h: float,
+               counter: list, debug: bool) -> dict:
+    """Put an embed node in a device frame. The box takes the device's aspect (``bounds`` of
+    the frame image) at the largest size that fits — or ``width``/``height`` when asked — and
+    holds, back to front: the screen (``screen`` scaled into the box, clipped to its rounded
+    corners, the content filling it) and the frame image over it, scaled so its ``bounds``
+    meet the box. ``content`` is the bare embed node; this sets its size."""
+    bl, bt, br, bb = frame["bounds"]
+    sl, st, sr, sb = frame["screen"]
+    ratio = (br - bl) / (bb - bt) if bb > bt else 1.0
+    bw, bh = _embed_dims(avail_w, box_h, ratio, _embed_size(block))
+    k = bw / (br - bl) if br > bl else 1.0
+    sx, sy = round((sl - bl) * k, 2), round((st - bt) * k, 2)
+    sw, sh = round((sr - sl) * k, 2), round((sb - st) * k, 2)
+    rad = round(frame["radius"] * k, 2)
+    content["modifiers"] = dbg([{"width": sw}, {"height": sh}], debug)
+    screen_mods: list = [{"width": sw}, {"height": sh}]
+    if rad > 0:
+        screen_mods.append({"clip": rad})
+    screen_mods.append({"background": frame.get("screen_color", "#FF000000")})
+    screen = {"type": "box", "modifiers": dbg(screen_mods, debug), "children": [content]}
+    counter[0] += 1
+    var = f"__frame{counter[0]}"
+    from .images import image_size
+    iw, ih = image_size(frame["image"])
+    art = {"type": "canvas", "modifiers": dbg([{"width": round(bw, 2)}, {"height": round(bh, 2)}], debug),
+           "commands": [{"type": "addbitmap", "image": frame["image"], "varName": var},
+                        {"type": "save", "commands": [
+                            {"type": "cliprect", "left": 0.0, "top": 0.0, "right": round(bw, 2), "bottom": round(bh, 2)},
+                            {"type": "drawbitmap", "image": "$" + var,
+                             "left": round(-bl * k, 2), "top": round(-bt * k, 2),
+                             "right": round((iw - bl) * k, 2), "bottom": round((ih - bt) * k, 2)}]}]}
+    device = {"type": "box", "modifiers": dbg([{"width": round(bw, 2)}, {"height": round(bh, 2)}], debug),
+              "horizontalAlignment": "start", "verticalAlignment": "top",
+              "children": [{"type": "box", "modifiers": dbg([{"padding": [sx, sy, 0.0, 0.0]}], debug),
+                            "children": [screen]}, art]}
+    if _embed_size(block):
+        align = block.get("align", "start")
+        return {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": round(bh, 2)}], debug),
+                "horizontalAlignment": align if align in ("start", "center", "end") else "start",
+                "verticalAlignment": "top", "children": [device]}
+    return {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": round(float(box_h), 2)}], debug),
+            "horizontalAlignment": "center", "verticalAlignment": "center", "children": [device]}
+
+
 def _embed_size(block: dict):
     """(width, height) an include asked for outright, or None."""
     w, h = block.get("width"), block.get("height")
@@ -748,7 +801,13 @@ def render_video(block: dict, theme: Theme, debug: bool,
         "until": ("%g" % block["until"]) if block.get("until") is not None and block["until"] > (block.get("start") or 0) else "",
         "loop": "0" if block.get("loop") is False else "",
         "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or []),
+        "fit": "fill" if (block.get("fit") or (_frame_of(block, theme) or {}).get("fit")) == "fill" else "",
     })
+    frame = _frame_of(block, theme)
+    if frame:
+        node = {"type": "custom", "config": config, "children": []}
+        return _with_caption(_frame_box(node, frame, block, avail_w, box_h, [0], debug),
+                             block, theme, debug, avail_h)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
                      size=_embed_size(block), align=block.get("align", "start"))
@@ -796,6 +855,11 @@ def render_camera(block: dict, theme: Theme, debug: bool,
     box_h = avail_h - cap_h
     dims = _embed_dims(avail_w, box_h, block.get("ratio"), _embed_size(block))
     config = _camera_config({**block, "_zoomed": True}, dims)   # deck.py already turned zoom into crop
+    frame = _frame_of(block, theme)
+    if frame:
+        node = {"type": "custom", "config": config, "children": []}
+        return _with_caption(_frame_box(node, frame, block, avail_w, box_h, [0], debug),
+                             block, theme, debug, avail_h)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
                      size=_embed_size(block), align=block.get("align", "start"))
@@ -856,6 +920,11 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):      # slide-driven documents, see deck.py
         if block.get(k): opts[k] = block[k]
     config = _media_config("rc", src, opts)
+    frame = _frame_of(block, theme)
+    if frame:
+        node = {"type": "custom", "config": config, "children": []}
+        return _with_caption(_frame_box(node, frame, block, avail_w, box_h, [0], debug),
+                             block, theme, debug, avail_h)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
                      size=_embed_size(block), align=block.get("align", "start"))
@@ -964,6 +1033,23 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         return out
     elif kind == "code":
         out = render_code(block, theme, debug, avail_w=avail_w, avail_h=avail_h)
+    elif kind == "image" and _frame_of(block, theme):
+        # The picture fills the screen (or fits it, with the frame's ``fit``), unrounded — the
+        # screen's own clip rounds it.
+        _, _, cap_h = _caption_metrics(block, theme)
+        frame = _frame_of(block, theme)
+        bl, bt, br, bb = frame["bounds"]
+        sl, st, sr, sb = frame["screen"]
+        bw, _ = _embed_dims(avail_w, avail_h - cap_h, (br - bl) / (bb - bt), _embed_size(block))
+        k = bw / (br - bl)
+        sw, sh = round((sr - sl) * k, 2), round((sb - st) * k, 2)
+        inner = render_image({**block, "opts": {k2: v for k2, v in (block.get("opts") or {}).items()
+                                                if k2 not in ("width", "height", "align", "clip", "radius")}
+                              | {"clip": 0, "_cover": frame.get("fit") == "fill"}},
+                             theme, debug, sw, sh, counter, align="center")
+        holder = {"type": "box", "children": inner}
+        out = _with_caption(_frame_box(holder, frame, block, avail_w, avail_h - cap_h, counter, debug),
+                            block, theme, debug, avail_h)
     elif kind == "image":
         _, _, cap_h = _caption_metrics(block, theme)
         out = _with_caption(render_image(block, theme, debug, avail_w, avail_h - cap_h, counter, align=align),
@@ -997,7 +1083,7 @@ def render_block(block: dict, body_size: float, theme: Theme, debug: bool,
         # Prefer splicing the source JSON (a flat document, no host needed); otherwise embed
         # the prebuilt .rc live as a nested document via the rc-document host. A ``ratio`` frames
         # the embed in a fixed-aspect box, which needs the live custom-component path.
-        if block.get("json") and not block.get("ratio"):
+        if block.get("json") and not block.get("ratio") and not block.get("frame"):
             return _apply_reveal(_clipped_splice(block["json"], theme, debug, avail_h, block), block)
         return _apply_reveal(render_rc_embed(block, theme, debug, avail_w, avail_h), block)
 

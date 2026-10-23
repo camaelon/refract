@@ -275,6 +275,10 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         if z:
             fx, fy = parse_focus(opts.get("focus")) or (0.5, 0.5)
             block["zooms"] = [(-1.0, fx, fy, z)]
+    # ``frame=<name>`` puts the embed in a device frame the theme defines (``[frames.<name>]``).
+    if opts.get("frame") and block["kind"] in _CAPTIONABLE and block["kind"] != "json_include":
+        if str(opts["frame"]).lower() not in ("none", "off", "no", "0"):
+            block["frame"] = str(opts["frame"]).lower()
     if opts.get("title") and block["kind"] in _CAPTIONABLE:
         block["caption"] = opts["title"]
     # ``clip=circle`` | ``clip=<px>`` | ``clip=none`` rounds (or fully rounds, or squares) the

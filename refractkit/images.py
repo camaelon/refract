@@ -207,7 +207,8 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
         ch = dh
     else:
         cw, ch = float(avail_w), float(avail_h)
-        scale = min(cw / iw, ch / ih)
+        # ``_cover`` (a device frame's fill): the picture covers the box, its overflow clipped.
+        scale = (max if opts.get("_cover") else min)(cw / iw, ch / ih)
         dw, dh = iw * scale, ih * scale
 
     opt_align = opts.get("align", opts.get("h_align", align))
@@ -248,6 +249,9 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
             rad = min(float(raw_rad), dw / 2.0, dh / 2.0)
         except (TypeError, ValueError):
             rad = 0.0
+    if opts.get("_cover") and rad <= 0.5:
+        draw = {"type": "save", "commands": [
+            {"type": "cliprect", "left": 0.0, "top": 0.0, "right": cw, "bottom": ch}, draw]}
     if rad > 0.5:
         clip = f"__imgclip{counter[0]}"
         commands += _rounded_rect_path(clip, left, top, right, bottom, round(rad, 2))

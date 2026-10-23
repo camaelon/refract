@@ -364,6 +364,20 @@ mirror = true
   The playing slide doesn't re-animate the rest of the page; only the video starts. A video
   that is alone on its slide normally plays as the file itself; with any of these options it is
   embedded instead, since a bare movie file can't carry them.
+- `frame=<name>` (video, document, image, camera) — show it inside a device frame the theme
+  defines. A `[frames.<name>]` table in settings.toml names the frame image and three things in
+  that image's own pixels: `bounds`, the device (fitted to the box, so the box takes its
+  aspect), `screen`, where the content goes (drawn under the frame, clipped to `radius`), and
+  optionally `fit` (`fill`, the default, covers the screen; `fit` letterboxes) and
+  `screen_color`:
+  ```toml
+  [frames.android]
+  image  = "android-case-edges.png"
+  bounds = [1554, 149, 2439, 2012]
+  screen = [1595, 189, 2391, 1970]
+  radius = 103
+  ```
+  `<demo.mp4 | frame=android>`. `width=`/`height=` size the device, as they size any embed.
 
 A `crop`/`fit` on a **`.json` or `.rc` include** *frames* it: instead of splicing it flat
 into the slide (which re-lays-it-out to fill), refract embeds it as a nested document at its

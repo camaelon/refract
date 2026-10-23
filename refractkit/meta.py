@@ -138,6 +138,8 @@ INCLUDE_OPTS = [
      ["video", "document"], True),
     ("ratio", "frame the embed in a box of this aspect ratio, e.g. 16:9", [],
      ["video", "document"], True),
+    ("frame", "put it in a device frame from the theme's [frames.<name>], e.g. android", [],
+     ["video", "document", "image", "camera"], True),
     ("title", "a caption drawn under the embed — quote it for several words", [],
      ["video", "document", "image"], True),
     ("clip", "the box's shape: circle, a corner radius in px, or none", ["circle", "none"],
