@@ -25,4 +25,8 @@ bool parseWaveShape(const std::vector<uint8_t>& bytes, size_t bins, WaveShape* s
 // The same from a file. False when it cannot be read or parsed.
 bool readWaveShape(const std::string& path, size_t bins, WaveShape* shape);
 
+// A wav's length in seconds from its header alone (the fmt byte rate and the data size), or 0
+// when it is not a wav this understands. Cheap enough to ask of every slide at load.
+double wavDurationSeconds(const std::string& path);
+
 }  // namespace refract

@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -106,6 +107,19 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
             for (const auto& rec : doc["slides"]) {
                 if (rec.contains("file")) byFile[rec["file"].get<std::string>()] = &rec;
             }
+            // The speakers' own colours, when the deck names them ("#AARRGGBB" or "#RRGGBB").
+            mSpeakerColors.clear();
+            if (doc.contains("authors") && doc["authors"].is_object()) {
+                for (auto it = doc["authors"].begin(); it != doc["authors"].end(); ++it) {
+                    if (!it.value().is_string()) continue;
+                    std::string hex = it.value().get<std::string>();
+                    if (!hex.empty() && hex[0] == '#') hex = hex.substr(1);
+                    if (hex.size() != 6 && hex.size() != 8) continue;
+                    uint32_t v = static_cast<uint32_t>(std::strtoul(hex.c_str(), nullptr, 16));
+                    if (hex.size() == 6) v |= 0xFF000000u;
+                    mSpeakerColors[it.key()] = v;
+                }
+            }
             int matched = 0;
             for (auto& slide : mSlides) {
                 auto it = byFile.find(slide.file);
@@ -118,6 +132,13 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
                 slide.author        = rec.value("author", std::string());
                 slide.sectionNumber = rec.value("section", 0);
                 slide.duration = rec.value("duration", 0.0);
+                slide.planPart = false;
+                slide.planTitle.clear();
+                if (rec.contains("plan") && rec["plan"].is_object()) {
+                    slide.planPart = true;
+                    slide.duration = rec["plan"].value("duration", 0.0);
+                    slide.planTitle = rec["plan"].value("title", std::string());
+                }
                 slide.hasNotes      = rec.value("notes", false);
                 slide.srcFile       = rec.value("src", std::string());
                 slide.srcIndex      = rec.value("src_index", -1);
@@ -143,13 +164,21 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
                                  ? mSlides[i - 1].srcStep + 1 : 0;
     }
 
+    // ── Speakers, in the order they first speak ──────────────────────
+    mSpeakers.clear();
+    for (const auto& slide : mSlides) {
+        if (!slide.author.empty()
+            && std::find(mSpeakers.begin(), mSpeakers.end(), slide.author) == mSpeakers.end())
+            mSpeakers.push_back(slide.author);
+    }
+
     // ── Sections ─────────────────────────────────────────────────────
     for (const auto& slide : mSlides) {
-        if (slide.type == "section" || slide.sectionNumber > 0) {
+        if (slide.type == "section" || slide.sectionNumber > 0 || slide.planPart) {
             Section sec;
             sec.number     = slide.sectionNumber > 0 ? slide.sectionNumber
                                                      : static_cast<int>(mSections.size()) + 1;
-            sec.title      = slide.title;
+            sec.title      = slide.planPart && !slide.planTitle.empty() ? slide.planTitle : slide.title;
             sec.firstSlide = slide.index;
             sec.duration   = slide.duration;
             mSections.push_back(sec);
@@ -232,6 +261,22 @@ int Deck::nextSectionSlide(int slide) const {
         if (sec.firstSlide > slide) return sec.firstSlide;
     }
     return -1;
+}
+
+}  // namespace refract
+
+namespace refract {
+
+uint32_t Deck::speakerColor(const std::string& name) const {
+    auto it = mSpeakerColors.find(name);
+    if (it != mSpeakerColors.end()) return it->second;
+    // No colour of their own: one of a few that tell apart on a dark panel, in the order the
+    // speakers first appear — so the same deck colours them the same way every time.
+    static const uint32_t kPalette[] = {0xFF7FE3FF, 0xFFFFC27D, 0xFFB8A0F0, 0xFF6FE3C0,
+                                        0xFFFF8F87, 0xFF8FB6F2};
+    auto at = std::find(mSpeakers.begin(), mSpeakers.end(), name);
+    const size_t i = at == mSpeakers.end() ? 0 : static_cast<size_t>(at - mSpeakers.begin());
+    return kPalette[i % (sizeof(kPalette) / sizeof(kPalette[0]))];
 }
 
 }  // namespace refract

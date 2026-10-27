@@ -423,6 +423,11 @@ def manifest_record(slide: dict, index: int, rc_path: str, deck_dir: str) -> dic
     # Only on a slide that starts a section: a duration is a claim about a *part* of the
     # talk, and the parts are the sections. Written anywhere else it would be summed into
     # nothing, so the build says so rather than letting it look like it worked.
+    # `:: include : <part> duration=8m` — the same claim about an included sub-deck, carried on
+    # its first slide (see load_deck). A part of the plan without being a section slide.
+    part = slide.get("plan_part")
+    if part and part.get("duration", 0) > 0:
+        record["plan"] = {"duration": round(float(part["duration"]), 3), "title": part.get("title") or ""}
     planned = meta_duration(slide)
     if planned > 0:
         if slide.get("section_number"):
@@ -547,7 +552,8 @@ def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
     # and surface the name in the chrome.
     author = meta.get("author")
     if author:
-        changes["slide_author"] = author
+        if getattr(theme, "chrome_author", True):   # `[chrome] author = false` keeps names off slides
+            changes["slide_author"] = author
         if author in theme.authors:
             changes["accent"] = theme.authors[author]
     # Per-slide content-reveal override: `reveal=stagger` / `reveal=immediate`.
@@ -1299,6 +1305,10 @@ def run_once(args) -> int:
         "build": {"transitions": transitions, "debug": bool(args.debug)},
         "slides": manifest,
     }
+    # The speakers' colours (`[authors]` in settings.toml), for the player to tell them apart
+    # by — the presenter's progress bar colours each speaker's stretch of the talk.
+    if theme.authors:
+        deck_json["authors"] = {str(k): str(v) for k, v in theme.authors.items()}
     with open(os.path.join(out_dir, "deck.json"), "w") as f:
         json.dump(deck_json, f, indent=2)
     print(f"wrote {os.path.join(out_dir, 'deck.json')}  [{len(manifest)} slides]")

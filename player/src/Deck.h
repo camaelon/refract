@@ -12,6 +12,8 @@
 #include <filesystem>
 #include "Plan.h"
 
+#include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,10 @@ struct Slide {
     std::string author;        // @author attribution, when the deck has one
     int sectionNumber = 0;     // set when this slide *is* a section heading
     double duration = 0.0;     // `duration=` on a section heading, in seconds
+    // `:: include : <part> duration=` — this slide starts a planned part of the talk without
+    // being a section heading (the included sub-deck's first slide).
+    bool planPart = false;
+    std::string planTitle;
     int inSection = 0;         // the section this slide falls under (0 = front matter)
     bool hasNotes = false;
     std::string notes;         // loaded on demand by notesFor()
@@ -87,6 +93,11 @@ struct Section {
 
 class Deck {
 public:
+    // The speakers, in the order they first speak (`@name` on a slide or an include), and
+    // the colour each is drawn in: the deck's own (`[authors]` in settings.toml) when it gives
+    // one, else a fixed palette in order of appearance. 0xAARRGGBB.
+    const std::vector<std::string>& speakers() const { return mSpeakers; }
+    uint32_t speakerColor(const std::string& name) const;
     // Build from the playlist rcplayer collected. `source` is the directory, zip path, or
     // file the user named — it is where the manifest is looked for.
     void build(const std::vector<std::string>& entries, const std::string& source);
@@ -136,6 +147,8 @@ private:
     std::vector<Slide>   mSlides;
     std::vector<Section> mSections;
     std::vector<PlanSection> mPlan;
+    std::vector<std::string> mSpeakers;
+    std::map<std::string, uint32_t> mSpeakerColors;
     bool mHasManifest = false;
     std::string mName;
 };

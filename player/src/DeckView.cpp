@@ -3,6 +3,8 @@
 #include "Scrolling.h"
 
 #include "DeckOrder.h"
+#include "Plan.h"
+#include "Timing.h"
 #include "ViewGeometry.h"
 #include "Thumbs.h"
 #include "Ui.h"
@@ -877,8 +879,21 @@ void DeckViewWindow::render(App& app) {
                  impl.foldButtonHot ? ui::kText : ui::kDim);
         countRight = impl.foldButton.left() - 14;
     }
-    drawTextRight(canvas, std::to_string(deck.size()) + " slides", countRight, 32,
-                  uiFont(13), ui::kDim);
+    // The talk's length beside its size: what the plan says (`duration=` on sections and
+    // includes) and what the last rehearsal took, each only when there is one.
+    {
+        SkFont countFont = uiFont(13);
+        float right = countRight;
+        if (!app.timing.empty()) {
+            right -= drawTextRight(canvas, "rehearsed " + formatDuration(app.timing.total()), right, 32,
+                                   countFont, ui::kAhead) + 18;
+        }
+        if (deck.plannedLength() > 0) {
+            right -= drawTextRight(canvas, "planned " + formatDuration(deck.plannedLength()), right, 32,
+                                   countFont, ui::kAccent) + 18;
+        }
+        drawTextRight(canvas, std::to_string(deck.size()) + " slides", right, 32, countFont, ui::kDim);
+    }
 
     if (impl.filtering) {
         // While a filter is being typed it replaces the hint: it is the only thing on the
@@ -1136,7 +1151,23 @@ void DeckViewWindow::render(App& app) {
         }
         const float numW = drawText(canvas, num, card.left() + 2, textY, numFont,
                                     isCurrent ? ui::kAhead : ui::kDim);
-        drawText(canvas, ellipsize(name, nameFont, cardW - numW - 12),
+        // What the last rehearsal spent here (on a folded run, the run's total), at the end of
+        // the title line — the title gives way to it.
+        float spentW = 0.0f;
+        if (!app.timing.empty()) {
+            double spent = 0.0;
+            bool any = false;
+            for (int v = cell.firstSlide; v <= cell.lastSlide && v < deck.size(); v++) {
+                const Slide& vs = deck.at(v);
+                if (const TimingEntry* e = app.timing.find(vs.sourceKey(), vs.file)) {
+                    spent += e->duration;
+                    any = true;
+                }
+            }
+            if (any) spentW = drawTextRight(canvas, formatDuration(spent), card.right() - 2, textY,
+                                            uiFont(11), ui::kAhead) + 8;
+        }
+        drawText(canvas, ellipsize(name, nameFont, cardW - numW - 12 - spentW),
                  card.left() + numW + 8, textY, nameFont, ui::kText);
         if (!cell.folded() && slide.hasNotes) {
             drawTextRight(canvas, "note", card.right() - 2, textY + 14, uiFont(10), ui::kDim);
@@ -1178,6 +1209,19 @@ void DeckViewWindow::render(App& app) {
     // reserved under the cards, so picking up a run costs the grid nothing — which is the
     // point: the deck stays a plain grid of slides, and the runs are marked on top of it.
     impl.barHits.clear();
+    // The plan, laid against the bars: a section bar starts at its heading, an include bar at
+    // its first slide — exactly where `duration=` put the part's start.
+    const std::vector<PlanSlot> slots = planSlots(deck.plan());
+    auto planFor = [&](const RunBar& bar) -> const PlanSlot* {
+        if (!bar.included) {
+            for (const RunBar& other : impl.bars)
+                if (other.included && other.firstSlide == bar.firstSlide) return nullptr;
+        }
+        for (size_t k = 0; k < slots.size() && k < deck.plan().size(); k++) {
+            if (deck.plan()[k].firstSlide == bar.firstSlide) return &slots[k];
+        }
+        return nullptr;
+    };
     for (size_t bi = 0; bi < impl.bars.size(); bi++) {
         if (impl.barHidden[bi]) continue;     // its slides are inside a folded run
         const RunBar& bar = impl.bars[bi];
@@ -1206,7 +1250,13 @@ void DeckViewWindow::render(App& app) {
                 // marker: this strip is a thing you can grab, not a rule under the cards.
                 x += drawText(canvas, shut ? ">" : "v", x, y + 9, tag, tone) + 5;
                 if (cell == firstCell) {
-                    const std::string text = bar.label + "  " + std::to_string(bar.slides());
+                    std::string text = bar.label + "  " + std::to_string(bar.slides());
+                    // "8:00 at 12:00": its budget and when the plan has it start. An untimed
+                    // part shows the average it is counted as, marked as such.
+                    if (const PlanSlot* slot = planFor(bar)) {
+                        text += std::string("   ") + (slot->timed ? "" : "~") + formatDuration(slot->duration)
+                                + "  at " + formatDuration(slot->start);
+                    }
                     drawText(canvas, ellipsize(text, tag, strip.width() - 26), x, y + 9, tag,
                              tone);
                 }

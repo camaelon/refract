@@ -92,6 +92,9 @@ struct App {
     // deck is loaded rather than probed while drawing: the answer needs the voice index and a
     // look at the disk, and the deck view asks it of every card on screen.
     std::vector<char> voice;
+    // How long each slide's narration runs, in seconds (0 when it has none) — what the
+    // progress bar is measured in where a slide has a recording.
+    std::vector<double> voiceSeconds;
     bool hasVoice(int slide) const {
         return slide >= 0 && slide < static_cast<int>(voice.size()) && voice[slide];
     }

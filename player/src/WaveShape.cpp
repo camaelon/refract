@@ -1,4 +1,5 @@
 #include "WaveShape.h"
+#include <cstdio>
 
 #include <algorithm>
 #include <cmath>
@@ -81,6 +82,37 @@ bool readWaveShape(const std::string& path, size_t bins, WaveShape* shape) {
     f.seekg(0);
     f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     return parseWaveShape(bytes, bins, shape);
+}
+
+double wavDurationSeconds(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return 0.0;
+    auto u32 = [](const unsigned char* p) {
+        return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+    };
+    unsigned char head[12];
+    double seconds = 0.0;
+    if (std::fread(head, 1, 12, f) == 12 && std::memcmp(head, "RIFF", 4) == 0
+        && std::memcmp(head + 8, "WAVE", 4) == 0) {
+        uint32_t byteRate = 0;
+        unsigned char ch[8];
+        while (std::fread(ch, 1, 8, f) == 8) {
+            const uint32_t size = u32(ch + 4);
+            if (std::memcmp(ch, "fmt ", 4) == 0) {
+                unsigned char fmt[16];
+                if (size < 16 || std::fread(fmt, 1, 16, f) != 16) break;
+                byteRate = u32(fmt + 8);
+                if (std::fseek(f, long(size - 16 + (size & 1)), SEEK_CUR) != 0) break;
+            } else if (std::memcmp(ch, "data", 4) == 0) {
+                if (byteRate > 0) seconds = double(size) / byteRate;
+                break;
+            } else if (std::fseek(f, long(size + (size & 1)), SEEK_CUR) != 0) {
+                break;
+            }
+        }
+    }
+    std::fclose(f);
+    return seconds;
 }
 
 }  // namespace refract

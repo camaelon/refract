@@ -207,15 +207,19 @@ digraph G { rankdir=LR; A -> B -> C }
 - `:: <type> [flags] [@author] [: <speaker>] [ratio] [key=value…]` right after the
   separator sets slide metadata:
   - `@author` attributes the slide to an author from `[authors]` — the slide takes
-    that author's colour as its accent and shows their name in the chrome. On an
+    that author's colour as its accent and shows their name in the chrome (unless
+    `[chrome] author = false`, which keeps names off the slides; the presenter still
+    colours its progress bar by speaker). On an
     `include` it attributes every slide it pulls in (a slide's own `@author` wins).
   - `<speaker>` (after `:`) selects an accent colour from `[speakers]`.
   - `[ratio]` sets pane widths (see Panes); `key=value` are per-slide overrides
     (`bg`, `accent`, `shader=none`, `transition=push`…); bare-word `flags` include
     `fragment` (see Fragments).
   - `duration=` on a **`:: section`** says how long that part of the talk should take
-    (`12m`, `90s`, `1h30m`, or a bare `45` for minutes). The player adds them up for the
-    talk clock and paces the run against them — see
+    (`12m`, `90s`, `1h30m`, or a bare `45` for minutes). On an **`:: include`** it plans the
+    whole included sub-deck as one part — `:: include : capabilities duration=8m` — named
+    after its first slide (or, if that slide is a section, simply that section's duration).
+    The player adds them up for the talk clock and paces the run against them — see
     [Planning a talk](player/README.md#planning-a-talk-without-rehearsing-it).
 - The first `# heading` is the title.
 - An `*italic*` line right under the title is a **subtitle** (accent colour).

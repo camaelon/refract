@@ -35,6 +35,35 @@ static void testNoPlanAtAll() {
     CHECK(refract::plannedFraction({}, 10, 60) < 0, "likewise with no sections");
 }
 
+static void testTheSlotsLineUp() {
+    // Each section is due when the ones before it are done; an untimed one is the average.
+    const auto slots = refract::planSlots({{0, 600}, {10, 0}, {20, 1200}});
+    CHECK(slots.size() == 3, "a slot per section");
+    CHECK(near(slots[0].start, 0) && near(slots[0].duration, 600) && slots[0].timed,
+          "the first starts at the top");
+    CHECK(near(slots[1].start, 600) && near(slots[1].duration, 900) && !slots[1].timed,
+          "an untimed one starts after it and is worth the average");
+    CHECK(near(slots[2].start, 1500) && near(slots[2].duration, 1200), "and so on");
+    CHECK(refract::planSlots({{0, 0}}).empty(), "nothing planned, no slots");
+}
+
+static void testTheTimeline() {
+    // Nothing known: the slide count.
+    auto t = refract::slideTimeline({}, 4, {});
+    CHECK(t.size() == 5 && near(t[4], 4) && near(t[2], 2), "no durations at all: one unit a slide");
+    // Narration known for some: the rest take the average of it.
+    t = refract::slideTimeline({}, 4, {10, 0, 30, 0});
+    CHECK(near(t[1], 10) && near(t[2], 30) && near(t[3], 60) && near(t[4], 80),
+          "unnarrated slides take the narrated average");
+    // A plan: a part's budget split over its slides, after its narrated ones.
+    t = refract::slideTimeline({{0, 100}, {2, 60}}, 4, {0, 0, 20, 0});
+    CHECK(near(t[1], 50) && near(t[2], 100), "part one: 100 s over two slides");
+    CHECK(near(t[3], 120) && near(t[4], 160), "part two: 20 s narrated, the other 40");
+    // A part over budget on narration alone still gives its other slides a sliver.
+    t = refract::slideTimeline({{0, 10}}, 2, {30, 0});
+    CHECK(near(t[1], 30) && t[2] > t[1], "never zero for a slide");
+}
+
 static void testTheTotalIsTheSum() {
     CHECK(near(refract::plannedTotal(evenTalk()), 1800), "three tens make thirty minutes");
     CHECK(near(refract::plannedTotal({{0, 300}, {5, 900}}), 1200), "and uneven parts add up");
@@ -105,6 +134,8 @@ static void testNonsense() {
 int main() {
     testNoPlanAtAll();
     testTheTotalIsTheSum();
+    testTheSlotsLineUp();
+    testTheTimeline();
     testASectionWithNoDurationTakesTheAverage();
     testWhereTheTalkShouldBe();
     testPastTheEnd();

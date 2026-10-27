@@ -1047,6 +1047,16 @@ instantaneous and every section after it would read as late. And the first secti
 starts at the top of the deck rather than at its own heading, so a title slide in front of it
 is inside the plan rather than in a gap before it.
 
+The presenter's **progress bar** is coloured by speaker — each `@name` (on a slide or an
+`:: include`) gets its colour from `[authors]` in settings.toml, or one of a fixed palette in
+the order they first speak — solid where the talk has been and a faint tint of it ahead, with a
+legend of the speakers above the bar.
+
+The **deck view** shows the plan too: the talk's planned length (and the last rehearsal's)
+beside the slide count, each section's or include's budget and when it is due on its bar —
+`5:00 at 12:00`, with a `~` on a part that states no duration and is counted as the average —
+and, when there is a rehearsal, what it spent on each slide at the end of the slide's title.
+
 A `duration=` on a slide that starts no section is **reported by the build** rather than
 silently doing nothing — a duration is a claim about a part of the talk, and the parts are
 the sections.

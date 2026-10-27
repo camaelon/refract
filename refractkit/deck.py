@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -48,6 +49,29 @@ def load_deck(deck_dir: str, visited: set[str], root_dir: str | None = None) -> 
                 for sub in sub_slides:
                     sub.setdefault("src_via", []).insert(
                         0, {"src": md_path, "src_index": slide.get("src_index")})
+                # ``duration=`` on the include plans the whole sub-deck as one part of the talk
+                # (``:: include : capabilities duration=8m``), as ``:: section duration=`` plans
+                # a section: it rides on the first slide the include pulls in. If that slide is
+                # a section already, it simply becomes that section's duration.
+                inc_dur = (meta.get("overrides") or {}).get("duration")
+                if inc_dur is not None and sub_slides:
+                    from .meta import parse_duration
+                    seconds = parse_duration(inc_dur)
+                    first = sub_slides[0]
+                    fm = first.get("meta") or {}
+                    if seconds <= 0:
+                        print(f"note: `:: include : {name} duration={inc_dur}` is not a duration "
+                              f"(12m, 90s, 1h30m, or minutes)", file=sys.stderr)
+                    elif fm.get("type", "").lower() == "section" and "duration" not in (fm.get("overrides") or {}):
+                        fm.setdefault("overrides", {})["duration"] = inc_dur
+                        first["meta"] = fm
+                    else:
+                        first["plan_part"] = {"duration": seconds, "title": first.get("title") or name}
+                    timed = [s for s in sub_slides[1:] if (s.get("meta") or {}).get("type", "").lower() == "section"]
+                    if timed:
+                        print(f"note: `:: include : {name}` has a duration and sections of its own — "
+                              f"each section starts a new part of the plan, so the include's time "
+                              f"covers only the slides before the first of them", file=sys.stderr)
                 # An ``@author`` on the include attributes every slide it pulls in,
                 # unless that slide names its own author.
                 inc_author = meta.get("author")

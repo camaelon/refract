@@ -441,10 +441,12 @@ fs::path voiceDir() {
 
 void refreshVoicePresence() {
     app.voice.assign(app.deck.size(), 0);
+    app.voiceSeconds.assign(app.deck.size(), 0.0);
     for (int i = 0; i < app.deck.size(); i++) {
         const fs::path wav = voiceFileFor(i);
         std::error_code ec;
         app.voice[i] = (!wav.empty() && fs::exists(wav, ec)) ? 1 : 0;
+        if (app.voice[i]) app.voiceSeconds[i] = refract::wavDurationSeconds(wav.string());
     }
 }
 
@@ -1780,14 +1782,21 @@ sk_sp<SkImage> captureLivePreview(int maxW) {
     if (!surface || g.width <= 0 || g.height <= 0) return nullptr;
     GrDirectContext* gpu = surface->recordingContext() ? surface->recordingContext()->asDirectContext() : nullptr;
     if (!gpu) return captureLiveFrame();                      // a CPU backend: nothing to spare
-    const int w = std::min(maxW, g.width);
-    const int h = std::max(1, (int)std::lround((double)g.height * w / g.width));
+    // Only the slide: the window around it may be another shape (a 16:10 screen, a resized
+    // window), and its letterbox bars are not part of what the presenter wants to see.
+    const rcplayer::FitTransform fit = rcplayer::docFit();
+    SkRect src = SkRect::MakeXYWH(fit.ox, fit.oy, fit.docW * fit.scale, fit.docH * fit.scale);
+    if (!src.intersect(SkRect::MakeWH((float)g.width, (float)g.height)) || src.isEmpty())
+        src = SkRect::MakeWH((float)g.width, (float)g.height);
+    const int w = std::max(1, std::min(maxW, (int)std::lround(src.width())));
+    const int h = std::max(1, (int)std::lround(src.height() * w / src.width()));
     sk_sp<SkSurface> small = SkSurfaces::RenderTarget(gpu, skgpu::Budgeted::kYes,
                                                       SkImageInfo::MakeN32Premul(w, h));
     if (!small) return captureLiveFrame();
     sk_sp<SkImage> frame = surface->makeImageSnapshot();
-    small->getCanvas()->drawImageRect(frame, SkRect::MakeWH((float)w, (float)h),
-                                      SkSamplingOptions(SkCubicResampler::Mitchell()));
+    small->getCanvas()->drawImageRect(frame, src, SkRect::MakeWH((float)w, (float)h),
+                                      SkSamplingOptions(SkCubicResampler::Mitchell()),
+                                      nullptr, SkCanvas::kFast_SrcRectConstraint);
     SkBitmap bitmap;
     if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(w, h))) return nullptr;
     if (!small->readPixels(bitmap.pixmap(), 0, 0)) return nullptr;

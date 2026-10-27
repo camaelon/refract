@@ -12,6 +12,8 @@
 #include <GLFW/glfw3.h>
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkRRect.h"
+#include <limits>
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkPaint.h"
 
@@ -65,6 +67,10 @@ struct PresenterWindow::Impl {
     std::function<void()> onDragTextOut;
     SkRect nowPane = SkRect::MakeEmpty();
     float livePaneW = 0.0f;           // the "now" box's width, for the capture size
+    // The pace meter's needle, eased toward the pace like a VU needle rather than snapped to
+    // it, so the reading moves smoothly between refreshes. NaN until there is a reading.
+    float paceNeedle = std::numeric_limits<float>::quiet_NaN();
+    double paceNeedleAt = 0.0;
     SkRect textHandle = SkRect::MakeEmpty();
     // A press inside one of them, waiting to become a drag: which, and where it started.
     int pressedDrag = 0;              // 0 none, 1 the slide, 2 the text
@@ -81,6 +87,13 @@ struct PresenterWindow::Impl {
     double playbackTime = 0.0;
     bool playing = false;
     SkRect clockButton = SkRect::MakeEmpty();   // set while drawing, hit-tested on click
+    SkRect timerBox = SkRect::MakeEmpty();      // the big time, clicked to swap what it shows
+    // The notes as last fitted (see drawPane): kept while the text and the box are unchanged,
+    // so the fitting is done once per slide rather than on every refresh.
+    std::string fitNotes;
+    float fitW = 0, fitH = 0, fitDefault = 0, fitSize = 0;
+    std::vector<std::vector<std::string>> fitColumns;   // the lines, column by column
+    bool showElapsed = false;                   // the big time shows elapsed, not remaining
     SkRect resetButton = SkRect::MakeEmpty();   // only while there is time to reset
     SkRect recordButton = SkRect::MakeEmpty();
     SkRect discardButton = SkRect::MakeEmpty();
@@ -120,6 +133,8 @@ struct PresenterWindow::Impl {
     };
     void drawTopBar(const Frame& F);
     void drawPanes(const Frame& F, const sk_sp<SkImage>& live);
+    void drawPaceMeter(SkCanvas* canvas, const SkRect& track, double delta, double talkLength,
+                       bool running);
     void drawPane(const Frame& F);             // tabs, then the notes or the captions
     void drawMeter(const Frame& F);            // the microphone's level, while recording
     void drawNarrationStrip(const Frame& F);
@@ -193,6 +208,11 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
             const bool shift = (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
                                 || glfwGetKey(w, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
             if (impl.captionView.click(static_cast<float>(impl.mouseX), static_cast<float>(impl.mouseY), shift)) return;
+        }
+        if (impl.over(impl.timerBox)) {
+            // The big time and the line under it swap: remaining <-> elapsed.
+            impl.showElapsed = !impl.showElapsed;
+            return;
         }
         if (impl.over(impl.clockButton) && impl.onToggleClock) impl.onToggleClock();
         else if (impl.over(impl.resetButton) && impl.onResetClock) impl.onResetClock();
@@ -345,6 +365,13 @@ bool PresenterWindow::shouldClose() const {
 
 namespace {
 
+// How much larger the current slide is drawn than the next one, by width.
+constexpr float kCurrentToNext = 1.3f;
+
+}  // namespace
+
+namespace {
+
 // The timer's colour is the only ambient signal of how the talk is going, so it only
 // changes when it means something: amber in the last fifth, red once over.
 SkColor clockColor(const TalkClock& clock) {
@@ -373,21 +400,99 @@ void drawPaneLabel(SkCanvas* canvas, const SkRect& box, const std::string& label
 void drawProgress(SkCanvas* canvas, const SkRect& r, const App& app, float ghostFraction,
                   bool ghostIsPlan) {
     const Deck& deck = app.deck;
-    fillRoundRect(canvas, r, r.height() * 0.5f, ui::kPanel);
-
-    if (deck.size() > 0) {
-        float done = static_cast<float>(app.current() + 1) / deck.size();
-        SkRect filled = SkRect::MakeLTRB(r.left(), r.top(), r.left() + r.width() * done, r.bottom());
-        fillRoundRect(canvas, filled, r.height() * 0.5f, ui::kAccent);
+    // The bar is laid out in *time*, not slides: each slide as long as its narration, else its
+    // share of its part's planned duration, else the average — only with nothing at all to go
+    // on does it fall back to one slide, one step (see slideTimeline).
+    const int n = deck.size();
+    const std::vector<double> timeline = slideTimeline(deck.plan(), n, app.voiceSeconds);
+    const double total = n > 0 && timeline[n] > 0 ? timeline[n] : 1.0;
+    auto xOf = [&](int i) {
+        return r.left() + r.width() * static_cast<float>(timeline[std::clamp(i, 0, n)] / total);
+    };
+    // The bar is cut at every section boundary — a short gap either side of a clear marker —
+    // so the talk's parts read as parts, each its own rounded segment, filled as you go.
+    std::vector<float> cuts;                          // boundary x positions, inside the bar
+    if (deck.size() > 1) {
+        for (const auto& section : deck.sections()) {
+            if (section.firstSlide <= 0) continue;    // a section at the top cuts nothing
+            cuts.push_back(xOf(section.firstSlide));
+        }
     }
-    for (const auto& section : deck.sections()) {
-        if (deck.size() <= 1) break;
-        float x = r.left() + r.width() * (static_cast<float>(section.firstSlide) / deck.size());
-        fillRect(canvas, SkRect::MakeXYWH(x, r.top() - 3, 1.5f, r.height() + 6), ui::kLine);
+    const float gap = std::max(5.0f, r.height() * 0.9f);      // each side of a boundary
+    const float rad = r.height() * 0.5f;
+    const float doneX = n > 0 ? xOf(app.current() + 1) : r.left();
+    float segLeft = r.left();
+    for (size_t k = 0; k <= cuts.size(); k++) {
+        const float segRight = k < cuts.size() ? cuts[k] - gap : r.right();
+        if (segRight > segLeft) {
+            const SkRect seg = SkRect::MakeLTRB(segLeft, r.top(), segRight, r.bottom());
+            fillRoundRect(canvas, seg, rad, ui::kPanel);
+            canvas->save();
+            canvas->clipRRect(SkRRect::MakeRectXY(seg, rad, rad), true);
+            if (deck.speakers().empty()) {
+                if (doneX > segLeft)
+                    fillRect(canvas, SkRect::MakeLTRB(segLeft, r.top(), std::min(doneX, segRight), r.bottom()),
+                             ui::kAccent);
+            } else {
+                // Each speaker's stretch in their colour: solid where the talk has been, a faint
+                // tint of it where it is still to come — who is up next, at a glance.
+                // Drawn a run at a time (same speaker, same side of "now"), so a translucent
+                // stretch is one shape rather than slides with seams between them.
+                for (int i = 0; i < deck.size();) {
+                    const std::string& who = deck.at(i).author;
+                    const bool done = i <= app.current();
+                    int j = i + 1;
+                    while (j < deck.size() && deck.at(j).author == who && (j <= app.current()) == done) j++;
+                    const float x0 = xOf(i);
+                    const float x1 = xOf(j);
+                    i = j;
+                    if (x1 <= segLeft || x0 >= segRight) continue;
+                    if (!done && who.empty()) continue;      // nobody named: the plain track
+                    const SkColor c = who.empty() ? ui::kAccent : static_cast<SkColor>(deck.speakerColor(who));
+                    fillRect(canvas, SkRect::MakeLTRB(x0, r.top(), x1, r.bottom()),
+                             done ? c : withAlpha(c, 0x48));
+                }
+            }
+            canvas->restore();
+        }
+        if (k < cuts.size()) {
+            // The marker, in the middle of its gap: taller than the bar and bright enough to
+            // read from across the room — a section is the unit a talk is paced in.
+            fillRoundRect(canvas, SkRect::MakeXYWH(cuts[k] - 2.0f, r.top() - 7, 4.0f, r.height() + 14),
+                          2.0f, doneX >= cuts[k] ? ui::kAccent : withAlpha(ui::kText, 0xE6));
+            segLeft = cuts[k] + gap;
+        }
     }
 
-    if (ghostFraction >= 0.0f) {
-        float x = r.left() + r.width() * std::min(1.0f, ghostFraction);
+    // Who speaks: each speaker's name under the bar where their stretch begins, in their
+    // colour — the current one brighter. A name that would run into the one before it is
+    // left out rather than overlapping.
+    if (!deck.speakers().empty()) {
+        SkFont nameFont = uiFont(11, true);
+        float lastEnd = -1e9f;
+        std::string previous;
+        for (int i = 0; i < n; i++) {
+            const std::string& who = deck.at(i).author;
+            if (who.empty() || who == previous) { if (!who.empty()) previous = who; continue; }
+            previous = who;
+            const float x = xOf(i);
+            if (x < lastEnd + 8) continue;
+            const SkColor c = static_cast<SkColor>(deck.speakerColor(who));
+            int end = i + 1;                                     // this stretch of theirs
+            while (end < n && (deck.at(end).author == who || deck.at(end).author.empty())) end++;
+            const bool current = app.current() >= i && app.current() < end;
+            lastEnd = x + drawText(canvas, who, x, r.bottom() + 22, nameFont,
+                                   current ? c : withAlpha(c, 0xB0));
+        }
+    }
+
+    if (ghostFraction >= 0.0f && n > 0) {
+        // The marker comes as a position in slides (slide k, so far through it); placed on the
+        // time axis by that slide's own stretch of it.
+        const double pos = std::min(1.0, static_cast<double>(ghostFraction)) * n;
+        const int k = std::min(n - 1, static_cast<int>(pos));
+        const double t = timeline[k] + (pos - k) * (timeline[k + 1] - timeline[k]);
+        float x = r.left() + r.width() * static_cast<float>(t / total);
         // A rehearsal is what the talk *did* take and reads as solid; a plan is what it is
         // *meant* to take, and is drawn quieter so the two are never confused.
         fillRoundRect(canvas, SkRect::MakeXYWH(x - 1.5f, r.top() - 5, 3, r.height() + 10),
@@ -578,11 +683,16 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
     // talking. Past zero it keeps running negative — "-2:30" says how far over you are, and
     // the colour has already turned by then. Without a plan there is nothing to count down
     // to, so it counts up.
+    // A click on it swaps to elapsed (and back), the other one moving to the line underneath.
     const bool countdown = app.clock.target > 0.0;
-    std::string timer = formatDuration(countdown ? app.clock.remaining() : app.clock.elapsed);
+    const bool bigIsRemaining = countdown && !showElapsed;
+    std::string timer = formatDuration(bigIsRemaining ? app.clock.remaining() : app.clock.elapsed);
     float timerW = textWidth(clockFont, timer);
     float timerX = w * 0.5f - timerW * 0.5f;
     drawText(canvas, timer, timerX, barY, clockFont, clockColor(app.clock));
+    timerBox = countdown ? SkRect::MakeLTRB(timerX - 6, barY - clockFont.getSize() * 0.85f,
+                                            timerX + timerW + 6, barY + 8)
+                         : SkRect::MakeEmpty();
 
     // Play/pause for the talk, sitting against the clock it controls. It starts a recording
     // too, so a rehearsal can be driven without touching the keyboard.
@@ -597,6 +707,33 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
         resetButton = SkRect::MakeXYWH(timerX + timerW + 18, clockButton.top(), buttonSize, buttonSize);
         drawResetButton(canvas, resetButton, over(resetButton));
     }
+    // How far ahead (negative) or behind (positive) the talk is, in seconds, and over what
+    // length of talk: against the rehearsal when there is one, else against the plan. Read
+    // by the line under the timer and by the pace meter beside it.
+    double paceDelta_ = 0.0, paceLength = 0.0;
+    bool havePace = false;
+    if (!deck.empty() && paceDelta(app.timing, deck.at(app.current()).sourceKey(),
+                                   deck.at(app.current()).file,
+                                   app.clock.elapsed, app.timeOnSlide(), &paceDelta_)) {
+        paceLength = app.timing.total();
+        havePace = true;
+    } else if (!deck.empty() && deck.plannedLength() > 0) {
+        // No rehearsal, but the deck says how long its parts should take. Behind is being
+        // further back in the deck than the plan expects, measured in the time the plan
+        // would have spent covering the difference.
+        const float should = plannedFraction(deck.plan(), deck.size(), app.clock.elapsed);
+        if (should >= 0.0f) {
+            // Where you are is the *start* of the slide you are on: you arrive at its start and
+            // spend its time from there. (Counting its end put the opening slide one slide's
+            // worth ahead before anything had been said.)
+            const double here = static_cast<double>(app.current()) / deck.size();
+            paceDelta_ = (should - here) * deck.plannedLength();
+            paceLength = deck.plannedLength();
+            havePace = true;
+        }
+    }
+    const float timerClusterRight = resetButton.isEmpty() ? timerX + timerW : resetButton.right();
+
     // Under the timer: what the big number is not saying. Recording takes the line, since
     // knowing the microphone is live matters more than any of it.
     float subX = timerX;
@@ -618,34 +755,44 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
     } else {
         SkFont font = uiFont(11);
         if (countdown) {
-            // The elapsed time stays visible: it is what the trace and the progress bar are
-            // both measured against.
-            subX += drawText(canvas, "elapsed " + formatDuration(app.clock.elapsed), subX,
-                             barY + 18, font, ui::kDim) + 14;
+            // The counterpart of the big number stays visible: elapsed is what the trace and
+            // the progress bar are measured against, remaining is what is left to say.
+            const std::string other = bigIsRemaining
+                ? "elapsed " + formatDuration(app.clock.elapsed)
+                : (app.clock.remaining() >= 0 ? "remaining " + formatDuration(app.clock.remaining())
+                                              : "over by " + formatDuration(-app.clock.remaining()));
+            subX += drawText(canvas, other, subX, barY + 18, font, ui::kDim) + 14;
         }
-        double delta = 0.0;
-        if (!deck.empty() && paceDelta(app.timing, deck.at(app.current()).sourceKey(),
-                                       deck.at(app.current()).file,
-                                       app.clock.elapsed, app.timeOnSlide(), &delta)) {
-            PaceLabel label = paceLabel(delta, app.timing.total());
+        if (havePace) {
+            PaceLabel label = paceLabel(paceDelta_, paceLength);
             drawText(canvas, label.text, subX, barY + 18, uiFont(11, true), label.color);
-        } else if (!deck.empty() && deck.plannedLength() > 0) {
-            // No rehearsal, but the deck says how long its parts should take. Behind is
-            // being further back in the deck than the plan expects, measured in the time
-            // the plan would have spent covering the difference.
-            const float should = plannedFraction(deck.plan(), deck.size(), app.clock.elapsed);
-            if (should >= 0.0f) {
-                const double here = static_cast<double>(app.current() + 1) / deck.size();
-                const double drift = (should - here) * deck.plannedLength();
-                PaceLabel label = paceLabel(drift, deck.plannedLength());
-                drawText(canvas, label.text, subX, barY + 18, uiFont(11, true), label.color);
-            }
         }
     }
 
     char position[64];
     std::snprintf(position, sizeof(position), "%d / %d", app.current() + 1, std::max(1, deck.size()));
     drawTextRight(canvas, position, w - pad, barY, metaFont, ui::kText);
+
+    // ── Pace meter ───────────────────────────────────────────────────
+    // Centred in the gap between the timer and the slide counter: the same reading as the
+    // line under the timer, as a needle — readable from the corner of an eye, which a number
+    // is not. Ahead to the left, behind to the right, on pace in the green band in the middle.
+    if (havePace) {
+        float rightLimit = w - pad - textWidth(metaFont, position) - 24;
+        if (!syncStatus.empty()) rightLimit -= textWidth(uiFont(11, true), syncStatus) + 16;
+        const float leftLimit = timerClusterRight + 24;
+        const float gap = rightLimit - leftLimit;
+        if (gap > 120) {
+            const float mw = std::min(300.0f, gap * 0.8f);
+            const float mh = std::max(10.0f, std::round(clockFont.getSize() * 0.22f));
+            const float cx = (leftLimit + rightLimit) * 0.5f;
+            const float cy = barY - clockFont.getSize() * 0.32f;
+            drawPaceMeter(canvas, SkRect::MakeXYWH(cx - mw * 0.5f, cy - mh * 0.5f, mw, mh),
+                          paceDelta_, paceLength, app.clock.running);
+        }
+    } else {
+        paceNeedle = std::numeric_limits<float>::quiet_NaN();
+    }
     // Kept in step with other players: said beside the counter, since it is the counter
     // that another machine may change under you.
     if (!syncStatus.empty()) {
@@ -666,6 +813,61 @@ void PresenterWindow::Impl::drawTopBar(const Frame& F) {
 
 }
 
+void PresenterWindow::Impl::drawPaceMeter(SkCanvas* canvas, const SkRect& track, double delta,
+                                           double talkLength, bool running) {
+    // The scale: the same thresholds paceLabel turns colour at, so the needle and the words
+    // under the timer never disagree. Full scale is a little past "seriously behind".
+    const double deadband = std::min(30.0, std::max(10.0, talkLength * 0.02));
+    const double serious  = std::max(60.0, talkLength * 0.1);
+    const double range    = serious * 1.5;
+    const float half = track.width() * 0.5f, cx = track.centerX();
+    // Behind to the left, ahead to the right: late is the direction the needle falls.
+    auto xAt = [&](double d) { return cx - static_cast<float>(std::clamp(d / range, -1.0, 1.0)) * half; };
+    auto span = [&](double a, double b) {
+        const float x0 = xAt(a), x1 = xAt(b);
+        return SkRect::MakeLTRB(std::min(x0, x1), track.top(), std::max(x0, x1), track.bottom());
+    };
+
+    // Ballistics: ease toward the reading (~0.4 s to settle), so refreshes read as motion.
+    const double now = glfwGetTime();
+    const float target = static_cast<float>(std::clamp(delta / range, -1.0, 1.0));
+    if (std::isnan(paceNeedle)) paceNeedle = target;
+    else {
+        const float k = 1.0f - static_cast<float>(std::exp(-(now - paceNeedleAt) / 0.15));
+        paceNeedle += (target - paceNeedle) * std::clamp(k, 0.0f, 1.0f);
+    }
+    paceNeedleAt = now;
+
+    // Zones on the track: ahead (left) in the ahead colour, the on-pace band, then late and
+    // seriously late to the right. Quiet tones: the needle is what should catch the eye.
+    const float r = track.height() * 0.5f;
+    SkRRect pill = SkRRect::MakeRectXY(track, r, r);
+    canvas->save();
+    canvas->clipRRect(pill, true);
+    fillRect(canvas, track, ui::kPanel);
+    fillRect(canvas, span(-range, -deadband), withAlpha(ui::kAhead, 0x40));      // ahead
+    fillRect(canvas, span(-deadband, deadband), withAlpha(ui::kAhead, 0x90));    // on pace
+    fillRect(canvas, span(deadband, serious), withAlpha(ui::kWarn, 0x60));       // behind
+    fillRect(canvas, span(serious, range), withAlpha(ui::kOver, 0x70));          // well behind
+    canvas->restore();
+    strokeRoundRect(canvas, track, r, ui::kLine, 1.0f);
+    // Ticks under the track: the centre, and each zone boundary.
+    for (double d : {-serious, -deadband, 0.0, deadband, serious}) {
+        const float x = xAt(d);
+        fillRect(canvas, SkRect::MakeXYWH(x - 0.5f, track.bottom() + 3, 1, d == 0.0 ? 7 : 4), ui::kDim);
+    }
+    SkFont tiny = uiFont(10);
+    drawText(canvas, "behind", track.left(), track.bottom() + 16, tiny, ui::kDim);
+    drawTextRight(canvas, "ahead", track.right(), track.bottom() + 16, tiny, ui::kDim);
+
+    // The needle: taller than the track, in the colour the words under the timer use.
+    const float nx = cx - paceNeedle * half;
+    const SkColor tone = running ? paceLabel(delta, talkLength).color : ui::kDim;
+    const SkColor needle = (tone == ui::kDim && running) ? ui::kText : tone;
+    fillRoundRect(canvas, SkRect::MakeXYWH(nx - 2.0f, track.top() - 6, 4.0f, track.height() + 12), 2.0f,
+                  running ? needle : withAlpha(ui::kDim, 0xA0));
+}
+
 void PresenterWindow::Impl::drawPanes(const Frame& F, const sk_sp<SkImage>& live) {
     SkCanvas* canvas = F.canvas;
     App& app = *F.app;
@@ -681,12 +883,20 @@ void PresenterWindow::Impl::drawPanes(const Frame& F, const sk_sp<SkImage>& live
     (void)showWave; (void)levelsH; (void)waveH;
 
     // ── Slide panes: current (live) and next (a still) ───────────────
-    // The split is 62/38 rather than even: the current slide is what you glance at, the
-    // next one only needs to be recognisable.
-    const float gap      = pad * 0.8f;
-    const float currentW = std::round((fw - gap) * 0.62f);
-    SkRect currentBox = SkRect::MakeXYWH(pad, panesTop, currentW, panesH);
-    SkRect nextBox    = SkRect::MakeXYWH(pad + currentW + gap, panesTop, fw - currentW - gap, panesH);
+    // The current slide is drawn 30% larger than the next: it is what you glance at, the next
+    // one only needs to be recognisable. Sized from the slide's own shape, so the ratio holds
+    // whether the panes are limited by the window's width or by its height.
+    const float gap = pad * 0.8f;
+    const float aspect = (live && live->height() > 0)
+        ? static_cast<float>(live->width()) / live->height() : 16.0f / 9.0f;
+    const float currentW = std::floor(std::min((fw - gap) * kCurrentToNext / (1.0f + kCurrentToNext),
+                                               panesH * aspect));
+    const float nextW = std::floor(currentW / kCurrentToNext);
+    SkRect currentBox = SkRect::MakeXYWH(pad, panesTop, currentW, currentW / aspect);
+    // The next slide sits centred against the current one, in the height the row has.
+    SkRect nextBox    = SkRect::MakeXYWH(pad + currentW + gap,
+                                         panesTop + std::round((currentW / aspect - nextW / aspect) * 0.5f),
+                                         nextW, nextW / aspect);
 
     drawPaneLabel(canvas, currentBox, "NOW",
                   ellipsize(deck.empty() ? "" : deck.at(app.current()).title,
@@ -810,22 +1020,83 @@ void PresenterWindow::Impl::drawPane(const Frame& F) {
     } else if (notesBox.height() > 40) {
         fillRoundRect(canvas, notesBox, 6, ui::kPanel);
         const std::string& notes = app.deck.notesFor(app.current());
-        SkFont notesFont = uiFont(std::max(14.0f, std::round(h * 0.030f)));
-        float lineHeight = notesFont.getSize() * 1.45f;
+        const float defaultSize = std::max(14.0f, std::round(h * 0.030f));
         float textLeft = notesBox.left() + 18;
         float maxWidth = notesBox.width() - 36;
+        // The notes are always shown whole. At the default size when they fit in one column;
+        // otherwise at the largest size at which every line does — in one column or flowed into
+        // up to four, whichever lets the text be biggest. A speaker must never be missing the
+        // end of what they meant to say because the window was short, and a short wide box
+        // reads far better in columns than as a sliver of tiny text.
+        const float gutter = 28.0f;
+        const float availH = notesBox.height() - 18 - 12;          // top and bottom padding
+        // Lay the notes out at `size` in `cols` columns; false if they do not fit. A blank
+        // line (between paragraphs) takes half a line, not a whole one.
+        auto layoutAt = [&](float size, int cols, std::vector<std::vector<std::string>>* out) {
+            SkFont f = uiFont(size);
+            const float colW = (maxWidth - gutter * (cols - 1)) / cols;
+            if (colW < 40) return false;
+            const float lh = size * 1.45f;
+            std::vector<std::vector<std::string>> columns(1);
+            float used = 0.0f;
+            for (const auto& line : wrapText(notes, f, colW)) {
+                const float adv = line.empty() ? lh * 0.5f : lh;
+                if (used + adv > availH && !columns.back().empty()) {
+                    if (static_cast<int>(columns.size()) == cols) return false;
+                    columns.emplace_back();
+                    used = 0.0f;
+                    if (line.empty()) continue;                  // no gap at a column's top
+                }
+                if (used + adv > availH) return false;           // a single line too tall
+                columns.back().push_back(line);
+                used += adv;
+            }
+            if (out) *out = std::move(columns);
+            return true;
+        };
+        if (!notes.empty() && (notes != fitNotes || notesBox.width() != fitW
+                               || notesBox.height() != fitH || defaultSize != fitDefault)) {
+            fitNotes = notes; fitW = notesBox.width(); fitH = notesBox.height(); fitDefault = defaultSize;
+            fitSize = defaultSize;
+            if (!layoutAt(defaultSize, 1, &fitColumns)) {
+                float best = 0.0f;
+                int bestCols = 1;
+                for (int cols = 1; cols <= 4; cols++) {
+                    float lo = 0.5f, hi = defaultSize;
+                    if (!layoutAt(lo, cols, nullptr)) continue;
+                    for (int i = 0; i < 14; i++) {
+                        const float mid = (lo + hi) * 0.5f;
+                        if (layoutAt(mid, cols, nullptr)) lo = mid; else hi = mid;
+                    }
+                    if (lo > best * 1.04f) { best = lo; bestCols = cols; }   // more columns only if clearly bigger
+                }
+                fitSize = std::max(0.5f, std::floor(best * 4.0f) / 4.0f);
+                if (!layoutAt(fitSize, bestCols, &fitColumns)) layoutAt(0.5f, 4, &fitColumns);
+            }
+        }
         canvas->save();
         canvas->clipRect(notesBox);
         if (notes.empty()) {
             drawText(canvas, "no notes for this slide", textLeft,
-                     notesBox.top() + 18 + notesFont.getSize(), uiFont(notesFont.getSize()),
-                     ui::kLine);
+                     notesBox.top() + 18 + defaultSize, uiFont(defaultSize), ui::kLine);
         } else {
-            float y = notesBox.top() + 18 + notesFont.getSize();
-            for (const auto& line : wrapText(notes, notesFont, maxWidth)) {
-                if (y > notesBox.bottom()) break;
-                drawText(canvas, line, textLeft, y, notesFont, ui::kText);
-                y += lineHeight;
+            SkFont notesFont = uiFont(fitSize);
+            const float lineHeight = fitSize * 1.45f;
+            const int cols = std::max<int>(1, static_cast<int>(fitColumns.size()));
+            const float colW = (maxWidth - gutter * (cols - 1)) / cols;
+            for (int c = 0; c < static_cast<int>(fitColumns.size()); c++) {
+                float y = notesBox.top() + 18 + fitSize;
+                const float x = textLeft + c * (colW + gutter);
+                // A hairline down the middle of the gutter, so the columns read as columns.
+                if (c > 0) {
+                    fillRect(canvas, SkRect::MakeXYWH(x - gutter * 0.5f - 0.75f, notesBox.top() + 14,
+                                                      1.5f, notesBox.height() - 28),
+                             withAlpha(ui::kDim, 0xB0));
+                }
+                for (const auto& line : fitColumns[c]) {
+                    if (!line.empty()) drawText(canvas, line, x, y, notesFont, ui::kText);
+                    y += line.empty() ? lineHeight * 0.5f : lineHeight;
+                }
             }
         }
         canvas->restore();
@@ -1234,8 +1505,18 @@ void PresenterWindow::render(App& app, const sk_sp<SkImage>& live) {
     F.barY = F.pad + std::round(h * 0.052f);
     mImpl->drawTopBar(F);
 
-    F.panesTop = F.barY + std::round(h * 0.045f);
-    F.panesH = std::round(h * 0.40f);
+    // Room for the line under the timer before the panes' own labels start: the next slide's
+    // pane now begins near the middle, under that line, rather than out to its right.
+    F.panesTop = F.barY + std::max(48.0f, std::round(h * 0.045f));
+    // The panes are as tall as the current slide needs at its width — the width is what the
+    // window has spare, the notes below take what is left — but never more than 55% of it.
+    {
+        const float aspect = (live && live->height() > 0)
+            ? static_cast<float>(live->width()) / live->height() : 16.0f / 9.0f;
+        const float gap = F.pad * 0.8f;
+        const float currentW = (F.fw - gap) * kCurrentToNext / (1.0f + kCurrentToNext);
+        F.panesH = std::round(std::min(h * 0.55f, currentW / aspect));
+    }
     mImpl->drawPanes(F, live);
 
     // What sits under the panes — the notes pane, the buttons row, the narration strip, the

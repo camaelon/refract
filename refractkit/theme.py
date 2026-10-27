@@ -187,6 +187,9 @@ class Theme:
     # The author (``@name``) this slide is attributed to — shown in the chrome and
     # used as the slide's accent. Empty for unattributed slides.
     slide_author: str = ""
+    # Whether an ``@author`` slide shows its author's name in the chrome (``[chrome] author``).
+    # The attribution itself — the speaker the presenter colours the progress bar by — stays.
+    chrome_author: bool = True
     fonts: dict = field(default_factory=lambda: dict(DEFAULT_FONTS))
     syntax: dict = field(default_factory=lambda: dict(DEFAULT_SYNTAX))
 
@@ -480,6 +483,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     chrome = settings.get("chrome", {})
     t.chrome_page = bool(chrome.get("page", t.chrome_page))
     t.chrome_footer = str(chrome.get("footer", t.chrome_footer))
+    t.chrome_author = bool(chrome.get("author", t.chrome_author))
     t.chrome_progress = bool(chrome.get("progress", t.chrome_progress))
     t.chrome_color = chrome.get("color", t.chrome_color)
     t.chrome_alpha = float(chrome.get("alpha", t.chrome_alpha))

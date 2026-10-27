@@ -36,4 +36,24 @@ double plannedTotal(const std::vector<PlanSection>& sections);
 // its slides: a plan says how long a part takes, not how its slides divide the time.
 float plannedFraction(const std::vector<PlanSection>& sections, int slides, double elapsed);
 
+// Each section's place in the plan: when it is due to start (seconds from the top of the
+// talk) and what it is worth — `timed` false when that is the average standing in for a
+// section that said nothing. Empty when nothing was planned. For showing the plan, as the
+// deck view does; the same budgets the pacing uses.
+// Where each slide falls in the talk's *time*: `out[i]` is when slide i starts, `out[n]` when
+// the talk ends (seconds, or relative units when nothing says how long anything takes).
+// A slide takes `known[i]` when that is > 0 (its narration); otherwise its share of its
+// part's planned budget — what is left once the part's narrated slides are counted, split
+// evenly, never less than a tenth of the part's average slide — and with no plan, the average
+// of the known lengths (or 1, when nothing is known: then it is simply the slide count).
+std::vector<double> slideTimeline(const std::vector<PlanSection>& sections, int slides,
+                                  const std::vector<double>& known);
+
+struct PlanSlot {
+    double start = 0.0;
+    double duration = 0.0;
+    bool timed = false;
+};
+std::vector<PlanSlot> planSlots(const std::vector<PlanSection>& sections);
+
 }  // namespace refract
