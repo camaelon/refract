@@ -265,6 +265,11 @@ def _numbered_title_row(number: int, title: str, size: float, theme: Theme,
             "modifiers": dbg([], debug), "children": [num, ttl]}
 
 
+# A font's own line height (ascent + descent) as a fraction of its size — what the player
+# spaces wrapped lines by. Google Sans is 1.25; the deck's other faces are within a few percent.
+FONT_LINE_H = 1.25
+
+
 def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
                  theme: Theme, centered: bool, debug: bool) -> tuple:
     """Build the [title, gap-spacer] nodes and reserved title height for a slide. Applies
@@ -324,11 +329,23 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
             # `line_height` pins the title's pitch here too: the 1.8 reserve is breathing
             # room the text never draws, so a fixed-height band would show it as a gap.
             lh = float(hcfg.get("line_height") or 0.0)
-            if lh:
+            from .measure import _wrap_lines
+            # Whether the column wraps it — estimated on the wide side (display faces run ~0.56 em
+            # a character), so a title judged to fit on one line really does.
+            wraps = _wrap_lines(lines[0], t_size, content_w, char_w=0.56) if lh else 1
+            if lh and wraps > 1 and node.get("type") == "text":
+                # The player spaces the lines of a wrapped title by the text's
+                # lineHeightMultiplier, a fraction of the font's own line height (ascent+descent,
+                # FONT_LINE_H of the size), so `line_height` (a fraction of the size) converts.
+                node["lineHeightMultiplier"] = round(lh / FONT_LINE_H, 4)
+                title_h = int(t_size * (FONT_LINE_H + lh * (wraps - 1)) + gap)
+            elif lh:
                 node = {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": t_size * lh}], debug),
                         "horizontalAlignment": "center" if is_centered else "start",
                         "verticalAlignment": "center", "children": [node]}
-            title_h = int(t_size * (lh or 1.8) + gap)
+                title_h = int(t_size * lh + gap)
+            else:
+                title_h = int(t_size * 1.8 + gap)
         else:
             # `line_height` (a fraction of the font size) pins the pitch of a multi-line
             # title. Without it each line is as tall as the font asks to be, which is right
@@ -897,6 +914,58 @@ def _embed_size(block: dict):
     return (w, h) if (w or h) else None
 
 
+def _video_morph(config: str, frame: dict, block: dict, theme: Theme, avail_w: float, box_h: float,
+                 debug: bool) -> dict:
+    """``morph=<frame>``: the clip opens where the slide before showed it — on the screen of that
+    device frame, laid out the way ``_frame_box`` lays it out in this same box — and eases, over
+    ``morphdur`` seconds of this slide, to its own box (``ratio``/size, centred, as ``_embed_box``)
+    and its own crop, while a copy of the frame over it fades out. The crop is eased by the video
+    host (``morphfrom``/``morphdur``, cover-fitted all the way so the box is always full); the box
+    by expressions on the slide's clock here. With ``persist`` on both slides the clip itself
+    plays straight on."""
+    D = float(block.get("morphdur") or 1.0)
+    F = float(block.get("morphfade") or 0.3)        # the frame's fade, first…
+    W = round(0.8 * F, 3)                            # …the box and crop move once most of it is gone
+    bl, bt, br, bb = frame["bounds"]
+    sl, st, sr, sb = frame["screen"]
+    fw, fh = _embed_dims(avail_w, box_h, (br - bl) / (bb - bt) if bb > bt else 1.0, None)
+    k = fw / (br - bl) if br > bl else 1.0
+    sw, sh = (sr - sl) * k, (sb - st) * k
+    dx0 = (sl - bl) * k + sw / 2.0 - fw / 2.0                 # the screen's centre, from the box's centre
+    dy0 = (st - bt) * k + sh / 2.0 - fh / 2.0
+    tw, th = _embed_dims(avail_w, box_h, block.get("ratio"), _embed_size(block))
+    if not (block.get("ratio") or _embed_size(block)):
+        tw, th = avail_w, box_h
+    corner = _embed_corner(block, theme)
+    r1 = 0.0 if corner == "circle" else float(corner or 0.0)
+    import zlib
+    n = zlib.crc32(("%s|%d|%d" % (config, round(avail_w), round(box_h))).encode()) % 100000
+    E = f"__morph{n}"
+    progress = {"type": "variable", "name": E, "vtype": "float",
+                "value": "1.0-pow(1.0-clamp((animTime-%g)/%g,1.0,0.0),3.0)" % (W, D)}
+    fade = {"type": "variable", "name": E + "F", "vtype": "float",
+            "value": "clamp(animTime/%g,1.0,0.0)" % F}
+    lerp = lambda a, b: "%.2f+%.2f*%s" % (a, b - a, E)
+    # morphfrom: the full frame, as the device screen showed it (cover-fitted to the screen)
+    cfg = config + ("&" if "#" in config else "#") + "morphfrom=0,0,1,1&morphdur=%g&morphdelay=%g" % (D, W)
+    if "fit=fill" not in cfg:
+        cfg += "&fit=fill"
+    mods: list = [{"offset": {"x": "%.2f*(1.0-%s)" % (dx0, E), "y": "%.2f*(1.0-%s)" % (dy0, E)}},
+                  {"width": lerp(sw, tw)}, {"height": lerp(sh, th)}]
+    if r1 > 0:
+        mods.append({"clip": round(r1, 2)})
+    video = {"type": "custom", "config": cfg, "children": [], "modifiers": dbg(mods, debug)}
+    # the device frame of the slide before, over the clip, fading out
+    counter = [n]
+    ghost = _frame_box({"type": "box", "children": []}, frame, {}, avail_w, box_h, counter, debug)
+    device = ghost["children"][0]
+    device["children"] = [c for c in device["children"] if c.get("type") == "canvas"]   # the frame art only
+    device["modifiers"] = list(device["modifiers"]) + [{"graphicsLayer": {"alpha": "1.0-%sF" % E}}]
+    return {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": round(float(box_h), 2)}], debug),
+            "horizontalAlignment": "center", "verticalAlignment": "center",
+            "children": [progress, fade, video, ghost]}
+
+
 def render_video(block: dict, theme: Theme, debug: bool,
                  avail_w: float, avail_h: float) -> list[dict]:
     """An embedded video as a native custom component (op 93). The box fills the available
@@ -915,8 +984,15 @@ def render_video(block: dict, theme: Theme, debug: bool,
         "until": ("%g" % block["until"]) if block.get("until") is not None and block["until"] > (block.get("start") or 0) else "",
         "loop": "0" if block.get("loop") is False else "",
         "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or []),
+        "zoomdur": ("%g" % block["zoomdur"]) if block.get("zoomdur") else "",
         "fit": "fill" if (block.get("fit") or (_frame_of(block, theme) or {}).get("fit")) == "fill" else "",
+        "zclip": "box" if block.get("zoomclip") in ("container", "box", "none") else "",
+        "persist": "1" if block.get("persist") else "",
     })
+    morph = (getattr(theme, "frames", None) or {}).get(block.get("morph") or "")
+    if morph and not _frame_of(block, theme):
+        return _with_caption(_video_morph(config, morph, block, theme, avail_w, box_h, debug),
+                             block, theme, debug, avail_h)
     frame = _frame_of(block, theme)
     if frame:
         node = {"type": "custom", "config": config, "children": []}
@@ -1042,7 +1118,8 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
     box_h = avail_h - cap_h
     fit = block.get("fit") or getattr(theme, "embed_fit", "fit")   # per-include > global
     opts = {"fit": fit if fit and fit != "fit" else "", "crop": _crop_opt(block),
-            "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or [])}
+            "zooms": ";".join("%g@%g,%g,%g" % k for k in block.get("zooms") or []),
+            "zoomdur": ("%g" % block["zoomdur"]) if block.get("zoomdur") else ""}
     for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed",
               "events", "once"):      # slide-driven documents and touch scripts, see deck.py
         if block.get(k): opts[k] = block[k]
@@ -1110,6 +1187,11 @@ def render_heading(block: dict, body_size: float, theme: Theme, debug: bool,
         )
         node = _styled(raw_text, hcfg["font_size"], hcfg["color"],
                        txt_theme, debug, align)
+        # `line_height` (a fraction of the size) spaces a heading's lines — <br> breaks and the
+        # column's own wrapping alike — through the text's lineHeightMultiplier (see FONT_LINE_H).
+        lh = float(hcfg.get("line_height") or 0.0)
+        if lh and node.get("type") == "text":
+            node["lineHeightMultiplier"] = round(lh / FONT_LINE_H, 4)
     if own_align:
         node = {"type": "box",
                 "modifiers": dbg(["fillMaxWidth"], debug),

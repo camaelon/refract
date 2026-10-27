@@ -268,6 +268,10 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         block["crop"] = crop
     if opts.get("fit") and block["kind"] in _FRAMEABLE:
         block["fit"] = opts["fit"].lower()
+    # ``zoomclip=container``: a zoom spreads out to the embed's whole box rather than staying
+    # inside the picture's own footprint (``zoomclip=picture``, the default).
+    if opts.get("zoomclip") and block["kind"] in _FRAMEABLE:
+        block["zoomclip"] = str(opts["zoomclip"]).lower()
     # ``ratio=W:H`` frames the embed in a centred box of that aspect ratio (rendered live as a
     # custom component) rather than filling the whole content area.
     ratio = parse_ratio(opts.get("ratio"))
@@ -290,6 +294,13 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
         zooms = parse_zooms(opts.get("zooms"))
         if zooms:
             block["zooms"] = zooms
+    # ``zoomdur=S``: how long each zoom move takes (seconds; 0.55 by default).
+    if block["kind"] in _ZOOMABLE and opts.get("zoomdur") not in (None, True):
+        try:
+            if float(opts["zoomdur"]) > 0:
+                block["zoomdur"] = float(opts["zoomdur"])
+        except (TypeError, ValueError):
+            pass
     # An image's static ``zoom=N`` (``focus=x,y``): the same view, already settled as the slide opens.
     if block["kind"] == "image" and opts.get("zoom") and not block.get("zooms"):
         try:
@@ -350,6 +361,25 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # document that knows nothing about slides, ``from``/``to`` (seconds of its own timeline) and
     # ``speed``: the slide plays that window and holds at ``to``. Passed through to the
     # embedded-document host untouched.
+    # A video's ``persist`` keeps its player for the next slide, which carries on playing the same
+    # file — no reload. ``morph=<frame>`` (``morphdur=S``, 1 s by default): the slide opens with the
+    # clip where the previous slide showed it in that device frame — the frame fading out — and
+    # eases to its own box and crop.
+    if block["kind"] == "video":
+        if opts.get("persist"):
+            block["persist"] = "1"
+        if opts.get("morph") and opts["morph"] is not True:
+            block["morph"] = str(opts["morph"]).lower()
+            try:
+                block["morphdur"] = max(0.05, float(opts.get("morphdur", 1.0)))
+            except (TypeError, ValueError):
+                block["morphdur"] = 1.0
+            # ``morphfade=S`` (0.3 s): the frame fades out first; the box and crop only start
+            # moving once most of it (80 %) is gone.
+            try:
+                block["morphfade"] = max(0.05, float(opts.get("morphfade", 0.3)))
+            except (TypeError, ValueError):
+                block["morphfade"] = 0.3
     if block["kind"] == "rc_include":
         for k in ("persist", "step", "stepid", "timeid", "prevstepid", "prevtimeid", "from", "to", "speed"):
             if k in opts:

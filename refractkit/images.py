@@ -133,7 +133,7 @@ def _rounded_rect_path(path: str, l: float, t: float, r: float, b: float,
 ZOOM_DUR = 0.55      # seconds a zoom keyframe takes to settle — as rcskia/MediaZoom.h
 
 
-def _zoom_vars(keys: list, prefix: str, clock: str = "animTime") -> tuple[list, dict]:
+def _zoom_vars(keys: list, prefix: str, clock: str = "animTime", dur: float = ZOOM_DUR) -> tuple[list, dict]:
     """Expressions for a keyframed zoom on the slide's clock: the variables to declare and the
     names holding the view's centre (``cx``, ``cy``, fractions) and zoom (``z``).
 
@@ -148,7 +148,7 @@ def _zoom_vars(keys: list, prefix: str, clock: str = "animTime") -> tuple[list, 
     t0 = -1e9
     segs = []
     for t, x, y, z in keys:
-        e = ease((t - t0) / ZOOM_DUR)
+        e = ease((t - t0) / dur)
         frm = tuple(a + (b - a) * e for a, b in zip(frm, to))
         to = (x, y, math.log(max(z, 1.0)))
         segs.append((t, frm, to))
@@ -159,7 +159,7 @@ def _zoom_vars(keys: list, prefix: str, clock: str = "animTime") -> tuple[list, 
     for i, (t, frm, to) in enumerate(segs):
         end = segs[i + 1][0] if i + 1 < len(segs) else None
         tt = "min(%s,%g)" % (clock, end) if end is not None else clock
-        V(f"{prefix}U{i}", "clamp((%s-%g)*%g,1.0,0.0)" % (tt, t, 1.0 / ZOOM_DUR))
+        V(f"{prefix}U{i}", "clamp((%s-%g)*%g,1.0,0.0)" % (tt, t, 1.0 / dur))
         V(f"{prefix}N{i}", f"1.0-{prefix}U{i}")
         V(f"{prefix}E{i}", f"1.0-{prefix}N{i}*{prefix}N{i}*{prefix}N{i}*{prefix}N{i}")
         for a in range(3):
@@ -231,7 +231,7 @@ def render_image(block: dict, theme, debug: bool, avail_w: float, avail_h: float
     # shifted so the view's window fills the image's own box, clipped to it, on the slide's clock.
     zvars: list = []
     if block.get("zooms"):
-        zvars, zn = _zoom_vars(block["zooms"], f"__z{counter[0]}_")
+        zvars, zn = _zoom_vars(block["zooms"], f"__z{counter[0]}_", dur=block.get("zoomdur") or ZOOM_DUR)
         L = f"{left}-({zn['cx']}-{zn['h']})*{dw:.2f}*{zn['z']}"
         T = f"{top}-({zn['cy']}-{zn['h']})*{dh:.2f}*{zn['z']}"
         zvars += [{"type": "variable", "name": f"__z{counter[0]}_L", "vtype": "float", "value": L},
