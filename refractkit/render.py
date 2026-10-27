@@ -730,13 +730,13 @@ def _embed_dims(avail_w: float, box_h: float, ratio, size=None) -> tuple:
 _EDGE_CACHE: dict = {}
 
 
-def _video_edge(path: str, at: float = 0.0):
-    """(colour "#FFRRGGBB", width, height) of a video, the colour the average of its first
-    frame's outermost pixels — what a card behind it has to match for the clip's square edges
-    to vanish into it. None when ffmpeg can't read it."""
+def _video_edge(path: str, at: float = 0.0, crop=None):
+    """(colour "#FFRRGGBB", width, height) of a video: the most common colour of its first
+    frame (within ``crop``) — its background, what a card behind it has to match for the clip's
+    square edges to vanish into it. None when ffmpeg can't read it."""
     import shutil, subprocess
     try:
-        key = (path, os.path.getmtime(path), at)
+        key = (path, os.path.getmtime(path), at, tuple(crop) if crop else None)
     except OSError:
         return None
     if key in _EDGE_CACHE:
@@ -748,16 +748,23 @@ def _video_edge(path: str, at: float = 0.0):
                                     "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
                                    capture_output=True, text=True, timeout=20)
             w, h = (int(v) for v in probe.stdout.strip().split(",")[:2])
-            sw, sh = 64, max(1, round(64 * h / w))
+            # only the part of the frame that is shown (``crop``, fractions l,t,r,b)
+            l, t_, r, b = crop if crop else (0.0, 0.0, 1.0, 1.0)
+            cw, ch = max(2, round(w * (r - l))), max(2, round(h * (b - t_)))
+            sw, sh = 64, max(1, round(64 * ch / cw))
+            vf = "crop=%d:%d:%d:%d,scale=%d:%d" % (cw, ch, round(w * l), round(h * t_), sw, sh)
             raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%g" % at, "-i", path,
-                                  "-frames:v", "1", "-vf", "scale=%d:%d" % (sw, sh),
+                                  "-frames:v", "1", "-vf", vf,
                                   "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                                  capture_output=True, timeout=30).stdout
             if len(raw) >= sw * sh * 3:
-                px = [raw[i:i + 3] for i in range(0, sw * sh * 3, 3)]
-                edge = [px[y * sw + x] for y in range(sh) for x in range(sw)
-                        if x in (0, sw - 1) or y in (0, sh - 1)]
-                avg = [round(sum(p[c] for p in edge) / len(edge)) for c in range(3)]
+                # the frame's most common colour (to within a few levels): its background, which
+                # a thin border round the picture would only drag towards grey in an edge average
+                from collections import Counter
+                px = [tuple(raw[i:i + 3]) for i in range(0, sw * sh * 3, 3)]
+                q = Counter(tuple(c // 6 for c in p) for p in px).most_common(1)[0][0]
+                near = [p for p in px if tuple(c // 6 for c in p) == q]
+                avg = [round(sum(p[c] for p in near) / len(near)) for c in range(3)]
                 out = ("#FF%02X%02X%02X" % tuple(avg), w, h)
         except (subprocess.SubprocessError, ValueError, OSError):
             out = None
@@ -933,9 +940,16 @@ def _video_morph(config: str, frame: dict, block: dict, theme: Theme, avail_w: f
     sw, sh = (sr - sl) * k, (sb - st) * k
     dx0 = (sl - bl) * k + sw / 2.0 - fw / 2.0                 # the screen's centre, from the box's centre
     dy0 = (st - bt) * k + sh / 2.0 - fh / 2.0
-    tw, th = _embed_dims(avail_w, box_h, block.get("ratio"), _embed_size(block))
+    # ``card``: a rounded backing card of the clip's own edge colour, fading in as the morph
+    # settles; the clip's box shrinks by the card's padding so the card still fits.
+    card = None
+    if block.get("card") is not None:
+        card = _embed_card(block, theme, _video_edge(block["path"], float(block.get("start") or 0.0),
+                                                     block.get("crop")))
+    pad = card[1] if card else 0.0
+    tw, th = _embed_dims(avail_w - 2 * pad, box_h - 2 * pad, block.get("ratio"), _embed_size(block))
     if not (block.get("ratio") or _embed_size(block)):
-        tw, th = avail_w, box_h
+        tw, th = avail_w - 2 * pad, box_h - 2 * pad
     corner = _embed_corner(block, theme)
     r1 = 0.0 if corner == "circle" else float(corner or 0.0)
     import zlib
@@ -961,9 +975,17 @@ def _video_morph(config: str, frame: dict, block: dict, theme: Theme, avail_w: f
     device = ghost["children"][0]
     device["children"] = [c for c in device["children"] if c.get("type") == "canvas"]   # the frame art only
     device["modifiers"] = list(device["modifiers"]) + [{"graphicsLayer": {"alpha": "1.0-%sF" % E}}]
+    under = []
+    if card:
+        rc = roundrect_radius(theme)
+        settle = W + 0.45 * D                      # the clip's box is most of the way there
+        under = [{"type": "box", "children": [], "modifiers": dbg([
+            {"width": round(tw + 2 * pad, 2)}, {"height": round(th + 2 * pad, 2)},
+            {"graphicsLayer": {"alpha": "clamp((animTime-%g)/0.4,1.0,0.0)" % settle}},
+            {"clip": round(rc, 2)}, {"background": card[0]}], debug)}]
     return {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": round(float(box_h), 2)}], debug),
             "horizontalAlignment": "center", "verticalAlignment": "center",
-            "children": [progress, fade, video, ghost]}
+            "children": [progress, fade] + under + [video, ghost]}
 
 
 def render_video(block: dict, theme: Theme, debug: bool,
