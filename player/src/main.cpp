@@ -75,6 +75,10 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkSurface.h"
+#include "include/core/SkSamplingOptions.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/encode/SkPngEncoder.h"
 
 #include <algorithm>
@@ -1765,6 +1769,32 @@ double voicelessDwell() {
 // A raster copy of what the slide window just painted. The presenter draws on the CPU, and
 // a Metal-backed snapshot cannot be drawn into a raster canvas, so the readback is not
 // avoidable — it is throttled instead (the presenter does not need 60 fps of the slide).
+// The presenter's view of the slide: the frame on screen, scaled down on the GPU to at most
+// `maxW` pixels wide, and only that small image read back. The full-size readback this
+// replaces copied ~30 MB off the GPU and then made the presenter scale it on the CPU — the
+// bulk of the presenter's time, all of it on the thread the slide window draws on.
+sk_sp<SkImage> captureLiveFrame();
+
+sk_sp<SkImage> captureLivePreview(int maxW) {
+    SkSurface* surface = g.backend ? g.backend->surface() : nullptr;
+    if (!surface || g.width <= 0 || g.height <= 0) return nullptr;
+    GrDirectContext* gpu = surface->recordingContext() ? surface->recordingContext()->asDirectContext() : nullptr;
+    if (!gpu) return captureLiveFrame();                      // a CPU backend: nothing to spare
+    const int w = std::min(maxW, g.width);
+    const int h = std::max(1, (int)std::lround((double)g.height * w / g.width));
+    sk_sp<SkSurface> small = SkSurfaces::RenderTarget(gpu, skgpu::Budgeted::kYes,
+                                                      SkImageInfo::MakeN32Premul(w, h));
+    if (!small) return captureLiveFrame();
+    sk_sp<SkImage> frame = surface->makeImageSnapshot();
+    small->getCanvas()->drawImageRect(frame, SkRect::MakeWH((float)w, (float)h),
+                                      SkSamplingOptions(SkCubicResampler::Mitchell()));
+    SkBitmap bitmap;
+    if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(w, h))) return nullptr;
+    if (!small->readPixels(bitmap.pixmap(), 0, 0)) return nullptr;
+    bitmap.setImmutable();
+    return bitmap.asImage();
+}
+
 sk_sp<SkImage> captureLiveFrame() {
     SkSurface* surface = g.backend ? g.backend->surface() : nullptr;
     if (!surface || g.width <= 0 || g.height <= 0) return nullptr;
@@ -2359,7 +2389,12 @@ int main(int argc, char* argv[]) {
     // The presenter shows a clock, a timer and two stills. Drawing it at the slide window's
     // frame rate costs several milliseconds a frame to show the same pixels; 20 Hz is past
     // the point where a wall clock reads as live, and it leaves the machine to the deck.
-    constexpr double kPresenterInterval = 1.0 / 20.0;
+    // The presenter refreshes at a modest rate, and only in time the slide window does not need
+    // (see below): it may lag a little, the room must never.
+    constexpr double kPresenterInterval = 1.0 / 12.0;
+    double lastSlideCpuMs = 0.0;      // what the slide window's last frame cost to draw
+    double perfPresenterMs = 0.0;     // presenter time since the last slide frame (perf)
+    double presenterCostMs = 4.0;     // what a presenter refresh costs, on average (adapts)
     // Long enough to cover the transitions refract emits (0.6-0.9s) plus the content
     // reveal that follows them.
     constexpr double kTransitionQuietSec = 1.2;
@@ -2600,12 +2635,8 @@ int main(int argc, char* argv[]) {
             // the presenter should keep seeing the slide it is about to bring back.
             // A slide change always captures, however recently the last one was: the
             // throttle is there to spare the readback, not to show the wrong slide.
-            if (presenter && (g.currentIndex != lastCapturedSlide
-                              || elapsed - lastCapture >= kCaptureInterval)) {
-                liveFrame = captureLiveFrame();
-                lastCapture = elapsed;
-                lastCapturedSlide = g.currentIndex;
-            }
+            // (The presenter's copy of the frame is not taken here, inside the slide frame's
+            // budget: the presenter takes it in its own turn, below.)
 
             // RC_PERF_SHOTS=<dir>: a screenshot of each slide 0.15 s in, mid-transition, to see
             // what a timing run showed. RC_PERF_SHOTS_FRAMES=N instead saves its first N frames
@@ -2636,14 +2667,17 @@ int main(int argc, char* argv[]) {
             drawSlideCovers(winW, winH);
 
             g.backend->present();
+            lastSlideCpuMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - frameStart).count();
             if (perf.active()) {
                 const auto presented = std::chrono::steady_clock::now();
                 using ms = std::chrono::duration<double, std::milli>;
                 perf.frame(g.currentIndex, app.sinceSlideChange,
                            ms(frameStart - perfLastFrame).count(), ms(presented - frameStart).count(),
-                           perfPollMs, perfSwapMs);
+                           perfPollMs, perfSwapMs, perfPresenterMs);
                 perfLastFrame = frameStart;
                 perfPollMs = 0.0;
+                perfPresenterMs = 0.0;
             }
             const auto swapStart = std::chrono::steady_clock::now();
             glfwSwapBuffers(window);
@@ -2692,10 +2726,29 @@ int main(int argc, char* argv[]) {
             if (remotePointer.laser() && !remotePointer.trail(glfwGetTime(), 0.5).empty()) g.needsRedraw = true;
         }
 
+        // The presenter works in the time the slide window leaves over: right after the slide's
+        // swap, and only when the slide's last frame plus what a presenter refresh costs fits a
+        // frame comfortably — so a transition that is cheap to draw is followed smoothly, and an
+        // expensive frame is never followed by presenter work (it waits, at most half a second).
+        // Background stills (presenter's next slide, deck view) wait while a slide comes in.
+        refract::setThumbsHeld(app.sinceSlideChange < kTransitionQuietSec);
+        const bool presenterDue = presenter && elapsed - lastPresenterDraw >= kPresenterInterval;
+        const bool slideBusy = lastSlideCpuMs + presenterCostMs > 12.0;
         if (presenter) {
             if (presenter->shouldClose()) {
                 presenter.reset();
-            } else if (elapsed - lastPresenterDraw >= kPresenterInterval) {
+            } else if (presenterDue && (!slideBusy || elapsed - lastPresenterDraw >= 0.5)) {
+                const auto presenterStart = std::chrono::steady_clock::now();
+                // The slide as it is on screen (unless it is blanked: the presenter keeps the
+                // slide it is about to bring back), small, taken now rather than inside the
+                // slide's own frame.
+                if (app.blank == 0 && (g.currentIndex != lastCapturedSlide
+                                       || elapsed - lastCapture >= kCaptureInterval)) {
+                    const int paneW = presenter->livePaneWidth();
+                    liveFrame = captureLivePreview(paneW > 0 ? paneW : 1024);
+                    lastCapture = elapsed;
+                    lastCapturedSlide = g.currentIndex;
+                }
                 // Sampled here rather than inside the window: the recorder belongs to the
                 // app, and the level is only wanted at the rate the meter is drawn.
                 const bool listening = recorder && (app.timing.recording() || app.reRecording);
@@ -2728,6 +2781,10 @@ int main(int argc, char* argv[]) {
                 }
                 presenter->render(app, liveFrame);
                 lastPresenterDraw = elapsed;
+                const double cost = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - presenterStart).count();
+                perfPresenterMs += cost;
+                presenterCostMs = 0.8 * presenterCostMs + 0.2 * std::min(cost, 30.0);
             }
         }
 

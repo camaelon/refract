@@ -18,11 +18,17 @@
 #include "include/core/SkColor.h"
 #include "include/core/SkSurface.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <sys/qos.h>
+#endif
 #include <thread>
 #include <utility>
 #include <filesystem>
@@ -300,6 +306,14 @@ Queue& queue() {
     return q;
 }
 
+std::atomic<bool> gHeld{false};
+
+// Wait out a hold (see setThumbsHeld), unless the queue is shutting down.
+void waitWhileHeld() {
+    while (gHeld.load(std::memory_order_relaxed) && !queue().stopping)
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+}
+
 void renderJob(Job& job, sk_sp<SkImage>* out) {
     std::string ext = rcplayer::getExt(job.key.entry);
     if (!job.jsonPath.empty()) {
@@ -317,15 +331,24 @@ void renderJob(Job& job, sk_sp<SkImage>* out) {
         if (job.mediaTemp) std::remove(job.mediaPath.c_str());
         return;
     }
+    waitWhileHeld();
     if (!startRcJob(job)) {
         *out = nullptr;                       // a failure is cached, not retried every frame
         return;
     }
-    while (!advanceRcJob(job)) {}
+    for (;;) {
+        waitWhileHeld();                      // a slide is coming in: yield the machine to it
+        if (advanceRcJob(job)) break;
+    }
     *out = job.surface->makeImageSnapshot();
 }
 
 void workerLoop() {
+#if defined(__APPLE__)
+    // Background work, scheduled as such: the slide window's thread keeps the performance
+    // cores, and a still being made never competes with a frame being shown.
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#endif
     Queue& q = queue();
     for (;;) {
         Job job;
@@ -340,6 +363,7 @@ void workerLoop() {
             q.inFlight++;
         }
         sk_sp<SkImage> image;
+        waitWhileHeld();
         renderJob(job, &image);
         {
             std::lock_guard<std::mutex> lock(q.mutex);
@@ -434,6 +458,8 @@ sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height) {
 void requestThumb(const std::string& entry, int width, int height) {
     enqueue(Key{entry, width, height}, /*urgent=*/false);
 }
+
+void setThumbsHeld(bool held) { gHeld.store(held, std::memory_order_relaxed); }
 
 void collectThumbs() {
     Queue& q = queue();

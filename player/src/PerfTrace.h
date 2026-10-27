@@ -24,13 +24,13 @@ public:
     // One presented frame: the gap since the last, the CPU spent rendering and presenting it,
     // the time spent pumping events since the last frame, and how long the last swap took.
     void frame(int index, double sinceSwitchSec, double intervalMs, double cpuMs,
-               double pollMs = 0.0, double swapMs = 0.0);
+               double pollMs = 0.0, double swapMs = 0.0, double presenterMs = 0.0);
     // Written once, when the run has shown the last slide for its dwell.
     bool write(std::string* error) const;
 
 private:
     struct Slide { int index; std::string title; double switchMs; };
-    struct Frame { int index; float since, interval, cpu, poll, swap; };
+    struct Frame { int index; float since, interval, cpu, poll, swap, presenter; };
     bool mActive = false;
     double mDwell = 3.0;
     int mSlideCount = 0;

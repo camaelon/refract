@@ -64,6 +64,7 @@ struct PresenterWindow::Impl {
     std::function<void()> onDragSlideOut;
     std::function<void()> onDragTextOut;
     SkRect nowPane = SkRect::MakeEmpty();
+    float livePaneW = 0.0f;           // the "now" box's width, for the capture size
     SkRect textHandle = SkRect::MakeEmpty();
     // A press inside one of them, waiting to become a drag: which, and where it started.
     int pressedDrag = 0;              // 0 none, 1 the slide, 2 the text
@@ -230,6 +231,10 @@ std::unique_ptr<PresenterWindow> PresenterWindow::Create(int width, int height) 
 
     if (previous) glfwMakeContextCurrent(previous);
     return presenter;
+}
+
+int PresenterWindow::livePaneWidth() const {
+    return mImpl ? static_cast<int>(std::round(mImpl->livePaneW)) : 0;
 }
 
 void PresenterWindow::setOnToggleClock(std::function<void()> action) {
@@ -686,6 +691,7 @@ void PresenterWindow::Impl::drawPanes(const Frame& F, const sk_sp<SkImage>& live
     drawPaneLabel(canvas, currentBox, "NOW",
                   ellipsize(deck.empty() ? "" : deck.at(app.current()).title,
                             uiFont(13), currentBox.width() - 60));
+    livePaneW = currentBox.width();
     SkRect drawn = drawImageFit(canvas, live, currentBox);
     strokeRoundRect(canvas, drawn, 2, ui::kLine);
     // What a drag of this pane takes with it is the picture, so the picture is the handle.

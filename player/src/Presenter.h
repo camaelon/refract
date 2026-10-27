@@ -30,6 +30,9 @@ public:
     ~PresenterWindow();
 
     GLFWwindow* window() const { return mWindow; }
+    // The "now" pane's size in the presenter's canvas pixels, as last drawn (0 before the first
+    // frame): the live slide is captured at that size, so the pane draws it about 1:1.
+    int livePaneWidth() const;
     bool shouldClose() const;
 
     // What the play/pause button does. Set once, after Create.

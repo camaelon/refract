@@ -195,7 +195,10 @@ SkRect drawImageFit(SkCanvas* canvas, const sk_sp<SkImage>& img, const SkRect& b
     float s = std::min(box.width() / img->width(), box.height() / img->height());
     float w = img->width() * s, h = img->height() * s;
     SkRect dst = SkRect::MakeXYWH(box.centerX() - w * 0.5f, box.centerY() - h * 0.5f, w, h);
-    SkSamplingOptions sampling(SkFilterMode::kLinear, SkMipmapMode::kLinear);
+    // Mipmaps only for a real reduction: on the CPU they are built for each new image, and the
+    // presenter's live slide is a new image several times a second — captured at the size of
+    // its pane, it is drawn about 1:1, where plain linear filtering is right and costs nothing.
+    SkSamplingOptions sampling(SkFilterMode::kLinear, s < 0.67f ? SkMipmapMode::kLinear : SkMipmapMode::kNone);
     canvas->drawImageRect(img, dst, sampling);
     return dst;
 }

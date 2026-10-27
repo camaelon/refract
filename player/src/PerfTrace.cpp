@@ -19,9 +19,9 @@ void PerfTrace::slideChanged(int index, const std::string& title, double switchM
 }
 
 void PerfTrace::frame(int index, double sinceSwitchSec, double intervalMs, double cpuMs,
-                      double pollMs, double swapMs) {
+                      double pollMs, double swapMs, double presenterMs) {
     if (mActive) mFrames.push_back({index, (float)sinceSwitchSec, (float)intervalMs, (float)cpuMs,
-                                    (float)pollMs, (float)swapMs});
+                                    (float)pollMs, (float)swapMs, (float)presenterMs});
 }
 
 bool PerfTrace::write(std::string* error) const {
@@ -34,7 +34,7 @@ bool PerfTrace::write(std::string* error) const {
     // Frames as rows, [slide, seconds since the change, interval ms, cpu ms, event-pump ms
     // since the last frame, the last swap's ms]: thousands of them, so no keys per row.
     auto& frames = doc["frames"] = nlohmann::json::array();
-    for (const auto& f : mFrames) frames.push_back({f.index, f.since, f.interval, f.cpu, f.poll, f.swap});
+    for (const auto& f : mFrames) frames.push_back({f.index, f.since, f.interval, f.cpu, f.poll, f.swap, f.presenter});
     std::ofstream out(mPath);
     if (!out) { if (error) *error = "cannot write " + mPath; return false; }
     out << doc.dump() << "\n";

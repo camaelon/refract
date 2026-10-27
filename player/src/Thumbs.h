@@ -41,6 +41,12 @@ sk_sp<SkImage> thumbCached(const std::string& entry, int width, int height);
 // and a move, and does no rendering.
 void collectThumbs();
 
+// Hold the still renderer while the slide window needs the machine: a still is a full
+// document render on another thread, and its text and shaders contend with the slide's own
+// (Skia's glyph and font caches are shared and locked). Checked between steps, so a still in
+// progress pauses within one frame of work. The main loop sets it while a slide transitions in.
+void setThumbsHeld(bool held);
+
 // True while there is work queued or waiting to be collected — for a caller that wants to
 // keep redrawing until the pictures have arrived.
 bool thumbsPending();

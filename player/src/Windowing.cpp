@@ -57,6 +57,11 @@ void setFullscreen(GLFWwindow* window, bool on, GLFWmonitor* preferred) {
         GLFWmonitor* monitor = preferred ? preferred : monitorForWindow(window);
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
         if (!mode) return;
+        // A fullscreen GLFW window minimises itself when it loses focus (GLFW_AUTO_ICONIFY,
+        // on by default) — and restores the display mode to do it. With a presenter window
+        // that is exactly wrong: clicking the presenter (the clock, a note) would pull the
+        // slides off the projector, and the mode switch stalls everything for half a second.
+        glfwSetWindowAttrib(window, GLFW_AUTO_ICONIFY, GLFW_FALSE);
         glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height,
                              mode->refreshRate);
     } else {
