@@ -165,6 +165,25 @@ bool chooseWebDir(const std::string& dir, const std::string& name, const std::st
     }
 }
 
+bool askText(const std::string& title, const std::string& message, const std::string& initial,
+             std::string* out) {
+    @autoreleasepool {
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = [NSString stringWithUTF8String:title.c_str()];
+        alert.informativeText = [NSString stringWithUTF8String:message.c_str()];
+        [alert addButtonWithTitle:@"OK"];
+        [alert addButtonWithTitle:@"Cancel"];
+        NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+        field.stringValue = [NSString stringWithUTF8String:initial.c_str()];
+        alert.accessoryView = field;
+        alert.window.initialFirstResponder = field;
+        [field selectText:nil];
+        if ([alert runModal] != NSAlertFirstButtonReturn) return false;
+        *out = field.stringValue.UTF8String ? field.stringValue.UTF8String : "";
+        return true;
+    }
+}
+
 bool trashIsAvailable() { return true; }
 
 bool moveToTrash(const std::string& path) {

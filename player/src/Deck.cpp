@@ -75,6 +75,7 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
     mSlides.clear();
     mSections.clear();
     mHasManifest = false;
+    mDefaultFont.clear();
     mName = fs::path(source).filename().string();
 
     // Every playlist entry becomes a slide; the manifest only ever *decorates* them. That
@@ -107,6 +108,7 @@ void Deck::build(const std::vector<std::string>& entries, const std::string& sou
             for (const auto& rec : doc["slides"]) {
                 if (rec.contains("file")) byFile[rec["file"].get<std::string>()] = &rec;
             }
+            mDefaultFont = doc.value("default_font", std::string());
             // The speakers' own colours, when the deck names them ("#AARRGGBB" or "#RRGGBB").
             mSpeakerColors.clear();
             if (doc.contains("authors") && doc["authors"].is_object()) {

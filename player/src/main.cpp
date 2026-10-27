@@ -12,6 +12,7 @@
 //
 // Press H for the key card.
 
+#include "rcskia/SkiaPaintContext.h"
 #include "App.h"
 #include "AppMenu.h"
 #include "AssetWindow.h"
@@ -759,6 +760,14 @@ void toggleCaptions() {
 // rebuild renames files: there is nothing to patch up, the playlist is simply collected
 // again. The slide on screen is kept by *position*, which after a reorder is what the deck
 // view just moved it to.
+// The font for text that names none: `--default-font` when given, else the deck's own
+// (`[font] default` in settings.toml, carried in deck.json), else the system default.
+static std::string gDefaultFontFlag;
+static void applyDefaultFont() {
+    rcskia::SkiaPaintContext::setDefaultFontFamily(
+        !gDefaultFontFlag.empty() ? gDefaultFontFlag : app.deck.defaultFont());
+}
+
 bool reloadDeck() {
     if (g.zip || deckInput.empty()) return false;
     std::vector<std::string> files = collectRcFiles(deckInput);
@@ -768,6 +777,7 @@ bool reloadDeck() {
     }
     g.files = std::move(files);
     app.deck.build(g.files, deckInput);
+    applyDefaultFont();
     refreshVoicePresence();
     // Only the slides the build touched. Re-rendering a sixty-slide deck because one word
     // changed is work nobody asked for, and it is why cards used to blink back to empty.
@@ -1496,6 +1506,23 @@ void openSlideEditor() {
     slideEditor->setThemeLister([](std::vector<refract::ThemePreset>* out, std::string* error) {
         return source.listThemes(out, error);
     });
+    slideEditor->setThemeDuplicator([](const std::string& from, const std::string& name,
+                                       std::string* newFile, std::string* status) {
+        // Beside the original, under the new name; never over a theme that already exists.
+        const fs::path original(from);
+        const fs::path copy = original.parent_path() / (name + ".toml");
+        std::error_code ec;
+        if (fs::exists(fs::path(source.deckDir()) / copy, ec)) {
+            *status = "there is already a theme called " + name;
+            return false;
+        }
+        std::string text, error;
+        if (!source.readFile(from, &text, &error)) { *status = error; return false; }
+        text = "# Duplicated from " + original.stem().string() + ".\n" + text;
+        if (!source.writeFile(copy.string(), text, &error)) { *status = error; return false; }
+        *newFile = copy.string();
+        return true;
+    });
     slideEditor->refreshAssets();
     // What may be written on a `::` line. Read once — the grammar does not change while the
     // player runs — and quietly skipped if the tools are not there.
@@ -1818,6 +1845,7 @@ sk_sp<SkImage> captureLiveFrame() {
 
 int main(int argc, char* argv[]) {
     const refract::Options options = refract::parseOptions(argc, argv);
+    gDefaultFontFlag = options.defaultFont;
     cameraTakeMode = options.cameraTake;
     if (!options.error.empty()) {
         std::cerr << "refractplayer: " << options.error << "\n" << refract::usageText();
@@ -1884,6 +1912,7 @@ int main(int argc, char* argv[]) {
         }
         useDeckVoiceDir(input);
         app.deck.build(entries, input);
+        applyDefaultFont();
         if (fs::is_directory(voiceDir())) voiceIndex.load(voiceDir());
 
         // Which slides: --slides when given, else the --from/--to range, else all.
@@ -1980,6 +2009,9 @@ int main(int argc, char* argv[]) {
     if (!options.pdf.empty() || !options.images.empty()) {
         // The slides asked for (--slides), in deck order, or every one.
         std::vector<std::string> entries = collectDeckEntries(input);
+        // The deck's manifest, for what it says about rendering — the default font.
+        app.deck.build(entries, input);
+        applyDefaultFont();
         if (!options.slides.empty()) {
             std::string error;
             const std::vector<int> chosen = refract::parseSlideSelection(
@@ -2068,6 +2100,7 @@ int main(int argc, char* argv[]) {
     }
 
     app.deck.build(g.files, input);
+    applyDefaultFont();
 
     // Voice-over is played here rather than by the library: its afplay-per-slide path cannot
     // preload, and the spawn latency is audible at every boundary. Switching the library's

@@ -272,7 +272,6 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
     full-slide shader/bg_doc of its own. Shared by the normal layout and magic-move builder."""
     if not slide.get("title"):
         return [], 0
-    gap = theme.title_gap * (0.5 if stype == "max" else 1.0)
     meta = slide.get("meta") or {}
     overrides = meta.get("overrides") or {}
     flags = meta.get("flags") or []
@@ -282,6 +281,9 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
        "unnumbered" in flags or "plain" in flags:
         num = None
     hcfg = theme.heading_config(1, stype, title_size)
+    # The space under the title: `[heading.1] gap` (or `h1_gap=`) when the theme says, else
+    # `title_gap` — the title is the level-1 heading, and its own setting is the specific one.
+    gap = float(hcfg.get("gap", theme.title_gap)) * (0.5 if stype == "max" else 1.0)
     t_size = hcfg["font_size"]
     t_color = hcfg["color"]
     t_family = hcfg["family"] or theme.title_font
@@ -319,7 +321,14 @@ def _title_group(slide: dict, stype: str, title_size: float, content_w: float,
                             family=t_family, weight=t_weight)
                 if is_centered:
                     node["textAlign"] = "center"
-            title_h = int(t_size * 1.8 + gap)
+            # `line_height` pins the title's pitch here too: the 1.8 reserve is breathing
+            # room the text never draws, so a fixed-height band would show it as a gap.
+            lh = float(hcfg.get("line_height") or 0.0)
+            if lh:
+                node = {"type": "box", "modifiers": dbg(["fillMaxWidth", {"height": t_size * lh}], debug),
+                        "horizontalAlignment": "center" if is_centered else "start",
+                        "verticalAlignment": "center", "children": [node]}
+            title_h = int(t_size * (lh or 1.8) + gap)
         else:
             # `line_height` (a fraction of the font size) pins the pitch of a multi-line
             # title. Without it each line is as tall as the font asks to be, which is right
@@ -1152,6 +1161,11 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     and scrolls the **left** column's content — for a split slide with `scroll = N`/`auto`, so
     the overflowing text column pages while the right column stays put."""
     spec = theme.slide_type_spec("split", SLIDE_TYPES["split"])
+    # `valign=` (theme or `::` line) places both columns: centred, each pane sits in the
+    # middle of the content height instead of hanging from the top.
+    if getattr(theme, "v_align", None):
+        spec["v_align"] = theme.v_align
+    v_pos = {"center": "center", "middle": "center", "bottom": "bottom"}.get(str(spec.get("v_align")), "top")
     body_size = theme.body_size("split")
     title_size = theme.title_size("split")
 
@@ -1194,14 +1208,14 @@ def _build_split_root(slide: dict, blocks: list[dict], theme: Theme, width: int,
     for block in right_blocks:
         right_body.extend(render_block(block, right_size, theme, debug, right_w,
                                        content_h, counter, same_ctx))
-    v_arr = "top" if spec.get("v_align") == "top" else "center"
+    v_arr = v_pos if theme.v_align else ("top" if spec.get("v_align") == "top" else "center")
     right_col = {"type": "column",
                  "modifiers": dbg([{"width": right_w}, "fillMaxHeight"], debug),
                  "verticalArrangement": v_arr,
                  "children": _stagger(right_body, theme) if do_stagger else right_body}
 
     gap = _split_gap(slide)
-    row = {"type": "row", "verticalAlignment": "top",
+    row = {"type": "row", "verticalAlignment": v_pos if theme.v_align else "top",
            "modifiers": dbg(["fillMaxSize"], debug),
            "children": [left_col, {"type": "box", "modifiers": [{"width": float(gap)}],
                                    "children": []}, right_col]}
@@ -1467,23 +1481,35 @@ def _build_sectioned_root(slide: dict, theme: Theme, width: int, height: int, in
     fixed = [_section_num(s, "height") for s in sections]
     media = [_section_is_media(s) and f is None for s, f in zip(sections, fixed)]
     stypes = [_section_type(s) for s in sections]
-    text_h = sum(_section_natural_h(s, theme, st, content_w)
-                 for s, st, m in zip(sections, stypes, media) if not m)
+    themes = [s.get("_theme") or theme for s in sections]   # a band on its own `:: as:` theme
+    text_h = sum(_section_natural_h(s, th, st, content_w)
+                 for s, th, st, m in zip(sections, themes, stypes, media) if not m)
     nmedia = sum(media)
     media_share = max(1.0, (avail - text_h) / nmedia) if nmedia else 0.0
 
     children: list = []
     for k, sec in enumerate(sections):
-        sec_h = media_share if media[k] else _section_natural_h(sec, theme, stypes[k], content_w)
-        nodes = _section_nodes(sec, theme, stypes[k], content_w, sec_h, debug, counter,
+        sec_h = media_share if media[k] else _section_natural_h(sec, themes[k], stypes[k], content_w)
+        nodes = _section_nodes(sec, themes[k], stypes[k], content_w, sec_h, debug, counter,
                                same_ctx, do_stagger, align=spec.get("h_align", "start"))
         if fixed[k] is not None:
             mods = [{"height": round(fixed[k], 2)}, "fillMaxWidth"]
         else:
             mods = ([{"weight": 1.0}, "fillMaxWidth"] if media[k] else ["fillMaxWidth"])
         band = {"type": "column", "modifiers": dbg(mods, debug), "children": nodes}
-        if spec.get("h_align") in ("center", "end"):
-            band["horizontalAlignment"] = spec["h_align"]
+        # A band taller than its content (a fixed `height=`, or a media band's share) places
+        # it by the band's own `valign=`; unset, it hangs from the top as before.
+        bov = _section_overrides(sec)
+        bv = {"center": "center", "middle": "center", "bottom": "bottom", "top": "top"}.get(
+            str(bov.get("v_align", bov.get("valign", ""))).lower())
+        if bv and (fixed[k] is not None or media[k]):
+            band["verticalArrangement"] = bv
+        # The band's own `align=` wins over the slide's: a left-ranged band under a centred title.
+        b_align = {"left": "start", "right": "end"}.get(
+            str(bov.get("align", bov.get("h_align", ""))).lower(),
+            str(bov.get("align", bov.get("h_align", spec.get("h_align", "start")))).lower())
+        if b_align in ("center", "end"):
+            band["horizontalAlignment"] = b_align
         children.append(band)
         if k < len(sections) - 1:
             children.append(vspacer(gap))

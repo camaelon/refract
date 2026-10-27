@@ -123,7 +123,7 @@ def styled_line(line: str, size: float, color: str, theme, debug: bool,
                 comp = {"type": "text", "value": piece, "fontSize": size, "color": base_color}
                 if "code" in styles:
                     comp["fontFamily"] = getattr(theme, "code_font_family", "monospace")
-                    comp["color"] = theme.accent
+                    comp["color"] = getattr(theme, "code_inline_color", "") or theme.accent
                     if "bold" in styles:
                         comp["fontWeight"] = _BOLD_W
                 else:

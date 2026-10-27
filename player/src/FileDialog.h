@@ -49,6 +49,11 @@ struct WebChoice {
 bool chooseWebDir(const std::string& dir, const std::string& name, const std::string& slidesDefault,
                   WebChoice* out);
 
+// Ask for a line of text — a name — with `message` above the field and `initial` in it.
+// False when cancelled (or where no dialog can be shown).
+bool askText(const std::string& title, const std::string& message, const std::string& initial,
+             std::string* out);
+
 // Move a file to the Trash rather than deleting it, so a wrong click can be undone from the
 // Finder. False when it could not be moved (the file stays). Elsewhere than macOS the file is
 // removed outright, and the caller's wording should say so.

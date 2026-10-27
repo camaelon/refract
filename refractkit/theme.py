@@ -96,6 +96,8 @@ class Theme:
     table_corner_radius: float = 16.0   # rounded corners on the table panel (0 = square)
     code_background: str = "#FF1E1E1E"
     code_foreground: str = "#FFD4D4D4"
+    default_font_family: str = ""           # player font for text naming none; "" → system default
+    code_inline_color: str = ""             # `inline code` text colour; "" → the accent
     code_font_size: float = 28.0
     code_corner_radius: float = 0.0
     # Code block renderer: "components" (a Text per token — precise metrics, but one
@@ -311,6 +313,33 @@ class Theme:
         }
 
 
+
+def heading_overrides(overrides: dict, theme) -> dict | None:
+    """The theme's ``headings`` table with the ``hN_<prop>=`` overrides in ``overrides``
+    applied, or None when there are none. Shared by a slide's ``::`` line and a stacked
+    band's own theme."""
+    headings = None
+    for k, v in overrides.items():
+        if len(k) > 3 and k[0] == "h" and k[1].isdigit() and k[2] == "_":
+            lvl = int(k[1])
+            prop = k[3:]
+            if headings is None:
+                headings = {l: dict(theme.headings.get(l, {})) for l in range(1, 7)}
+            cur = headings.setdefault(lvl, {})
+            if prop in ("band_height", "pad_left", "pad_top", "pad_right", "pad_bottom", "gap", "corner_radius", "weight", "size", "font_size", "line_height"):
+                try:
+                    cur["font_size" if prop == "size" else prop] = float(v)
+                except (TypeError, ValueError):
+                    pass
+            elif prop in ("color", "family", "bg_color"):
+                cur[prop] = str(v)
+            elif prop in ("align", "h_align"):
+                # This heading level alone aligns itself, whatever the slide does.
+                a = norm_align(v)
+                if a:
+                    cur["align"] = a
+    return headings
+
 def _resolve_asset_path(val, deck_dir: str, fallback_dirs=()) -> str | None:
     """Resolve a relative asset path (in deck_dir, deck_dir/includes, or deck_dir/theme/include) to an
     absolute path. ``fallback_dirs`` (the root deck, for a sub-deck slide) are searched the same way
@@ -429,6 +458,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     code = settings.get("code", {})
     t.code_background = code.get("background", th.get("code_background", t.code_background))
     t.code_foreground = code.get("foreground", th.get("code_foreground", t.code_foreground))
+    t.code_inline_color = str(code.get("inline_color", t.code_inline_color))
     if "font_size" in code:
         t.code_font_size = float(code["font_size"])
     if "corner_radius" in code:
@@ -453,7 +483,7 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     font = settings.get("font", {})
     # Family + weight keys are handled separately from the size keys.
     _font_meta = {"title_family", "title_weight", "body_family", "body_weight",
-                  "code_family"}
+                  "code_family", "default_family"}
     for key, val in font.items():
         if key in _font_meta:
             continue
@@ -467,6 +497,9 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
     t.body_font = str(font.get("body_family", t.body_font))
     t.body_weight = float(font.get("body_weight", t.body_weight))
     t.code_font_family = str(font.get("code_family", t.code_font_family))
+    # `default_family`: the player's font for text that names none — an embedded `.rc` built
+    # without a font. Unset leaves the player on the system default.
+    t.default_font_family = str(font.get("default_family", t.default_font_family))
 
     layout = {**settings.get("slide", {}), **settings.get("layout", {})}
     if "title_gap" in layout:

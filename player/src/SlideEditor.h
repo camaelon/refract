@@ -75,6 +75,11 @@ public:
     // and after a rebuild, like the assets.
     using ThemeLister = std::function<bool(std::vector<ThemePreset>* out, std::string* error)>;
     void setThemeLister(ThemeLister lister);
+    // Copy the theme in `fromFile` (relative to the deck) to a new one called `name`; fills
+    // `newFile` with the copy's path. The panel's "duplicate" button asks for the name.
+    using ThemeDuplicator = std::function<bool(const std::string& fromFile, const std::string& name,
+                                               std::string* newFile, std::string* status)>;
+    void setThemeDuplicator(ThemeDuplicator duplicator);
     // Show or hide the theme panel. The button in the footer does the same.
     void showThemes(bool shown);
     bool themesShown() const;

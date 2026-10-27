@@ -52,7 +52,7 @@ from refractkit.render import (build_doc, build_graph_transition_doc, build_push
                                scroll_spec, slide_type, split_left_metrics, split_panes,
                                PUSH_DELAY, PUSH_DURATION)
 from refractkit.settings import load_settings
-from refractkit.theme import build_theme, norm_align
+from refractkit.theme import build_theme, heading_overrides, norm_align
 
 
 def slug(slide: dict, index: int, total: int = 0) -> str:
@@ -574,6 +574,16 @@ def slide_style(slide: dict, theme, speakers: dict, trans_cfg: dict):
             else bool(type_trans.get("fx", False))
     if not fx_on:
         changes["transition_shader"] = ""
+    # A stacked band on its own `:: as:` theme styles its text by that theme, layered on the
+    # deck's (plus the speaker colour) rather than on the slide's first-band theme.
+    if slide.get("sections"):
+        band_base = replace(theme, **changes) if changes else theme
+        dirs = [slide.get("root_dir")] if slide.get("root_dir") else ()
+        for sec in slide["sections"]:
+            bov = (sec.get("meta") or {}).get("band_overrides")
+            if bov:
+                sec["_theme"] = replace(band_base, **theme_overrides(
+                    bov, band_base, slide.get("base_dir", "."), dirs))
     changes.update(theme_overrides(overrides, theme, slide.get("base_dir", "."),
                                    [slide.get("root_dir")] if slide.get("root_dir") else ()))
 
@@ -802,6 +812,16 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".", fallback_dirs=(
             changes["body_weight"] = float(overrides["body_weight"])
         except (TypeError, ValueError):
             pass
+    # `bullet_sub_weight=` (or a theme's `[bullet] sub_weight`): the weight of nested bullets
+    # on this slide alone — the deck-wide `[bullet] sub_weight` is the default.
+    # `code_color=` (or a theme's top-level `code_color`): the colour of `inline code` here.
+    if overrides.get("code_color"):
+        changes["code_inline_color"] = str(overrides["code_color"])
+    if "bullet_sub_weight" in overrides:
+        try:
+            changes["bullet_sub_weight"] = float(overrides["bullet_sub_weight"])
+        except (TypeError, ValueError):
+            pass
     if "title_size" in overrides or "body_size" in overrides:
         f = dict(theme.fonts)
         if "title_size" in overrides:
@@ -831,26 +851,7 @@ def theme_overrides(overrides: dict, theme, base_dir: str = ".", fallback_dirs=(
                   ("pad_left", "pad_top", "pad_right", "pad_bottom"))
     if any(delta):
         changes["pad_extra"] = delta
-    headings = None
-    for k, v in overrides.items():
-        if len(k) > 3 and k[0] == "h" and k[1].isdigit() and k[2] == "_":
-            lvl = int(k[1])
-            prop = k[3:]
-            if headings is None:
-                headings = {l: dict(theme.headings.get(l, {})) for l in range(1, 7)}
-            cur = headings.setdefault(lvl, {})
-            if prop in ("band_height", "pad_left", "pad_top", "pad_right", "pad_bottom", "gap", "corner_radius", "weight", "size", "font_size", "line_height"):
-                try:
-                    cur["font_size" if prop == "size" else prop] = float(v)
-                except (TypeError, ValueError):
-                    pass
-            elif prop in ("color", "family", "bg_color"):
-                cur[prop] = str(v)
-            elif prop in ("align", "h_align"):
-                # This heading level alone aligns itself, whatever the slide does.
-                a = norm_align(v)
-                if a:
-                    cur["align"] = a
+    headings = heading_overrides(overrides, theme)
     if headings is not None:
         changes["headings"] = headings
     return changes
@@ -1309,6 +1310,9 @@ def run_once(args) -> int:
     # by — the presenter's progress bar colours each speaker's stretch of the talk.
     if theme.authors:
         deck_json["authors"] = {str(k): str(v) for k, v in theme.authors.items()}
+    # `[font] default_family`: the player's font for text that names none.
+    if theme.default_font_family:
+        deck_json["default_font"] = theme.default_font_family
     with open(os.path.join(out_dir, "deck.json"), "w") as f:
         json.dump(deck_json, f, indent=2)
     print(f"wrote {os.path.join(out_dir, 'deck.json')}  [{len(manifest)} slides]")

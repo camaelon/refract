@@ -98,6 +98,9 @@ public:
     // one, else a fixed palette in order of appearance. 0xAARRGGBB.
     const std::vector<std::string>& speakers() const { return mSpeakers; }
     uint32_t speakerColor(const std::string& name) const;
+    // The family for embedded text that names no font (`[font] default` in settings.toml);
+    // empty when the deck says nothing, which keeps the system default.
+    const std::string& defaultFont() const { return mDefaultFont; }
     // Build from the playlist rcplayer collected. `source` is the directory, zip path, or
     // file the user named — it is where the manifest is looked for.
     void build(const std::vector<std::string>& entries, const std::string& source);
@@ -149,6 +152,7 @@ private:
     std::vector<PlanSection> mPlan;
     std::vector<std::string> mSpeakers;
     std::map<std::string, uint32_t> mSpeakerColors;
+    std::string mDefaultFont;
     bool mHasManifest = false;
     std::string mName;
 };

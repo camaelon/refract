@@ -440,6 +440,11 @@ sections (panes, images, embeds, graphs, charts, videos) divide whatever is left
 of bullets above two full-height image columns give the images the rest of the slide, not half
 of it.
 
+A section can instead be given an exact height: `height=` on its own `::` line
+(`:: as: dark_b height=245`), or `height = 245` in the theme it uses. The first section takes
+the slide's theme; a later one, the theme on its own `:: as:` line; a `height=` written on the
+line wins over the theme's.
+
 ## Transitions & "magic move"
 
 `--transitions` (or `[transition] enabled = true`) animates each slide in from the
@@ -713,6 +718,10 @@ pad_left = 40                   # and sits 40px in from the margin
 
 Per slide that is `h1_align=left` (`h2_align=` … `h6_align=` for subheadings), next to the
 `h1_pad_left=` / `h1_size=` / `h1_color=` overrides that already exist.
+
+The space under the slide title is `title_gap`, or `gap` in `[heading.1]` when that is set
+(`h1_gap=` per slide) — the title is the level-1 heading, and its own table is the more
+specific setting.
 
 ### Background shaders
 

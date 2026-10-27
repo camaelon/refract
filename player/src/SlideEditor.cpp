@@ -1,4 +1,5 @@
 #include "SlideEditor.h"
+#include "FileDialog.h"
 
 #include "SlideMeta.h"
 
@@ -25,6 +26,7 @@
 #include "include/core/SkPathBuilder.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -147,6 +149,8 @@ struct SlideEditor::Impl {
     SkRect themeToggle = SkRect::MakeEmpty();
     std::vector<SkRect> themeRows;       // one per preset, in `themes` order; empty when hidden
     std::vector<SkRect> themeEdits;      // the "edit" button on each row, alongside them
+    std::vector<SkRect> themeDups;       // and the "duplicate" button beside it
+    SlideEditor::ThemeDuplicator themeDuplicator;
     SkRect themeNone = SkRect::MakeEmpty();
     // The `::` vocabulary. Types and flags insert a word; a key inserts `key=` and opens
     // again on its values.
@@ -621,6 +625,38 @@ std::unique_ptr<SlideEditor> SlideEditor::Create(int width, int height) {
         // what the deck does a rebuild later. The deck view's undo takes it back, like any
         // other edit.
         if (impl.themesOpen && impl.themePanel.contains(x, y)) {
+            // Duplicate: ask the new name, copy the file, open the copy.
+            for (size_t i = 0; i < impl.themeDups.size() && i < impl.themes.size(); i++) {
+                if (!impl.themeDups[i].contains(x, y)) continue;
+                const ThemePreset preset = impl.themes[i];
+                std::string name;
+                if (!impl.themeDuplicator
+                    || !askText("Duplicate theme",
+                                "A copy of \"" + preset.name + "\" under a new name — a file in theme/.",
+                                preset.name + "_copy", &name)) {
+                    return;
+                }
+                // A theme name is a file name and what `:: as:` takes: keep it to that.
+                std::string clean;
+                for (char ch : name) {
+                    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '-')
+                        clean += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    else if (ch == ' ' && !clean.empty() && clean.back() != '_')
+                        clean += '_';
+                }
+                if (clean.empty()) { impl.setStatus("a theme needs a name", true); return; }
+                std::string newFile, status;
+                if (!impl.themeDuplicator(preset.file, clean, &newFile, &status)) {
+                    impl.setStatus(status, true);
+                    return;
+                }
+                std::vector<ThemePreset> found;
+                std::string error;
+                if (impl.themeLister && impl.themeLister(&found, &error)) impl.themes = std::move(found);
+                self->setTarget(EditTarget::Theme, newFile);
+                impl.setStatus("duplicated " + preset.name + " as " + clean, false);
+                return;
+            }
             // The way into the preset's own file: the panel browses, this edits.
             for (size_t i = 0; i < impl.themeEdits.size(); i++) {
                 if (!impl.themeEdits[i].contains(x, y)) continue;
@@ -724,6 +760,10 @@ bool SlideEditor::scrolling() const {
 void SlideEditor::setLoader(Loader loader) { mImpl->loader = std::move(loader); }
 void SlideEditor::setSaver(Saver saver) { mImpl->saver = std::move(saver); }
 void SlideEditor::setSplitter(Splitter splitter) { mImpl->splitter = std::move(splitter); }
+
+void SlideEditor::setThemeDuplicator(ThemeDuplicator duplicator) {
+    mImpl->themeDuplicator = std::move(duplicator);
+}
 
 void SlideEditor::setThemeLister(ThemeLister lister) {
     Impl& impl = *mImpl;
@@ -1576,6 +1616,7 @@ void SlideEditor::render(App& app) {
     // names are what a deck accumulates — two dozen of them in a real one.
     impl.themeRows.clear();
     impl.themeEdits.clear();
+    impl.themeDups.clear();
     impl.themeNone = SkRect::MakeEmpty();
     if (impl.themesOpen) {
         const float panelW = std::min(248.0f, w * 0.42f);
@@ -1662,6 +1703,16 @@ void SlideEditor::render(App& app) {
             strokeRoundRect(canvas, edit, 10, open ? ui::kAccent : (editHot ? ui::kDim : ui::kLine), 1.0f);
             drawTextCentred(canvas, "edit", edit, editFont,
                             open || editHot ? ui::kText : ui::kDim);
+            // Beside it, a copy of the preset under a new name — the way to start a variant
+            // without touching the slides already on this one.
+            const float dupW = textWidth(editFont, "duplicate") + 16;
+            SkRect dup = SkRect::MakeXYWH(edit.left() - dupW - 6, edit.top(), dupW, 20);
+            impl.themeDups.push_back(dup);
+            const bool dupHot = dup.contains(static_cast<float>(impl.mouseX),
+                                             static_cast<float>(impl.mouseY));
+            fillRoundRect(canvas, dup, 10, ui::kBg);
+            strokeRoundRect(canvas, dup, 10, dupHot ? ui::kDim : ui::kLine, 1.0f);
+            drawTextCentred(canvas, "duplicate", dup, editFont, dupHot ? ui::kText : ui::kDim);
 
             const float textLeft = swatch.right() + 10;
             const float textRight = edit.left() - 8;

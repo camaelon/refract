@@ -119,6 +119,7 @@ KEYS = [
     # On a `===` section: make it a band of exactly this height rather than one that
     # takes its natural height or shares what is left over.
     ("height",              "on a `===` section: its exact height in px", []),
+    ("bullet_sub_weight",   "font weight of nested bullets on this slide", ["200", "300", "400", "500"]),
 ]
 
 

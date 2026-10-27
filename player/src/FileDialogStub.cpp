@@ -27,6 +27,10 @@ bool chooseWebDir(const std::string& dir, const std::string& name, const std::st
     return true;
 }
 
+bool askText(const std::string&, const std::string&, const std::string&, std::string*) {
+    return false;
+}
+
 bool trashIsAvailable() { return false; }
 
 bool moveToTrash(const std::string& path) {

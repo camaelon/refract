@@ -119,6 +119,11 @@ def parse_theme_toml(data: dict) -> dict:
                 elif k_str in ("pad_left", "pad_top", "pad_right", "pad_bottom", "pane_gap", "gap", "pad"):
                     overrides[k_str] = str(v)
 
+    # [bullet] table: the nested-bullet keys a slide can override (sub_weight).
+    bullet = data.get("bullet")
+    if isinstance(bullet, dict) and "sub_weight" in bullet:
+        overrides["bullet_sub_weight"] = str(bullet["sub_weight"])
+
     # 4. [font] table
     font = data.get("font")
     if isinstance(font, dict):
@@ -228,7 +233,48 @@ def parse_theme_toml(data: dict) -> dict:
 def resolve_as_slide(slide: dict, deck_dir: str, fallback_dirs=()) -> dict:
     """If slide is `type == 'as'`, resolve its theme TOML settings into the slide. Templates
     missing from ``deck_dir`` are looked up in ``fallback_dirs`` (the root deck, for a slide
-    that came in through ``:: include``)."""
+    that came in through ``:: include``).
+
+    A slide stacked with ``===`` reads each band's ``height=`` (and ``valign=``, which places
+    the band's content within that height) from the band's own ``::`` line. A theme's value
+    reaches it too — the first band's from the slide's theme, a later band's from the theme on
+    its own ``:: as:`` line — unless the band sets it itself. A later band's theme is also kept
+    whole (``band_overrides``) so the band's own text styles by it."""
+    _resolve_meta(slide, deck_dir, fallback_dirs)
+    sections = slide.get("sections")
+    if sections:
+        for k, sec in enumerate(sections):
+            sec_meta = sec.get("meta") or {}
+            own = sec_meta.get("overrides") or {}
+            if k == 0:
+                theme_meta = slide.get("meta") or {}
+            elif (sec_meta.get("type") or "").lower() == "as":
+                probe = {"meta": dict(sec_meta)}
+                _resolve_meta(probe, deck_dir, fallback_dirs)
+                theme_meta = probe["meta"]
+                # The band's whole theme, so its headings and body text render by it rather
+                # than by the slide's (band 0's) theme — see ``slide_style``.
+                new = dict(sec_meta)
+                new["band_overrides"] = dict(theme_meta.get("overrides") or {})
+                sec["meta"] = sec_meta = new
+            else:
+                continue
+            tov = theme_meta.get("overrides") or {}
+            add = {}
+            if "height" not in own and tov.get("height") is not None:
+                add["height"] = tov["height"]
+            if "valign" not in own and "v_align" not in own:
+                v = tov.get("v_align", tov.get("valign"))
+                if v is not None:
+                    add["v_align"] = v
+            if add and sec_meta is not None:
+                new = dict(sec_meta)
+                new["overrides"] = {**own, **add}
+                sec["meta"] = new
+    return slide
+
+
+def _resolve_meta(slide: dict, deck_dir: str, fallback_dirs=()) -> dict:
     meta = slide.get("meta") or {}
     if (meta.get("type") or "").lower() != "as":
         return slide

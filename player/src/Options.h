@@ -32,6 +32,7 @@ struct Options {
     // frame and every slide change, write the record and exit (tools/perf_report.py reads it).
     std::string perf;
     double perfDwell = 3.0;         // --perf-dwell: how long each slide is shown
+    std::string defaultFont;        // --default-font: family for text that names none (wins over the deck's)
     bool autoVoice = false;
     bool sound = true;              // --no-sound clears it
     std::string sync;               // --sync host[:port]: follow and drive the slide with other players
