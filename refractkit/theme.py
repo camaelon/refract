@@ -223,6 +223,13 @@ class Theme:
     # What ``clip=roundrect`` rounds to: ``[image] roundrect_radius``, else the corner radius
     # above when the theme has one, else 28 — so asking for rounded corners always gets some.
     roundrect_radius: float = 0.0
+    # `border` on an include: a hairline on the embed's box (`[image] border_width`/`border_color`).
+    image_border_width: float = 1.5
+    image_border_color: str = "#26FFFFFF"
+    # `card` on an include: a rounded backing card (`[image] card_color` when the content's own
+    # edge colour can't be read, `card_pad` the space round the content).
+    image_card_color: str = "#FF16181C"
+    image_card_pad: float = 20.0
     # Embedded prebuilt `.rc` documents: how the nested doc is scaled into its box.
     embed_fit: str = "fit"          # fit (aspect, centred) | fill (cover) | native (1:1)
     # Graph (graphviz) rendering colours.
@@ -559,6 +566,14 @@ def build_theme(settings: dict, deck_dir: str = ".") -> Theme:
         t.image_corner_radius = 28.0
     if "roundrect_radius" in image:
         t.roundrect_radius = float(image["roundrect_radius"])
+    if "border_width" in image:
+        t.image_border_width = float(image["border_width"])
+    if "border_color" in image:
+        t.image_border_color = str(image["border_color"])
+    if "card_color" in image:
+        t.image_card_color = str(image["card_color"])
+    if "card_pad" in image:
+        t.image_card_pad = float(image["card_pad"])
 
     t.embed_fit = str(settings.get("embed", {}).get("fit", t.embed_fit)).lower()
 

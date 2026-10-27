@@ -309,6 +309,15 @@ def _apply_include_opts(block: dict, opts: dict) -> dict:
     # embed's box, over the theme's image corner radius.
     if opts.get("clip") and block["kind"] in _FRAMEABLE:
         block["clip"] = str(opts["clip"]).lower()
+    # ``border`` (or ``border=<px>``) draws a hairline on the box, on its rounded corners.
+    if "border" in opts and block["kind"] in _FRAMEABLE:
+        block["border"] = str(opts["border"] if opts["border"] is not True else "")
+    # ``card`` (or ``card=<colour>``, ``card_pad=<px>``) sits the embed in a rounded card of
+    # its own edge colour, so square content reads as rounded.
+    if "card" in opts and block["kind"] in _FRAMEABLE:
+        block["card"] = str(opts["card"] if opts["card"] is not True else "")
+        if opts.get("card_pad") is not None:
+            block["card_pad"] = opts["card_pad"]
     # ``width=`` / ``height=`` size the box outright (px), as they do an image, instead of
     # filling what is left; one of them with ``ratio=`` gives the other. ``align=`` places a
     # sized box in its row (start by default).

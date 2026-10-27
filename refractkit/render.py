@@ -710,8 +710,79 @@ def _embed_dims(avail_w: float, box_h: float, ratio, size=None) -> tuple:
     return float(avail_w), float(box_h)
 
 
+_EDGE_CACHE: dict = {}
+
+
+def _video_edge(path: str, at: float = 0.0):
+    """(colour "#FFRRGGBB", width, height) of a video, the colour the average of its first
+    frame's outermost pixels — what a card behind it has to match for the clip's square edges
+    to vanish into it. None when ffmpeg can't read it."""
+    import shutil, subprocess
+    try:
+        key = (path, os.path.getmtime(path), at)
+    except OSError:
+        return None
+    if key in _EDGE_CACHE:
+        return _EDGE_CACHE[key]
+    out = None
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        try:
+            probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                                    "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                                   capture_output=True, text=True, timeout=20)
+            w, h = (int(v) for v in probe.stdout.strip().split(",")[:2])
+            sw, sh = 64, max(1, round(64 * h / w))
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%g" % at, "-i", path,
+                                  "-frames:v", "1", "-vf", "scale=%d:%d" % (sw, sh),
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                 capture_output=True, timeout=30).stdout
+            if len(raw) >= sw * sh * 3:
+                px = [raw[i:i + 3] for i in range(0, sw * sh * 3, 3)]
+                edge = [px[y * sw + x] for y in range(sh) for x in range(sw)
+                        if x in (0, sw - 1) or y in (0, sh - 1)]
+                avg = [round(sum(p[c] for p in edge) / len(edge)) for c in range(3)]
+                out = ("#FF%02X%02X%02X" % tuple(avg), w, h)
+        except (subprocess.SubprocessError, ValueError, OSError):
+            out = None
+    _EDGE_CACHE[key] = out
+    return out
+
+
+def _embed_card(block: dict, theme: Theme, edge=None):
+    """``card`` on an include: (colour, padding) of a rounded backing card the embed sits in.
+    ``card=#AARRGGBB`` names the colour; ``card`` alone takes it from the content's own edge
+    (``edge``, sampled from a video), else ``[image] card_color``. ``card_pad=`` is the space
+    round the content, else ``[image] card_pad``. None when not asked for."""
+    raw = block.get("card")
+    if raw is None or str(raw).lower() in ("none", "off", "no", "0", "false"):
+        return None
+    raw = str(raw)
+    color = raw if raw.startswith("#") else ((edge or (None,))[0] or getattr(theme, "image_card_color", "#FF16181C"))
+    try:
+        pad = float(block.get("card_pad", getattr(theme, "image_card_pad", 20.0)))
+    except (TypeError, ValueError):
+        pad = getattr(theme, "image_card_pad", 20.0)
+    return (color, pad)
+
+
+def _embed_border(block: dict, theme: Theme):
+    """``border`` on an include: (width, colour) of a hairline drawn on the embed's box, on
+    the same rounded rect it is clipped to — ``border`` alone takes ``[image] border_width``
+    and ``border_color``, ``border=<px>`` sets the width. None when not asked for."""
+    raw = block.get("border")
+    if raw is None or str(raw).lower() in ("none", "off", "no", "0", "false"):
+        return None
+    width = getattr(theme, "image_border_width", 1.5)
+    try:
+        if str(raw).lower() not in ("", "true", "yes", "on"):
+            width = float(raw)
+    except ValueError:
+        pass
+    return (width, getattr(theme, "image_border_color", "#26FFFFFF"))
+
+
 def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
-               debug: bool, size=None, align: str = "start") -> dict:
+               debug: bool, size=None, align: str = "start", border=None, card=None) -> dict:
     """Size an embed's box. By default it fills the width at ``box_h`` tall; when ``ratio``
     (width / height) is set the box is fitted to that aspect ratio within (avail_w, box_h) and
     centred in the area, so a square face doesn't stretch to fill a wide slide; when ``size``
@@ -728,9 +799,32 @@ def _embed_box(inner: dict, avail_w: float, box_h: float, ratio, corner,
         mods = ["fillMaxWidth", {"height": round(float(box_h), 2)}]
     if corner == "circle":
         corner = min(bw, bh) / 2.0
-    if corner and corner > 0:
-        mods.append({"clip": round(float(corner), 2)})
-    inner["modifiers"] = dbg(mods, debug)
+    if card:
+        # A backing card: the box itself, rounded and filled, with the embed inset by the
+        # card's padding. The embed is not clipped — its square edges are meant to vanish
+        # into a card of their own colour.
+        r = round(float(corner), 2) if corner and corner > 0 else 0.0
+        inner["modifiers"] = dbg(["fillMaxSize"], debug)
+        card_mods = mods + ([{"clip": r}] if r else []) + [{"background": card[0]},
+                                                            {"padding": float(card[1])}]
+        inner = {"type": "box", "modifiers": dbg(card_mods, debug),
+                 "horizontalAlignment": "center", "verticalAlignment": "center",
+                 "children": [inner]}
+    elif border:
+        # The hairline is a sibling laid over the content rather than a modifier on it, so it
+        # sits on top of whatever the embed draws, on the same rounded rect it is clipped to.
+        r = round(float(corner), 2) if corner and corner > 0 else 0.0
+        content_mods: list = ["fillMaxSize"] + ([{"clip": r}] if r else [])
+        inner["modifiers"] = dbg(content_mods, debug)
+        ring = {"type": "box", "children": [], "modifiers": [
+            "fillMaxSize",
+            {"border": {"width": float(border[0]), "cornerRadius": r,
+                        "color": border[1], "shape": 0}}]}
+        inner = {"type": "box", "modifiers": dbg(mods, debug), "children": [inner, ring]}
+    else:
+        if corner and corner > 0:
+            mods.append({"clip": round(float(corner), 2)})
+        inner["modifiers"] = dbg(mods, debug)
     if sized:
         return {"type": "box",
                 "modifiers": dbg(["fillMaxWidth", {"height": round(bh, 2)}], debug),
@@ -828,9 +922,21 @@ def render_video(block: dict, theme: Theme, debug: bool,
         node = {"type": "custom", "config": config, "children": []}
         return _with_caption(_frame_box(node, frame, block, avail_w, box_h, [0], debug),
                              block, theme, debug, avail_h)
+    ratio = block.get("ratio")
+    card = None
+    if block.get("card") is not None:
+        edge = _video_edge(block["path"], float(block.get("start") or 0.0))
+        card = _embed_card(block, theme, edge)
+        # The card hugs the clip: the video's own aspect, grown by the padding on every side.
+        if card and ratio is None and edge and _embed_size(block) is None:
+            pad = card[1]
+            _, vw, vh = edge
+            fw, fh = _embed_dims(avail_w - 2 * pad, box_h - 2 * pad, vw / vh)
+            ratio = (fw + 2 * pad) / (fh + 2 * pad)
     box = _embed_box({"type": "custom", "config": config, "children": []},
-                     avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
-                     size=_embed_size(block), align=block.get("align", "start"))
+                     avail_w, box_h, ratio, _embed_corner(block, theme), debug,
+                     size=_embed_size(block), align=block.get("align", "start"),
+                     border=_embed_border(block, theme), card=card)
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -882,7 +988,7 @@ def render_camera(block: dict, theme: Theme, debug: bool,
                              block, theme, debug, avail_h)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
-                     size=_embed_size(block), align=block.get("align", "start"))
+                     size=_embed_size(block), align=block.get("align", "start"), border=_embed_border(block, theme))
     return _with_caption(box, block, theme, debug, avail_h)
 
 
@@ -948,7 +1054,7 @@ def render_rc_embed(block: dict, theme: Theme, debug: bool,
                              block, theme, debug, avail_h)
     box = _embed_box({"type": "custom", "config": config, "children": []},
                      avail_w, box_h, block.get("ratio"), _embed_corner(block, theme), debug,
-                     size=_embed_size(block), align=block.get("align", "start"))
+                     size=_embed_size(block), align=block.get("align", "start"), border=_embed_border(block, theme))
     return _with_caption(box, block, theme, debug, avail_h)
 
 
